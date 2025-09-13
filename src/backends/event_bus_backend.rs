@@ -6,6 +6,8 @@ use crate::{BusEvent, EventBusError};
 #[async_trait]
 pub trait EventBusBackend: Send + Sync + 'static + Debug {
     fn clone_box(&self) -> Box<dyn EventBusBackend>;
+    fn as_any(&self) -> &dyn std::any::Any;
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
     async fn connect(&mut self) -> Result<(), EventBusError>;
     async fn disconnect(&mut self) -> Result<(), EventBusError>;
     async fn send_serialized(&self, event_json: &[u8], topic: &str) -> Result<(), EventBusError>;

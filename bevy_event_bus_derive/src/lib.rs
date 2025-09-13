@@ -27,15 +27,14 @@ pub fn derive_external_bus_event(input: TokenStream) -> TokenStream {
     let upper_name = name.to_string().to_uppercase();
     let static_ident = syn::Ident::new(&format!("__BEVY_EVENT_BUS_REGISTER_{}", upper_name), name.span());
     let expanded = quote! {
-    impl bevy::prelude::Event for #name { type Traversal = (); }
+        impl bevy::prelude::Event for #name { type Traversal = (); }
         #[allow(non_upper_case_globals)]
         #[ctor::ctor]
         static #static_ident: () = {
-            use ::bevy_event_bus::EventBusAppExt;
-            ::bevy_event_bus::registration::EVENT_REGISTRY
+            ::bevy_event_bus::EVENT_REGISTRY
                 .lock()
                 .unwrap()
-                .push(|app| { app.register_bus_event::<#name>(); });
+                .push(|app| { ::bevy_event_bus::registration::register_event::<#name>(app); });
         };
     };
 

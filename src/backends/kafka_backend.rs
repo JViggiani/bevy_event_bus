@@ -10,7 +10,10 @@ use std::time::Duration;
 use tracing::{info, error};
 use std::fmt::Debug;
 
-use crate::{EventBusBackend, EventBusError};
+use crate::{EventBusBackend, EventBusError, resources::IncomingMessage};
+use crossbeam_channel::{bounded, Sender, Receiver};
+use std::thread;
+use std::sync::atomic::{AtomicBool, Ordering};
 use async_trait::async_trait;
 
 /// Configuration for Kafka backend
@@ -46,6 +49,10 @@ pub struct KafkaEventBusBackend {
     producer: Arc<BaseProducer>,
     consumer: Arc<BaseConsumer>,
     subscriptions: Arc<Mutex<HashSet<String>>>,
+    bg_running: Arc<AtomicBool>,
+    sender: Option<Sender<IncomingMessage>>,
+    receiver: Option<Receiver<IncomingMessage>>,
+    dropped: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl std::fmt::Debug for KafkaEventBusBackend {
@@ -103,6 +110,10 @@ impl KafkaEventBusBackend {
             producer: Arc::new(producer),
             consumer: Arc::new(consumer),
             subscriptions: Arc::new(Mutex::new(HashSet::new())),
+            bg_running: Arc::new(AtomicBool::new(false)),
+            sender: None,
+            receiver: None,
+            dropped: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 }
@@ -114,13 +125,24 @@ impl Clone for KafkaEventBusBackend {
             producer: self.producer.clone(),
             consumer: self.consumer.clone(),
             subscriptions: self.subscriptions.clone(),
+            bg_running: self.bg_running.clone(),
+            sender: self.sender.clone(),
+            receiver: None, // receiver cannot be cloned (single consumer side)
+            dropped: self.dropped.clone(),
         }
     }
+}
+
+impl KafkaEventBusBackend {
+    pub fn take_receiver(&mut self) -> Option<Receiver<IncomingMessage>> { self.receiver.take() }
+    pub fn dropped_count(&self) -> usize { self.dropped.load(Ordering::Relaxed) }
 }
 
 #[async_trait]
 impl EventBusBackend for KafkaEventBusBackend {
     fn clone_box(&self) -> Box<dyn EventBusBackend> { Box::new(self.clone()) }
+    fn as_any(&self) -> &dyn std::any::Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
     async fn connect(&mut self) -> Result<(), EventBusError> {
         info!("Initializing Kafka backend (lazy connect) for {}", self.config.bootstrap_servers);
         // rdkafka lazily connects on first use; we simply attempt a lightweight operation by fetching metadata, but
@@ -137,10 +159,53 @@ impl EventBusBackend for KafkaEventBusBackend {
                 return Err(EventBusError::Connection(format!("Failed to subscribe to topics: {}", e)));
             }
         }
+        // Spawn background consumer thread once
+        if !self.bg_running.swap(true, Ordering::SeqCst) {
+            let (tx, rx) = bounded::<IncomingMessage>(10_000);
+            self.sender = Some(tx.clone());
+            self.receiver = Some(rx);
+            let consumer = self.consumer.clone();
+            let subs = self.subscriptions.clone();
+            let running = self.bg_running.clone();
+            let dropped_counter = self.dropped.clone();
+            // Note: dropped messages tracked downstream by comparing channel len + drained
+            thread::Builder::new().name("kafka_bg_consumer".into()).spawn(move || {
+                while running.load(Ordering::Relaxed) {
+                    match consumer.as_ref().poll(Duration::from_millis(100)) {
+                        None => { /* idle */ }
+                        Some(Ok(m)) => {
+                            let topic = m.topic().to_string();
+                            // Ensure we tracked subscription (auto-subscribe path can happen via reader later)
+                            {
+                                let mut guard = subs.lock().unwrap();
+                                guard.insert(topic.clone());
+                            }
+                            if let Some(payload) = m.payload() {
+                                let msg = IncomingMessage {
+                                    topic,
+                                    partition: m.partition(),
+                                    offset: m.offset(),
+                                    key: m.key().map(|k| k.to_vec()),
+                                    payload: payload.to_vec(),
+                                    timestamp: std::time::Instant::now(),
+                                };
+                                if tx.try_send(msg).is_err() {
+                                    dropped_counter.fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
+                        }
+                        Some(Err(e)) => {
+                            error!("Background Kafka consume error: {}", e);
+                        }
+                    }
+                }
+            }).map_err(|e| EventBusError::Other(format!("Failed to spawn background consumer: {}", e)))?;
+        }
         Ok(())
     }
     async fn disconnect(&mut self) -> Result<(), EventBusError> {
         info!("Disconnecting from Kafka");
+    self.bg_running.store(false, Ordering::SeqCst);
         // Nothing special needed for disconnection, Kafka clients clean up on drop
         Ok(())
     }

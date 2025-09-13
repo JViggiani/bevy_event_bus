@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use crate::{BusEvent, backends::{EventBusBackendResource, EventBusBackendExt}, EventBusError, runtime};
+use crate::{BusEvent, backends::{EventBusBackendResource, EventBusBackendExt}, EventBusError, runtime, resources::DrainedTopicBuffers};
 
 /// Iterator over events received from the event bus
 pub struct EventBusIterator<'a, T: BusEvent> {
@@ -33,20 +33,31 @@ pub struct EventBusReader<'w, 's, T: BusEvent + Event> {
     backend: Res<'w, EventBusBackendResource>,
     event_buffer: Local<'s, Vec<T>>,
     events: EventReader<'w, 's, T>,
+    drained: Option<ResMut<'w, DrainedTopicBuffers>>,
 }
 
 impl<'w, 's, T: BusEvent + Event> EventBusReader<'w, 's, T> {
     /// Read events from a specific topic and from internal Bevy events
     pub fn read(&mut self, topic: &str) -> Result<Box<dyn Iterator<Item = &T> + '_>, EventBusError> {
-        // Read from the external bus
-    let external_events = runtime::block_on(self.backend.read().receive::<T>(topic))?;
+        // Prefer drained buffers (background mode)
+        let mut external_events: Vec<T> = Vec::new();
+        if let Some(drained) = &mut self.drained {
+            if let Some(raws) = drained.topics.remove(topic) {
+                for raw in raws.into_iter() {
+                    if let Ok(ev) = serde_json::from_slice::<T>(&raw) { external_events.push(ev); }
+                }
+            }
+        } else {
+            // Fallback to direct backend receive (legacy/blocking path)
+            external_events = runtime::block_on(self.backend.read().receive::<T>(topic))?;
+        }
         
         // Also read from internal Bevy events
         let internal_events: Vec<_> = self.events.read().cloned().collect();
         
         // Add new events to the buffer
         self.event_buffer.clear();
-        self.event_buffer.extend(external_events);
+    self.event_buffer.extend(external_events);
         self.event_buffer.extend(internal_events);
         
         // Return iterator over events
@@ -72,9 +83,8 @@ impl<'w, 's, T: BusEvent + Event> EventBusReader<'w, 's, T> {
     
     /// Clear the event buffer and mark internal events as read
     pub fn clear(&mut self) {
-        self.event_buffer.clear();
-        // Consume all internal events
-        for _ in self.events.read() {}
+    self.event_buffer.clear();
+    for _ in self.events.read() {}
     }
     
     /// Get the number of events in the buffer

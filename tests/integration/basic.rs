@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusWriter, EventBusReader, EventBusAppExt};
+use bevy_event_bus::{EventBusPlugins, EventBusWriter, EventBusReader};
 use crate::common::TestEvent;
 use crate::common::setup::setup;
 use tracing::{info, info_span};
@@ -25,7 +25,6 @@ fn test_basic_kafka_event_bus() {
     // Writer app
     let mut writer_app = App::new();
     writer_app.add_plugins(EventBusPlugins(backend.clone()));
-    writer_app.register_bus_event::<TestEvent>();
 
     #[derive(Resource, Clone)]
     struct ToSend(TestEvent, String);
@@ -48,7 +47,6 @@ fn test_basic_kafka_event_bus() {
     // Reader app (separate consumer group)
     let mut reader_app = App::new();
     reader_app.add_plugins(EventBusPlugins(backend));
-    reader_app.register_bus_event::<TestEvent>();
 
     #[derive(Resource, Default)]
     struct Collected(Vec<TestEvent>);

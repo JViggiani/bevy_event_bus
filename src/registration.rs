@@ -1,20 +1,15 @@
-//! A global registry for bus events, populated at program startup.
-//!
-//! The `ExternalBusEvent` derive macro generates a static constructor for each 
-//! decorated type. This constructor adds a registration function to the 
-//! `EVENT_REGISTRY`. When the `EventBusPlugin` is initialized, it drains this 
-//! registry, calling each function to register the event types.
+//! Internal event registration registry used by the `ExternalBusEvent` derive macro.
+//! Each derived event type contributes a callback that will call `add_event::<T>()`
+//! for every Bevy `App` that adds the `EventBusPlugin`.
 
 use bevy::app::App;
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
-use crate::plugin::EventBusAppExt;
 
 pub type RegistrationFn = fn(&mut App);
 
 pub static EVENT_REGISTRY: Lazy<Mutex<Vec<RegistrationFn>>> = Lazy::new(|| Mutex::new(Vec::new()));
 
-// Backwards-compatible helper used by the macro-generated code
-pub fn register_event<T: crate::BusEvent + bevy::prelude::Event>(app: &mut App) {
-    app.register_bus_event::<T>();
+pub fn register_event<T: bevy::prelude::Event>(app: &mut App) {
+    app.add_event::<T>();
 }

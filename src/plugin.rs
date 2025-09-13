@@ -1,36 +1,22 @@
 use bevy::prelude::*;
-use std::collections::HashSet;
-use std::any::TypeId;
  
-use tracing::info;
 
 use crate::{
-    BusEvent,
     backends::{EventBusBackend, EventBusBackendResource},
-    registration::EVENT_REGISTRY,
     runtime::{ensure_runtime, block_on},
+    resources::{MessageQueue, DrainedTopicBuffers, EventBusConsumerConfig, ConsumerMetrics},
+    registration::EVENT_REGISTRY,
 };
 
-/// Tracks registered event types
-#[derive(Resource, Default)]
-struct RegisteredBusEvents { types: HashSet<TypeId> }
 
 /// Plugin for integrating with external event brokers
 pub struct EventBusPlugin;
 
 impl Plugin for EventBusPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<RegisteredBusEvents>();
-        
-        // Process any events registered via the derive macro
-        let registration_fns = {
-            let mut registry = EVENT_REGISTRY.lock().unwrap();
-            std::mem::take(&mut *registry)
-        };
-        
-        for register_fn in registration_fns {
-            register_fn(app);
-        }
+    // Invoke registration callbacks (derive macro populated). We DO NOT drain so multiple Apps each see events.
+    let guard = EVENT_REGISTRY.lock().unwrap();
+    for cb in guard.iter() { cb(app); }
     }
 }
 
@@ -46,30 +32,58 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
         // Create and add the backend as a resource
         let boxed = self.0.clone_box();
         app.insert_resource(EventBusBackendResource::from_box(boxed));
-        // Connect asynchronously (blocking for now until background tasks introduced)
+        // Connect asynchronously (blocking for initial setup)
         if let Some(backend_res) = app.world().get_resource::<EventBusBackendResource>().cloned() {
             let mut guard = backend_res.write();
             let _ = block_on(guard.connect());
         }
-    }
-}
 
-/// Register event types and backends with Bevy
-pub trait EventBusAppExt { fn register_bus_event<T: BusEvent + Event>(&mut self) -> &mut Self; }
+        // Initialize background consumer related resources if not present
+        app.init_resource::<DrainedTopicBuffers>();
+        app.init_resource::<ConsumerMetrics>();
+        app.init_resource::<EventBusConsumerConfig>();
+        // MessageQueue will be inserted lazily once backend spawns sender & channel
 
-impl EventBusAppExt for App {
-    fn register_bus_event<T: BusEvent + Event>(&mut self) -> &mut Self {
-        // Make sure Bevy's event system knows about this event type
-        self.add_event::<T>();
-        
-        let type_id = TypeId::of::<T>();
-        let mut registered = self.world_mut().resource_mut::<RegisteredBusEvents>();
-        
-        if registered.types.insert(type_id) {
-            info!("Registered bus event type: {}", std::any::type_name::<T>());
+        // Drain system
+        fn drain_system(
+            mut commands: Commands,
+            backend: Option<Res<EventBusBackendResource>>,
+            mut buffers: ResMut<DrainedTopicBuffers>,
+            mut metrics: ResMut<ConsumerMetrics>,
+            config: Res<EventBusConsumerConfig>,
+            maybe_queue: Option<Res<MessageQueue>>,
+        ) {
+            let start = std::time::Instant::now();
+            metrics.drained_last_frame = 0;
+            if let Some(queue) = maybe_queue {
+                let limit = config.max_events_per_frame;
+                let time_budget = config.max_drain_millis.map(std::time::Duration::from_millis);
+                // Drain loop
+                while limit.map(|l| metrics.drained_last_frame < l).unwrap_or(true) {
+                    if let Some(budget) = time_budget { if start.elapsed() >= budget { break; } }
+                    match queue.receiver.try_recv() {
+                        Ok(msg) => {
+                            let entry = buffers.topics.entry(msg.topic).or_default();
+                            entry.push(msg.payload);
+                            metrics.drained_last_frame += 1;
+                        }
+                        Err(crossbeam_channel::TryRecvError::Empty) => break,
+                        Err(crossbeam_channel::TryRecvError::Disconnected) => break,
+                    }
+                }
+                metrics.remaining_channel_after_drain = queue.receiver.len();
+            } else if let Some(backend_res) = backend {
+                let mut guard = backend_res.write();
+                if let Some(kafka) = guard.as_any_mut().downcast_mut::<crate::backends::kafka_backend::KafkaEventBusBackend>() {
+                    let dropped = kafka.dropped_count();
+                    metrics.dropped_messages = dropped;
+                    if let Some(rx) = kafka.take_receiver() {
+                        // Insert queue so next frame we can drain
+                        commands.insert_resource(MessageQueue { receiver: rx });
+                    }
+                }
+            }
         }
-        
-        self
+        app.add_systems(PreUpdate, drain_system);
     }
-    
 }

@@ -9,17 +9,19 @@ mod error;
 mod event;
 mod plugin;
 mod readers;
-pub mod registration;
+pub mod registration; // internal use by derive
 mod writers;
 mod runtime;
+mod resources;
 
 // Re-exports
 pub use backends::{EventBusBackend, EventBusBackendExt};
 pub use error::EventBusError;
 pub use event::BusEvent;
-pub use plugin::{EventBusPlugin, EventBusPlugins, EventBusAppExt};
+pub use plugin::{EventBusPlugin, EventBusPlugins};
 pub use readers::event_bus_reader::EventBusReader;
 pub use writers::event_bus_writer::EventBusWriter;
+pub use resources::{IncomingMessage, MessageQueue, DrainedTopicBuffers, EventBusConsumerConfig, ConsumerMetrics};
 
 // Re-export backends
 #[cfg(feature = "kafka")]
@@ -27,7 +29,7 @@ pub use backends::kafka_backend::{KafkaEventBusBackend, KafkaConfig};
 
 // Re-export the derive macro
 pub use bevy_event_bus_derive::ExternalBusEvent;
-pub use registration::{EVENT_REGISTRY};
+pub use registration::EVENT_REGISTRY; // hidden but available
 pub use runtime::{block_on, runtime};
 pub use runtime::{SharedRuntime, ensure_runtime};
 
@@ -43,6 +45,11 @@ pub mod prelude {
         ExternalBusEvent,
         EventBusBackend,
         EventBusBackendExt,
+    IncomingMessage,
+    MessageQueue,
+    DrainedTopicBuffers,
+    EventBusConsumerConfig,
+    ConsumerMetrics,
     };
     
     #[cfg(feature = "kafka")]
