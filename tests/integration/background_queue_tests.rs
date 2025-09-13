@@ -1,13 +1,14 @@
 use bevy::prelude::*;
 use bevy::ecs::system::RunSystemOnce;
 use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusConsumerConfig, DrainedTopicBuffers};
+use crate::common::setup::{setup};
 use serde::{Serialize, Deserialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, bevy_event_bus::ExternalBusEvent)]
 struct TestMsg { v: u32 }
 
 fn build_basic_app() -> App {
-    let backend = bevy_event_bus::KafkaEventBusBackend::new(bevy_event_bus::KafkaConfig { bootstrap_servers: "localhost:9092".into(), group_id: format!("test_{}", std::process::id()), client_id: None, timeout_ms: 3000, additional_config: Default::default() });
+    let (backend, _bootstrap, _timings) = setup(); // readiness enforced
     let mut app = App::new();
     app.add_plugins(EventBusPlugins(backend));
     app

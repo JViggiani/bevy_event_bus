@@ -7,7 +7,7 @@ use rdkafka::{
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tracing::{info, error};
+use tracing::{info, error, warn, debug};
 use std::fmt::Debug;
 
 use crate::{EventBusBackend, EventBusError, resources::IncomingMessage};
@@ -53,6 +53,7 @@ pub struct KafkaEventBusBackend {
     sender: Option<Sender<IncomingMessage>>,
     receiver: Option<Receiver<IncomingMessage>>,
     dropped: Arc<std::sync::atomic::AtomicUsize>,
+    thread_handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for KafkaEventBusBackend {
@@ -114,6 +115,7 @@ impl KafkaEventBusBackend {
             sender: None,
             receiver: None,
             dropped: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            thread_handle: None,
         }
     }
 }
@@ -129,6 +131,7 @@ impl Clone for KafkaEventBusBackend {
             sender: self.sender.clone(),
             receiver: None, // receiver cannot be cloned (single consumer side)
             dropped: self.dropped.clone(),
+            thread_handle: None, // do not clone thread handle
         }
     }
 }
@@ -138,18 +141,52 @@ impl KafkaEventBusBackend {
     pub fn dropped_count(&self) -> usize { self.dropped.load(Ordering::Relaxed) }
 }
 
+impl Drop for KafkaEventBusBackend {
+    fn drop(&mut self) {
+        // Ensure background thread stops cleanly to avoid late shutdown error spam
+        if self.bg_running.swap(false, Ordering::SeqCst) {
+            if let Some(handle) = self.thread_handle.take() { let _ = handle.join(); }
+        }
+        // Best-effort flush (ignore errors)
+        let _ = self.producer.flush(Duration::from_millis(200));
+    }
+}
+
 #[async_trait]
 impl EventBusBackend for KafkaEventBusBackend {
     fn clone_box(&self) -> Box<dyn EventBusBackend> { Box::new(self.clone()) }
     fn as_any(&self) -> &dyn std::any::Any { self }
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
     async fn connect(&mut self) -> Result<(), EventBusError> {
+        if self.bg_running.load(Ordering::Relaxed) {
+            debug!("Kafka backend connect() called but background already running");
+            return Ok(());
+        }
         info!("Initializing Kafka backend (lazy connect) for {}", self.config.bootstrap_servers);
-        // rdkafka lazily connects on first use; we simply attempt a lightweight operation by fetching metadata, but
-        // ignore errors for now to allow tests to spin up the container concurrently.
-        match self.producer.client().fetch_metadata(None, Duration::from_millis(500)) {
-            Ok(md) => info!("Kafka metadata brokers={}", md.brokers().len()),
-            Err(e) => info!("Kafka metadata fetch deferred: {}", e),
+        // Attempt metadata readiness loop (bounded) before spawning background thread to reduce noisy errors.
+        let start = std::time::Instant::now();
+        let deadline = Duration::from_secs(5);
+        let mut attempt: u32 = 0;
+        let mut last_err: Option<String> = None;
+        while start.elapsed() < deadline {
+            attempt += 1;
+            match self.producer.client().fetch_metadata(None, Duration::from_millis(700)) {
+                Ok(md) => {
+                    info!(brokers = md.brokers().len(), attempts = attempt, "Kafka metadata ready pre-spawn");
+                    break;
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    if last_err.as_ref() != Some(&msg) {
+                        debug!(attempt, err = %msg, "Kafka metadata attempt failed");
+                    }
+                    last_err = Some(msg);
+                    std::thread::sleep(Duration::from_millis(120));
+                }
+            }
+        }
+        if start.elapsed() >= deadline {
+            warn!(elapsed_ms = start.elapsed().as_millis(), "Proceeding without confirmed metadata (will retry in background)");
         }
         // Re-subscribe to any existing topics
         let existing = self.subscriptions.lock().unwrap().clone();
@@ -168,10 +205,13 @@ impl EventBusBackend for KafkaEventBusBackend {
             let subs = self.subscriptions.clone();
             let running = self.bg_running.clone();
             let dropped_counter = self.dropped.clone();
+            let bootstrap = self.config.bootstrap_servers.clone();
             // Note: dropped messages tracked downstream by comparing channel len + drained
-            thread::Builder::new().name("kafka_bg_consumer".into()).spawn(move || {
+            let handle = thread::Builder::new().name("kafka_bg_consumer".into()).spawn(move || {
+                let mut last_err: Option<String> = None;
+                let mut repeated: u32 = 0;
                 while running.load(Ordering::Relaxed) {
-                    match consumer.as_ref().poll(Duration::from_millis(100)) {
+                    match consumer.as_ref().poll(Duration::from_millis(150)) {
                         None => { /* idle */ }
                         Some(Ok(m)) => {
                             let topic = m.topic().to_string();
@@ -195,17 +235,30 @@ impl EventBusBackend for KafkaEventBusBackend {
                             }
                         }
                         Some(Err(e)) => {
-                            error!("Background Kafka consume error: {}", e);
+                            let msg = e.to_string();
+                            if last_err.as_ref() == Some(&msg) {
+                                repeated += 1;
+                                if repeated % 20 == 0 { // periodic reminder to avoid silent failures
+                                    warn!(repeats = repeated, err = %msg, bootstrap = %bootstrap, "Repeating Kafka consume error");
+                                }
+                            } else {
+                                error!(err = %msg, bootstrap = %bootstrap, "Background Kafka consume error");
+                                last_err = Some(msg);
+                                repeated = 0;
+                            }
+                            std::thread::sleep(Duration::from_millis(200));
                         }
                     }
                 }
             }).map_err(|e| EventBusError::Other(format!("Failed to spawn background consumer: {}", e)))?;
+            self.thread_handle = Some(handle);
         }
         Ok(())
     }
     async fn disconnect(&mut self) -> Result<(), EventBusError> {
         info!("Disconnecting from Kafka");
-    self.bg_running.store(false, Ordering::SeqCst);
+        self.bg_running.store(false, Ordering::SeqCst);
+        if let Some(handle) = self.thread_handle.take() { let _ = handle.join(); }
         // Nothing special needed for disconnection, Kafka clients clean up on drop
         Ok(())
     }

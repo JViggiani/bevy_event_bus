@@ -6,12 +6,13 @@
 //! 3. Exposes a simple `setup()` returning a configured `KafkaEventBusBackend`.
 //! For now the integration test assumes an external Kafka is available on localhost:9092.
 
+use bevy::{prelude::App};
 use bevy_event_bus::{KafkaEventBusBackend, KafkaConfig, EventBusBackend};
 use once_cell::sync::Lazy;
 use std::process::Command;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use tracing::{info, info_span};
+use tracing::{info, warn, info_span};
 use rdkafka::producer::Producer as _;
 
 const DEFAULT_IMAGE: &str = "bitnami/kafka:latest";
@@ -164,29 +165,50 @@ pub struct SetupTimings {
     pub metadata_ms: u128,
 }
 
+/// Robust metadata readiness loop; returns (ok, elapsed_ms)
 fn wait_metadata(bootstrap: &str, max_wait: Duration) -> (bool, u128) {
     use rdkafka::config::ClientConfig;
     let span = info_span!("kafka_container.wait_metadata", bootstrap = bootstrap);
     let _g = span.enter();
     let start = Instant::now();
-    loop {
+    let mut attempt: u32 = 0;
+    let mut last_err: Option<String> = None;
+    let mut backoff = Duration::from_millis(60);
+    while start.elapsed() < max_wait {
+        attempt += 1;
         let mut cfg = ClientConfig::new();
         cfg.set("bootstrap.servers", bootstrap);
-        // Low timeout for metadata attempts
         if let Ok(producer) = cfg.create::<rdkafka::producer::BaseProducer>() {
-            match producer.client().fetch_metadata(None, Duration::from_millis(300)) {
+            match producer.client().fetch_metadata(None, Duration::from_millis(600)) {
                 Ok(md) => {
-                    info!(brokers = md.brokers().len(), elapsed_ms = start.elapsed().as_millis(), "Metadata available");
+                    info!(brokers = md.brokers().len(), attempts = attempt, elapsed_ms = start.elapsed().as_millis(), "Metadata available");
                     return (true, start.elapsed().as_millis());
                 }
-                Err(_) => { /* retry */ }
+                Err(e) => {
+                    let msg = e.to_string();
+                    if last_err.as_ref() != Some(&msg) { warn!(attempt, err = %msg, "Metadata attempt failed"); }
+                    last_err = Some(msg);
+                }
             }
         }
-    if start.elapsed() >= max_wait { break; }
-    std::thread::sleep(Duration::from_millis(120));
+        std::thread::sleep(backoff);
+        // exponential backoff capped
+        backoff = std::cmp::min(backoff * 2, Duration::from_millis(500));
     }
-    info!(elapsed_ms = start.elapsed().as_millis(), "Metadata NOT ready before timeout");
+    warn!(attempts = attempt, elapsed_ms = start.elapsed().as_millis(), "Metadata NOT ready before timeout");
     (false, start.elapsed().as_millis())
+}
+
+/// Ensure Kafka is fully ready (TCP + metadata) before tests proceed. Returns elapsed ms.
+#[allow(dead_code)]
+pub fn ensure_kafka_ready(bootstrap: &str) -> u128 {
+    // Already did TCP wait in setup path; here we re-verify quickly and then demand metadata.
+    let meta_wait_cap = Duration::from_secs(10); // allow up to 10s in CI / cold pull
+    let (ok, elapsed) = wait_metadata(bootstrap, meta_wait_cap);
+    if !ok {
+        panic!("Kafka metadata not ready after {}ms for {}", elapsed, bootstrap);
+    }
+    elapsed
 }
 
 pub fn setup() -> (KafkaEventBusBackend, String, SetupTimings) {
@@ -205,11 +227,11 @@ pub fn setup() -> (KafkaEventBusBackend, String, SetupTimings) {
     }
     let wait_ms = wait_start.elapsed().as_millis();
 
-    // Metadata readiness (allow a few seconds if container freshly started)
-    // Aggressively lower metadata wait; most brokers answer < 1s once TCP up.
-    let (metadata_ok, metadata_ms) = wait_metadata(&bootstrap, Duration::from_millis(1200));
+    // Require metadata readiness (avoid noisy connect errors later)
+    // Allow more generous window for fresh Kafka container internal initialization (KRaft can take >10s cold)
+    let (metadata_ok, metadata_ms) = wait_metadata(&bootstrap, Duration::from_secs(15));
     if !metadata_ok {
-        info!("Proceeding without confirmed metadata (will retry lazily)");
+        panic!("Kafka metadata not ready at {} after {}ms", bootstrap, metadata_ms);
     }
 
     // Build config with shorter timeout for quicker negative path
@@ -235,6 +257,6 @@ pub fn setup() -> (KafkaEventBusBackend, String, SetupTimings) {
         connect_ms,
         metadata_ms,
     };
-    info!(?timings, "Kafka test setup complete");
+    info!(?timings, "Kafka test setup complete (ready)");
     (backend, bootstrap, timings)
 }

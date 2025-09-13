@@ -40,17 +40,18 @@ impl<'w, 's, T: BusEvent + Event> EventBusReader<'w, 's, T> {
     /// Read events from a specific topic and from internal Bevy events
     pub fn read(&mut self, topic: &str) -> Result<Box<dyn Iterator<Item = &T> + '_>, EventBusError> {
         // Prefer drained buffers (background mode)
-        let mut external_events: Vec<T> = Vec::new();
-        if let Some(drained) = &mut self.drained {
+        let external_events: Vec<T> = if let Some(drained) = &mut self.drained {
+            let mut external_events: Vec<T> = Vec::new();
             if let Some(raws) = drained.topics.remove(topic) {
                 for raw in raws.into_iter() {
                     if let Ok(ev) = serde_json::from_slice::<T>(&raw) { external_events.push(ev); }
                 }
             }
+            external_events
         } else {
             // Fallback to direct backend receive (legacy/blocking path)
-            external_events = runtime::block_on(self.backend.read().receive::<T>(topic))?;
-        }
+            runtime::block_on(self.backend.read().receive::<T>(topic))?
+        };
         
         // Also read from internal Bevy events
         let internal_events: Vec<_> = self.events.read().cloned().collect();
@@ -96,4 +97,9 @@ impl<'w, 's, T: BusEvent + Event> EventBusReader<'w, 's, T> {
     pub fn is_empty(&self) -> bool {
         self.event_buffer.is_empty() && self.events.is_empty()
     }
+}
+
+#[cfg(test)]
+mod tests {
+    // (Intentionally left empty; integration tests cover behavior.)
 }
