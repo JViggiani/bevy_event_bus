@@ -11,6 +11,7 @@ use tracing::{info, error};
 use std::fmt::Debug;
 
 use crate::{EventBusBackend, EventBusError};
+use async_trait::async_trait;
 
 /// Configuration for Kafka backend
 #[derive(Clone, Debug)]
@@ -117,12 +118,10 @@ impl Clone for KafkaEventBusBackend {
     }
 }
 
+#[async_trait]
 impl EventBusBackend for KafkaEventBusBackend {
-    fn clone_box(&self) -> Box<dyn EventBusBackend> {
-        Box::new(self.clone())
-    }
-    
-    fn connect(&mut self) -> Result<(), EventBusError> {
+    fn clone_box(&self) -> Box<dyn EventBusBackend> { Box::new(self.clone()) }
+    async fn connect(&mut self) -> Result<(), EventBusError> {
         info!("Initializing Kafka backend (lazy connect) for {}", self.config.bootstrap_servers);
         // rdkafka lazily connects on first use; we simply attempt a lightweight operation by fetching metadata, but
         // ignore errors for now to allow tests to spin up the container concurrently.
@@ -140,27 +139,23 @@ impl EventBusBackend for KafkaEventBusBackend {
         }
         Ok(())
     }
-    
-    fn disconnect(&mut self) -> Result<(), EventBusError> {
+    async fn disconnect(&mut self) -> Result<(), EventBusError> {
         info!("Disconnecting from Kafka");
         // Nothing special needed for disconnection, Kafka clients clean up on drop
         Ok(())
     }
-    
-    fn send_serialized(&self, event_json: &[u8], topic: &str) -> Result<(), EventBusError> {
+    async fn send_serialized(&self, event_json: &[u8], topic: &str) -> Result<(), EventBusError> {
         let record: BaseRecord<'_, (), [u8]> = BaseRecord::to(topic).payload(event_json);
         if let Err((e, _)) = self.producer.send(record) {
             return Err(EventBusError::Other(format!("Failed to enqueue message: {}", e)));
         }
-        // Poll/flush to ensure delivery (bounded wait)
-        let start = std::time::Instant::now();
-        while start.elapsed() < Duration::from_millis(self.config.timeout_ms as u64) {
+        // Fast-path flush: poll a few short times instead of full timeout_ms.
+        for _ in 0..20 { // ~200ms total
             self.producer.poll(Duration::from_millis(10));
         }
         Ok(())
     }
-    
-    fn receive_serialized(&self, topic: &str) -> Result<Vec<Vec<u8>>, EventBusError> {
+    async fn receive_serialized(&self, topic: &str) -> Result<Vec<Vec<u8>>, EventBusError> {
         // Auto-subscribe if not already
         let mut need_subscribe = false;
         {
@@ -180,9 +175,9 @@ impl EventBusBackend for KafkaEventBusBackend {
         
         let mut result = Vec::new();
         let start = std::time::Instant::now();
-        let timeout = Duration::from_millis(3000);
+        let timeout = Duration::from_millis(500); // reduced for test responsiveness
         while start.elapsed() < timeout {
-            match self.consumer.as_ref().poll(Duration::from_millis(100)) {
+            match self.consumer.as_ref().poll(Duration::from_millis(50)) {
                 None => { /* no message this tick */ }
                 Some(Ok(message)) => {
                     if message.topic() == topic {
@@ -196,8 +191,7 @@ impl EventBusBackend for KafkaEventBusBackend {
         }
         Ok(result)
     }
-    
-    fn subscribe(&mut self, topic: &str) -> Result<(), EventBusError> {
+    async fn subscribe(&mut self, topic: &str) -> Result<(), EventBusError> {
         let mut subscriptions = self.subscriptions.lock().unwrap();
         
         // Only subscribe if we haven't already
@@ -222,8 +216,7 @@ impl EventBusBackend for KafkaEventBusBackend {
         
         Ok(())
     }
-    
-    fn unsubscribe(&mut self, topic: &str) -> Result<(), EventBusError> {
+    async fn unsubscribe(&mut self, topic: &str) -> Result<(), EventBusError> {
         let mut subscriptions = self.subscriptions.lock().unwrap();
         if subscriptions.remove(topic) {
             let remaining: Vec<&str> = subscriptions.iter().map(|s| s.as_str()).collect();
@@ -235,6 +228,6 @@ impl EventBusBackend for KafkaEventBusBackend {
             }
             info!("Unsubscribed from Kafka topic: {}", topic);
         }
-        Ok(())
+    Ok(())
     }
 }

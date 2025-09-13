@@ -29,6 +29,7 @@ pub use backends::kafka_backend::{KafkaEventBusBackend, KafkaConfig};
 pub use bevy_event_bus_derive::ExternalBusEvent;
 pub use registration::{EVENT_REGISTRY};
 pub use runtime::{block_on, runtime};
+pub use runtime::{SharedRuntime, ensure_runtime};
 
 /// Re-export common items for convenience
 pub mod prelude {

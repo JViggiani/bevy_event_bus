@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use crate::{BusEvent, backends::{EventBusBackendResource, EventBusBackendExt}, EventBusError};
+use crate::{BusEvent, backends::{EventBusBackendResource, EventBusBackendExt}, EventBusError, runtime};
 
 /// Iterator over events received from the event bus
 pub struct EventBusIterator<'a, T: BusEvent> {
@@ -39,7 +39,7 @@ impl<'w, 's, T: BusEvent + Event> EventBusReader<'w, 's, T> {
     /// Read events from a specific topic and from internal Bevy events
     pub fn read(&mut self, topic: &str) -> Result<Box<dyn Iterator<Item = &T> + '_>, EventBusError> {
         // Read from the external bus
-    let external_events = self.backend.read().receive::<T>(topic)?;
+    let external_events = runtime::block_on(self.backend.read().receive::<T>(topic))?;
         
         // Also read from internal Bevy events
         let internal_events: Vec<_> = self.events.read().cloned().collect();

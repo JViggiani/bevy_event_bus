@@ -65,7 +65,7 @@ fn test_basic_kafka_event_bus() {
     let recv_span = info_span!("reader.poll");
     let _rg = recv_span.enter();
     let start_poll = std::time::Instant::now();
-    let timeout = std::time::Duration::from_secs(5); // overall test speed target
+    let timeout = std::time::Duration::from_secs(2);
     let mut frames = 0u32;
     loop {
         frames += 1;

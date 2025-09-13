@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use crate::{BusEvent, backends::{EventBusBackendResource, EventBusBackendExt}, EventBusError};
+use crate::{BusEvent, backends::{EventBusBackendResource, EventBusBackendExt}, EventBusError, runtime};
 
 /// Writes events to both internal Bevy events and external message broker topics
 #[derive(bevy::ecs::system::SystemParam)]
@@ -13,7 +13,7 @@ impl<'w, T: BusEvent + Event> EventBusWriter<'w, T> {
     /// Send an event to a specific topic and to internal Bevy events
     pub fn send(&mut self, topic: &str, event: T) -> Result<(), EventBusError> {
         // Send to external event bus
-    if let Err(e) = self.backend.read().send(&event, topic) {
+    if let Err(e) = runtime::block_on(self.backend.read().send(&event, topic)) {
             tracing::error!("Failed to send event to topic {}: {:?}", topic, e);
             return Err(e);
         }
@@ -29,7 +29,7 @@ impl<'w, T: BusEvent + Event> EventBusWriter<'w, T> {
         
         // Send each event to the external bus
         for event in &events {
-            if let Err(e) = self.backend.read().send(event, topic) {
+            if let Err(e) = runtime::block_on(self.backend.read().send(event, topic)) {
                 tracing::error!("Failed to send event to topic {}: {:?}", topic, e);
                 return Err(e);
             }

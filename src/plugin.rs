@@ -5,9 +5,10 @@ use std::any::TypeId;
 use tracing::info;
 
 use crate::{
-    BusEvent, 
+    BusEvent,
     backends::{EventBusBackend, EventBusBackendResource},
-    registration::EVENT_REGISTRY
+    registration::EVENT_REGISTRY,
+    runtime::{ensure_runtime, block_on},
 };
 
 /// Tracks registered event types
@@ -38,17 +39,18 @@ pub struct EventBusPlugins<B: EventBusBackend>(pub B);
 
 impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
     fn build(&self, app: &mut App) {
-        // Add the core plugin
-        app.add_plugins(EventBusPlugin);
+    // Add the core plugin and ensure runtime exists
+    app.add_plugins(EventBusPlugin);
+    ensure_runtime(app);
         
         // Create and add the backend as a resource
-    let boxed = self.0.clone_box();
-    // boxed is Box<dyn EventBusBackend>; EventBusBackendResource::new expects concrete type implementing trait.
-    // Provide a helper constructor that accepts Box<dyn EventBusBackend>.
-    app.insert_resource(EventBusBackendResource::from_box(boxed));
-    // Connect
-    let backend_res = app.world().get_resource::<EventBusBackendResource>().unwrap().clone();
-    let _ = { backend_res.write().connect() };
+        let boxed = self.0.clone_box();
+        app.insert_resource(EventBusBackendResource::from_box(boxed));
+        // Connect asynchronously (blocking for now until background tasks introduced)
+        if let Some(backend_res) = app.world().get_resource::<EventBusBackendResource>().cloned() {
+            let mut guard = backend_res.write();
+            let _ = block_on(guard.connect());
+        }
     }
 }
 

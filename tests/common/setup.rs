@@ -182,8 +182,8 @@ fn wait_metadata(bootstrap: &str, max_wait: Duration) -> (bool, u128) {
                 Err(_) => { /* retry */ }
             }
         }
-        if start.elapsed() >= max_wait { break; }
-        std::thread::sleep(Duration::from_millis(200));
+    if start.elapsed() >= max_wait { break; }
+    std::thread::sleep(Duration::from_millis(120));
     }
     info!(elapsed_ms = start.elapsed().as_millis(), "Metadata NOT ready before timeout");
     (false, start.elapsed().as_millis())
@@ -206,7 +206,8 @@ pub fn setup() -> (KafkaEventBusBackend, String, SetupTimings) {
     let wait_ms = wait_start.elapsed().as_millis();
 
     // Metadata readiness (allow a few seconds if container freshly started)
-    let (metadata_ok, metadata_ms) = wait_metadata(&bootstrap, Duration::from_secs(12));
+    // Aggressively lower metadata wait; most brokers answer < 1s once TCP up.
+    let (metadata_ok, metadata_ms) = wait_metadata(&bootstrap, Duration::from_millis(1200));
     if !metadata_ok {
         info!("Proceeding without confirmed metadata (will retry lazily)");
     }
@@ -222,7 +223,7 @@ pub fn setup() -> (KafkaEventBusBackend, String, SetupTimings) {
 
     let connect_start = Instant::now();
     let mut backend = KafkaEventBusBackend::new(config);
-    if let Err(e) = backend.connect() {
+    if let Err(e) = bevy_event_bus::block_on(backend.connect()) {
         panic!("Kafka connect_error: {:?}", e);
     }
     let connect_ms = connect_start.elapsed().as_millis();
