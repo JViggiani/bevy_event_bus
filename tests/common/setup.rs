@@ -6,7 +6,6 @@
 //! 3. Exposes a simple `setup()` returning a configured `KafkaEventBusBackend`.
 //! For now the integration test assumes an external Kafka is available on localhost:9092.
 
-use bevy::{prelude::App};
 use bevy_event_bus::{KafkaEventBusBackend, KafkaConfig, EventBusBackend};
 use once_cell::sync::Lazy;
 use std::process::Command;

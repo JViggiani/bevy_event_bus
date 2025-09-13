@@ -12,7 +12,6 @@ use std::fmt::Debug;
 
 use crate::{EventBusBackend, EventBusError, resources::IncomingMessage};
 use crossbeam_channel::{bounded, Sender, Receiver};
-use std::thread;
 use std::sync::atomic::{AtomicBool, Ordering};
 use async_trait::async_trait;
 
@@ -53,7 +52,8 @@ pub struct KafkaEventBusBackend {
     sender: Option<Sender<IncomingMessage>>,
     receiver: Option<Receiver<IncomingMessage>>,
     dropped: Arc<std::sync::atomic::AtomicUsize>,
-    thread_handle: Option<std::thread::JoinHandle<()>>,
+    // Tokio task handle for background consumer
+    task_abort: Option<tokio::task::AbortHandle>,
 }
 
 impl std::fmt::Debug for KafkaEventBusBackend {
@@ -115,7 +115,7 @@ impl KafkaEventBusBackend {
             sender: None,
             receiver: None,
             dropped: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            thread_handle: None,
+            task_abort: None,
         }
     }
 }
@@ -131,7 +131,7 @@ impl Clone for KafkaEventBusBackend {
             sender: self.sender.clone(),
             receiver: None, // receiver cannot be cloned (single consumer side)
             dropped: self.dropped.clone(),
-            thread_handle: None, // do not clone thread handle
+            task_abort: None, // task handle not cloned
         }
     }
 }
@@ -145,7 +145,7 @@ impl Drop for KafkaEventBusBackend {
     fn drop(&mut self) {
         // Ensure background thread stops cleanly to avoid late shutdown error spam
         if self.bg_running.swap(false, Ordering::SeqCst) {
-            if let Some(handle) = self.thread_handle.take() { let _ = handle.join(); }
+            if let Some(abort) = self.task_abort.take() { abort.abort(); }
         }
         // Best-effort flush (ignore errors)
         let _ = self.producer.flush(Duration::from_millis(200));
@@ -168,7 +168,7 @@ impl EventBusBackend for KafkaEventBusBackend {
         let deadline = Duration::from_secs(5);
         let mut attempt: u32 = 0;
         let mut last_err: Option<String> = None;
-        while start.elapsed() < deadline {
+    while start.elapsed() < deadline {
             attempt += 1;
             match self.producer.client().fetch_metadata(None, Duration::from_millis(700)) {
                 Ok(md) => {
@@ -181,7 +181,7 @@ impl EventBusBackend for KafkaEventBusBackend {
                         debug!(attempt, err = %msg, "Kafka metadata attempt failed");
                     }
                     last_err = Some(msg);
-                    std::thread::sleep(Duration::from_millis(120));
+            tokio::time::sleep(Duration::from_millis(120)).await;
                 }
             }
         }
@@ -196,7 +196,7 @@ impl EventBusBackend for KafkaEventBusBackend {
                 return Err(EventBusError::Connection(format!("Failed to subscribe to topics: {}", e)));
             }
         }
-        // Spawn background consumer thread once
+        // Spawn background consumer task once (Tokio)
         if !self.bg_running.swap(true, Ordering::SeqCst) {
             let (tx, rx) = bounded::<IncomingMessage>(10_000);
             self.sender = Some(tx.clone());
@@ -206,16 +206,26 @@ impl EventBusBackend for KafkaEventBusBackend {
             let running = self.bg_running.clone();
             let dropped_counter = self.dropped.clone();
             let bootstrap = self.config.bootstrap_servers.clone();
-            // Note: dropped messages tracked downstream by comparing channel len + drained
-            let handle = thread::Builder::new().name("kafka_bg_consumer".into()).spawn(move || {
+            let rt = crate::runtime::runtime();
+            // spawn_blocking not needed; poll is non-blocking with small timeout, but we use spawn to keep simple
+            let task = rt.spawn(async move {
                 let mut last_err: Option<String> = None;
                 let mut repeated: u32 = 0;
+                let mut idle_backoff = Duration::from_millis(1);
+                let max_idle = Duration::from_millis(150);
+                let mut error_backoff = Duration::from_millis(50);
+                let max_error = Duration::from_millis(500);
                 while running.load(Ordering::Relaxed) {
-                    match consumer.as_ref().poll(Duration::from_millis(150)) {
-                        None => { /* idle */ }
+                    // Poll with zero timeout for responsiveness
+                    match consumer.as_ref().poll(Duration::from_millis(0)) {
+                        None => {
+                            // Exponential idle backoff
+                            tokio::time::sleep(idle_backoff).await;
+                            idle_backoff = std::cmp::min(idle_backoff * 2, max_idle);
+                        }
                         Some(Ok(m)) => {
+                            idle_backoff = Duration::from_millis(1); // reset on activity
                             let topic = m.topic().to_string();
-                            // Ensure we tracked subscription (auto-subscribe path can happen via reader later)
                             {
                                 let mut guard = subs.lock().unwrap();
                                 guard.insert(topic.clone());
@@ -238,27 +248,29 @@ impl EventBusBackend for KafkaEventBusBackend {
                             let msg = e.to_string();
                             if last_err.as_ref() == Some(&msg) {
                                 repeated += 1;
-                                if repeated % 20 == 0 { // periodic reminder to avoid silent failures
+                                if repeated % 20 == 0 {
                                     warn!(repeats = repeated, err = %msg, bootstrap = %bootstrap, "Repeating Kafka consume error");
                                 }
                             } else {
+                                error_backoff = Duration::from_millis(50); // reset on new error type
                                 error!(err = %msg, bootstrap = %bootstrap, "Background Kafka consume error");
                                 last_err = Some(msg);
                                 repeated = 0;
                             }
-                            std::thread::sleep(Duration::from_millis(200));
+                            tokio::time::sleep(error_backoff).await;
+                            error_backoff = std::cmp::min(error_backoff * 2, max_error);
                         }
                     }
                 }
-            }).map_err(|e| EventBusError::Other(format!("Failed to spawn background consumer: {}", e)))?;
-            self.thread_handle = Some(handle);
+            });
+            self.task_abort = Some(task.abort_handle());
         }
         Ok(())
     }
     async fn disconnect(&mut self) -> Result<(), EventBusError> {
         info!("Disconnecting from Kafka");
         self.bg_running.store(false, Ordering::SeqCst);
-        if let Some(handle) = self.thread_handle.take() { let _ = handle.join(); }
+        if let Some(abort) = self.task_abort.take() { abort.abort(); }
         // Nothing special needed for disconnection, Kafka clients clean up on drop
         Ok(())
     }
