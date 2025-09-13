@@ -12,7 +12,7 @@ use once_cell::sync::Lazy;
 use std::process::Command;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use tracing::{info, warn, info_span};
+use tracing::{info, warn, debug, info_span};
 use rdkafka::producer::Producer as _;
 
 const DEFAULT_IMAGE: &str = "bitnami/kafka:latest";
@@ -166,6 +166,8 @@ pub struct SetupTimings {
 }
 
 /// Robust metadata readiness loop; returns (ok, elapsed_ms)
+static METADATA_READY: Lazy<std::sync::atomic::AtomicBool> = Lazy::new(|| std::sync::atomic::AtomicBool::new(false));
+
 fn wait_metadata(bootstrap: &str, max_wait: Duration) -> (bool, u128) {
     use rdkafka::config::ClientConfig;
     let span = info_span!("kafka_container.wait_metadata", bootstrap = bootstrap);
@@ -182,11 +184,16 @@ fn wait_metadata(bootstrap: &str, max_wait: Duration) -> (bool, u128) {
             match producer.client().fetch_metadata(None, Duration::from_millis(600)) {
                 Ok(md) => {
                     info!(brokers = md.brokers().len(), attempts = attempt, elapsed_ms = start.elapsed().as_millis(), "Metadata available");
+                    METADATA_READY.store(true, std::sync::atomic::Ordering::SeqCst);
                     return (true, start.elapsed().as_millis());
                 }
                 Err(e) => {
                     let msg = e.to_string();
-                    if last_err.as_ref() != Some(&msg) { warn!(attempt, err = %msg, "Metadata attempt failed"); }
+                    // Only escalate to warn after 3 distinct attempts or when >50% of max_wait elapsed
+                    let escalate = attempt >= 3 || start.elapsed() > max_wait / 2;
+                    if last_err.as_ref() != Some(&msg) {
+                        if escalate { warn!(attempt, err = %msg, "Metadata attempt failed"); } else { debug!(attempt, err = %msg, "Metadata attempt failed"); }
+                    }
                     last_err = Some(msg);
                 }
             }
@@ -227,11 +234,17 @@ pub fn setup() -> (KafkaEventBusBackend, String, SetupTimings) {
     }
     let wait_ms = wait_start.elapsed().as_millis();
 
-    // Require metadata readiness (avoid noisy connect errors later)
-    // Allow more generous window for fresh Kafka container internal initialization (KRaft can take >10s cold)
-    let (metadata_ok, metadata_ms) = wait_metadata(&bootstrap, Duration::from_secs(15));
-    if !metadata_ok {
-        panic!("Kafka metadata not ready at {} after {}ms", bootstrap, metadata_ms);
+    // Require metadata readiness once per test process; subsequent setup() calls skip wait.
+    let mut metadata_ms = 0u128;
+    if !METADATA_READY.load(std::sync::atomic::Ordering::SeqCst) {
+        // Allow more generous window for fresh Kafka container internal initialization (KRaft can take >10s cold)
+        let (metadata_ok, elapsed) = wait_metadata(&bootstrap, Duration::from_secs(15));
+        metadata_ms = elapsed;
+        if !metadata_ok {
+            panic!("Kafka metadata not ready at {} after {}ms", bootstrap, elapsed);
+        }
+    } else {
+        debug!("Metadata already confirmed ready earlier; skipping wait");
     }
 
     // Build config with shorter timeout for quicker negative path
