@@ -1,0 +1,409 @@
+#############################################
+# bevy_event_bus Future Test Scenarios (BDD)
+# Each scenario written in Gherkin-like style.
+# Roadmap Ref: refers to the corresponding roadmap section (see updated roadmap to be stored separately by user).
+# Conventions:
+#  - <...> dynamic placeholder (e.g. <topic>, <EventType>)
+#  - "bus" refers to the library's Kafka bridge.
+#  - Metadata: per-event struct the library injects (topic, timestamp, headers, offset, partition, key(optional)).
+#############################################
+
+Feature: Basic single runtime initialization
+	Roadmap Ref: 1 Runtime
+	Scenario: Initialize runtime once
+		Given the app adds the EventBusPlugin
+		When the plugin builds
+		Then a shared Tokio runtime resource exists
+		And subsequent attempts to add the plugin do not create a second runtime
+	Scenario: Runtime accessible to other crates
+		Given bevy_persistence_database also requests a runtime
+		When both plugins are initialized
+		Then only one Tokio runtime is running
+
+Feature: Dynamic topic subscription (many-to-many)
+	Roadmap Ref: 2 Topics
+	Scenario: Subscribe to explicit list
+		Given config lists topics: alpha, beta, gamma
+		When the app starts
+		Then the consumer subscribes to all three
+	Scenario: Add topic at runtime
+		Given the bus is running with topics alpha, beta
+		When a system requests subscription to topic gamma
+		Then the consumer updates its subscription without restart
+	Scenario: Duplicate subscription request
+		Given topic alpha is already subscribed
+		When a system requests alpha again
+		Then no redundant network call is made
+	Scenario: Wildcard expansion (future capability)
+		Given a pattern world.* is provided
+		When the bus initializes
+		Then underlying Kafka subscription uses regex if enabled
+		And events from world.intents and world.due are delivered
+	Scenario: Unsubscribe
+		Given topics alpha and beta subscribed
+		When no systems retain interest in beta
+		Then the consumer unsubscribes from beta lazily (future) or flags it dormant
+
+Feature: Event ingestion to Bevy events
+	Roadmap Ref: 3 Ingestion
+	Scenario: Message arrival creates Bevy event
+		Given a message arrives on topic alpha
+		And a registered event decoder matches it
+		When ingestion pipeline runs
+		Then an instance of the event type is inserted into Events<MyEvent>
+	Scenario: Multiple event types from one topic
+		Given topic alpha carries JSON objects of type FooEvent and BarEvent
+		When two messages (Foo, Bar) arrive
+		Then both FooEvent and BarEvent appear in their respective readers
+	Scenario: One event type from multiple topics
+		Given FooEvent is declared decodable from topics alpha and beta
+		When messages arrive on alpha and beta
+		Then both produce FooEvent instances
+	Scenario: Unknown format skipped
+		Given a malformed JSON payload arrives
+		When decoding fails
+		Then the message is logged at warn
+		And no Bevy event is emitted
+	Scenario: Headers forwarded
+		Given a message has headers trace-id=123
+		When converted to a Bevy event
+		Then metadata contains trace-id=123
+
+Feature: Metadata propagation
+	Roadmap Ref: 4 Metadata
+	Scenario: Topic name available
+		Given a consumed message from topic alpha
+		Then event metadata.topic == "alpha"
+	Scenario: Partition and offset recorded
+		Given a consumed message with partition 2 and offset 57
+		Then metadata.partition == 2
+		And metadata.offset == 57
+	Scenario: Receive timestamp captured
+		When message is ingested
+		Then metadata.receive_timestamp is set to a monotonic instant
+	Scenario: User extension field
+		Given user code extends metadata with classification
+		When an event is emitted
+		Then classification is accessible to systems
+
+Feature: Producer send semantics
+	Roadmap Ref: 5 Producer
+	Scenario: Explicit topic send
+		Given a writer resource
+		When writer.send("alpha", FooEvent)
+		Then a Kafka record is produced to topic alpha
+	Scenario: Delivery confirmation (future optional)
+		When writer.send returns Ok
+		Then record is accepted into producer buffer
+		And eventual delivery error is logged asynchronously if failure
+	Scenario: Keyed send
+		Given a key extractor closure is configured
+		When writer.send("alpha", FooEvent)
+		Then produce uses the key to preserve world ordering
+	Scenario: Large payload segmentation (future)
+		Given a payload exceeds max.bytes threshold
+		Then send fails with error LargeMessageNotSupported unless chunking feature enabled
+
+Feature: Background consumer task
+	Roadmap Ref: 6 Consumption Task
+	Scenario: Poll loop latency target
+		Given poll interval configured 50ms
+		When messages arrive
+		Then average latency from Kafka fetch to Bevy event insert < 2 * interval
+	Scenario: Backoff when idle
+		Given no messages for 2s
+		Then poll interval increases up to max backoff
+	Scenario: Burst drain cap
+		Given 500 messages arrive simultaneously
+		And max_events_per_frame=100
+		When frame drain system runs
+		Then only 100 events are inserted this frame
+		And remaining 400 stay queued
+	Scenario: Graceful shutdown
+		When App exits
+		Then consumer task joins within shutdown timeout
+
+Feature: Offset commit strategy
+	Roadmap Ref: 7 Offsets
+	Scenario: Commit after enqueue
+		Given commit mode Immediate
+		When event enqueued
+		Then offset is committed
+	Scenario: Deferred commit (future)
+		Given commit mode Deferred
+		When event enqueued
+		Then offset not yet committed
+		When frame end system runs
+		Then committed offsets advance
+	Scenario: Retry commit on failure
+		Given broker transient error on commit
+		Then system retries with exponential backoff
+
+Feature: Error handling
+	Roadmap Ref: 8 Errors
+	Scenario: Deserialize error
+		Given invalid JSON message
+		Then error count metric increments (future) or warning log emitted
+	Scenario: Producer queue full
+		Given internal rdkafka queue full
+		When writer.send called
+		Then error ProducerQueueFull returned
+	Scenario: Consumer rebalance
+		Given group rebalance occurs
+		Then a debug log indicates revoked and assigned partitions
+	Scenario: Fatal error path
+		Given fatal Kafka error returned
+		Then plugin emits an internal FatalBusError event for user systems
+
+Feature: Dynamic decoder registration
+	Roadmap Ref: 9 Registration
+	Scenario: Late registration
+		Given decoder for FooEvent registered after plugin init
+		When matching message arrives
+		Then FooEvent still emitted
+	Scenario: Unregister decoder (future)
+		Given decoder removed
+		Then subsequent messages no longer emit FooEvent
+
+Feature: Throughput & performance baselines
+	Roadmap Ref: 10 Performance
+	Scenario: Single event latency baseline
+		When one event produced
+		Then end-to-end latency < 100ms on dev machine (tunable)
+	Scenario: Sustained throughput
+		Given 1000 events streamed over 10s
+		Then no frame exceeds budget of 4ms for drain system
+	Scenario: Memory bound queue
+		Given memory cap 10MB
+		When additional events exceed cap
+		Then oldest or newest messages dropped per policy
+
+Feature: Integration with persistence library
+	Roadmap Ref: 11 Integration
+	Scenario: Shared runtime reuse
+		Given persistence plugin initialized first
+		When event bus plugin initializes
+		Then it reuses existing runtime handle
+	Scenario: Reverse order
+		Given event bus plugin first
+		When persistence plugin initializes
+		Then it reuses the same runtime
+	Scenario: Concurrent DB + Kafka ops
+		Given a system triggers DB load and events arrive
+		Then neither operation starves the other
+
+Feature: Idempotency helper (optional future)
+	Roadmap Ref: 12 Idempotency
+	Scenario: Duplicate event id
+		Given two messages share event_id
+		When idempotency filter enabled
+		Then only first becomes Bevy event
+	Scenario: Expired dedupe window
+		Given event older than retention window
+		Then it is processed again
+
+Feature: User-defined classification
+	Roadmap Ref: 13 User Classification
+	Scenario: Attach classification
+		Given user sets classifier closure returning enum
+		When event emitted
+		Then metadata.classification == Some(EnumValue)
+	Scenario: Filter by classification system
+		Given a system only processes Outcome events
+		When mixed events emitted
+		Then system sees only those with classification == Outcome
+
+Feature: Graceful shutdown ordering
+	Roadmap Ref: 14 Shutdown
+	Scenario: Drain before exit
+		Given remaining 20 queued messages
+		When shutdown begins
+		Then bus drains and injects all before runtime halts
+	Scenario: Timeout abort
+		Given stuck poll call exceeds timeout
+		Then shutdown aborts after grace period and logs warning
+
+Feature: Flexible serialization codecs
+	Roadmap Ref: 15 Serialization
+	Scenario: JSON default
+		Given no codec specified
+		Then JSON serializer used
+	Scenario: Protobuf feature future
+		Given Protobuf codec configured
+		When event sent and received
+		Then binary payload round trips
+	Scenario: Unknown codec error
+		Given unregistered codec name
+		Then initialization fails with ConfigError
+
+Feature: Header-based routing (future)
+	Roadmap Ref: 16 Advanced Routing
+	Scenario: Multi-decode path
+		Given header event-type: Foo
+		Then FooEvent decoder selected
+	Scenario: Missing header
+		Given header absent
+		Then fallback decoder attempts JSON struct inference
+
+Feature: Security & isolation (future)
+	Roadmap Ref: 17 Security
+	Scenario: SASL auth
+		Given SASL credentials configured
+		When plugin connects
+		Then authentication succeeds and consumer starts
+	Scenario: TLS broker
+		Given TLS certs provided
+		Then connection uses TLS
+
+Feature: Rebalance resilience
+	Roadmap Ref: 18 Rebalance
+	Scenario: In-flight events during revoke
+		Given partition revoke occurs
+		When drain queue still has events from revoked partition
+		Then they remain processable (already fetched)
+	Scenario: Assign new partition
+		When assignment event processed
+		Then subscription metadata updates
+
+Feature: Logging minimalism
+	Roadmap Ref: 19 Logging
+	Scenario: Default warn level
+		Given no RUST_LOG set
+		Then library logs only warnings and errors
+	Scenario: Debug env var
+		Given BEVY_EVENT_BUS_DEBUG=1
+		Then poll cycle and throughput debug logs enabled
+
+Feature: Benchmark harness (future external)
+	Roadmap Ref: 20 Benchmark
+	Scenario: Synthetic load script
+		Given harness publishes 10k events
+		Then average drain frame time remains within SLA
+
+Feature: Configuration validation
+	Roadmap Ref: 21 Config
+	Scenario: Missing bootstrap servers
+		Given config empty
+		Then startup fails fast with ConfigError
+	Scenario: Empty topic list
+		Given no initial topics
+		Then consumer starts with empty subscription and logs info
+	Scenario: Negative max_events_per_frame
+		Given invalid negative value
+		Then config normalization sets it to default
+
+Feature: Event filtering at ingest (future)
+	Roadmap Ref: 22 Filtering
+	Scenario: Predicate drop
+		Given user predicate rejects event
+		Then no Bevy event emitted
+	Scenario: Predicate accept
+		Given user predicate returns true
+		Then event emitted
+
+Feature: Backpressure policy (future)
+	Roadmap Ref: 23 Backpressure
+	Scenario: Drop newest
+		Given policy DropNewest and queue full
+		When new message arrives
+		Then new message discarded
+	Scenario: Drop oldest
+		Given policy DropOldest
+		Then oldest removed and new appended
+
+Feature: Time-to-first-event measurement (instrument only)
+	Roadmap Ref: 24 Instrumentation
+	Scenario: Record TTF metric
+		When first event arrives after startup
+		Then time delta logged once
+
+Feature: Multi-app coexistence
+	Roadmap Ref: 25 Multi-App
+	Scenario: Two Bevy Apps in one process
+		Given both add plugin
+		Then each has isolated consumer and queue
+	Scenario: Shared runtime across apps
+		Given runtime injection configured global
+		Then both apps reuse runtime
+
+Feature: Hot reload decoder (future, dev-only)
+	Roadmap Ref: 26 Dev UX
+	Scenario: Replace decoder function
+		Given decoder function swapped
+		Then new messages use new decoder without restart
+
+Feature: Partition key strategy (future)
+	Roadmap Ref: 27 Partitioning
+	Scenario: Hash world_id
+		Given key extractor returns world_id
+		Then events with same world_id go to same partition
+
+Feature: Dead letter queue (future)
+	Roadmap Ref: 28 DLQ
+	Scenario: Poison message threshold
+		Given message fails decode 3 times
+		Then message forwarded to dlq.topic
+
+Feature: Header enrichment on send (future)
+	Roadmap Ref: 29 Header Enrich
+	Scenario: Inject trace id
+		Given tracing layer sets span id
+		When writer.send called
+		Then record headers include trace-id
+
+Feature: Scheduling fairness (future)
+	Roadmap Ref: 30 Fairness
+	Scenario: Interleave topics
+		Given queue holds messages from topics alpha and beta
+		And fairness enabled
+		Then drain alternates topics when possible
+
+Feature: Crash recovery semantics (future)
+	Roadmap Ref: 31 Recovery
+	Scenario: App crash after enqueue before commit (Immediate mode)
+		Then on restart message may reappear (at-least-once) and should be idempotent
+
+Feature: UTF-8 validation
+	Roadmap Ref: 32 Validation
+	Scenario: Non UTF-8 payload for JSON codec
+		Then decoding fails with InvalidUtf8 error
+
+Feature: Binary passthrough event (future)
+	Roadmap Ref: 33 Binary
+	Scenario: Binary codec registered
+		When binary payload arrives
+		Then event bytes accessible directly
+
+Feature: High clock skew tolerance
+	Roadmap Ref: 34 Timing
+	Scenario: System clock changes
+		Then receive_timestamp monotonic still increases (using monotonic clock)
+
+Feature: Config hot reload (future)
+	Roadmap Ref: 35 Hot Reload
+	Scenario: Update poll interval at runtime
+		Then background task applies new interval without restart
+
+Feature: Multi-tenant isolation
+	Roadmap Ref: 36 Multi-Tenant
+	Scenario: Topic namespace prefix per tenant
+		Then subscription list isolates tenants
+
+Feature: Graceful handling of slow consumer
+	Roadmap Ref: 37 Slow Consumer
+	Scenario: Drain slower than arrival
+		Then backlog size logged every N seconds
+
+Feature: Ordering guarantee per key
+	Roadmap Ref: 38 Ordering
+	Scenario: Two events same key
+		Then event order preserved in Bevy events
+
+Feature: JSON schema evolution (future)
+	Roadmap Ref: 39 Schema
+	Scenario: Additive field
+		Then older decoder still succeeds and ignores new field
+	Scenario: Removed field
+		Then decoder handles absent with default
+
+#############################################
