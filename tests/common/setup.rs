@@ -6,13 +6,16 @@
 //! 3. Exposes a simple `setup()` returning a configured `KafkaEventBusBackend`.
 //! For now the integration test assumes an external Kafka is available on localhost:9092.
 
-use bevy_event_bus::{KafkaEventBusBackend, KafkaConfig, EventBusBackend};
+use bevy_event_bus::{KafkaEventBusBackend, KafkaConfig};
 use once_cell::sync::Lazy;
 use std::process::Command;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use tracing::{info, warn, debug, info_span};
 use rdkafka::producer::Producer as _;
+use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
+use rdkafka::client::DefaultClientContext;
 
 const DEFAULT_IMAGE: &str = "bitnami/kafka:latest";
 const CONTAINER_NAME: &str = "bevy_event_bus_test_kafka";
@@ -247,19 +250,20 @@ pub fn setup() -> (KafkaEventBusBackend, String, SetupTimings) {
     }
 
     // Build config with shorter timeout for quicker negative path
+    // Ensure each backend created via setup() uses a distinct consumer group id so that
+    // writer and reader apps both receive all messages (Kafka replicates to distinct groups).
+    static GROUP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let unique = GROUP_COUNTER.fetch_add(1, AtomicOrdering::SeqCst);
     let config = KafkaConfig {
         bootstrap_servers: bootstrap.clone(),
-        group_id: format!("bevy_event_bus_test_{}", std::process::id()),
-        client_id: Some("bevy_event_bus_test_client".into()),
+        group_id: format!("bevy_event_bus_test_{}_{}", std::process::id(), unique),
+        client_id: Some(format!("bevy_event_bus_test_client_{}", unique)),
         timeout_ms: 3000, // modest timeout
         additional_config: Default::default(),
     };
 
     let connect_start = Instant::now();
-    let mut backend = KafkaEventBusBackend::new(config);
-    if let Err(e) = bevy_event_bus::block_on(backend.connect()) {
-        panic!("Kafka connect_error: {:?}", e);
-    }
+    let backend = KafkaEventBusBackend::new(config);
     let connect_ms = connect_start.elapsed().as_millis();
 
     let timings = SetupTimings {
@@ -271,4 +275,72 @@ pub fn setup() -> (KafkaEventBusBackend, String, SetupTimings) {
     };
     info!(?timings, "Kafka test setup complete (ready)");
     (backend, bootstrap, timings)
+}
+
+/// Same as `setup` but allows providing a unique suffix for the consumer group id so that
+/// multiple backends in the same test process do not share a group (ensuring each receives all messages).
+pub fn setup_with_group_suffix(suffix: &str) -> (KafkaEventBusBackend, String, SetupTimings) {
+    let total_start = Instant::now();
+    let ensure_start = Instant::now();
+    let container_bootstrap = ensure_container();
+    let ensure_ms = ensure_start.elapsed().as_millis();
+    let bootstrap = container_bootstrap
+        .unwrap_or_else(|| std::env::var("KAFKA_BOOTSTRAP_SERVERS").unwrap_or_else(|_| "localhost:9092".into()));
+    bevy_event_bus::runtime();
+    let wait_start = Instant::now();
+    if !wait_ready(&bootstrap) { panic!("Kafka not TCP ready at {}", bootstrap); }
+    let wait_ms = wait_start.elapsed().as_millis();
+    let mut metadata_ms = 0u128;
+    if !METADATA_READY.load(std::sync::atomic::Ordering::SeqCst) {
+        let (ok, elapsed) = wait_metadata(&bootstrap, Duration::from_secs(15));
+        metadata_ms = elapsed; if !ok { panic!("Kafka metadata not ready after {}ms", elapsed); }
+    }
+    let config = KafkaConfig {
+        bootstrap_servers: bootstrap.clone(),
+        group_id: format!("bevy_event_bus_test_{}_{}", std::process::id(), suffix),
+        client_id: Some(format!("bevy_event_bus_test_client_{}", suffix)),
+        timeout_ms: 3000,
+        additional_config: Default::default(),
+    };
+    let connect_start = Instant::now();
+    let backend = KafkaEventBusBackend::new(config);
+    let connect_ms = connect_start.elapsed().as_millis();
+    let timings = SetupTimings { total_ms: total_start.elapsed().as_millis(), ensure_container_ms: ensure_ms, wait_ready_ms: wait_ms, connect_ms, metadata_ms };
+    (backend, bootstrap, timings)
+}
+
+/// Ensure a topic exists (idempotent) using Kafka Admin API. Best-effort; ignores 'topic already exists' errors.
+pub fn ensure_topic(bootstrap: &str, topic: &str, partitions: i32) {
+    let mut cfg = rdkafka::config::ClientConfig::new();
+    cfg.set("bootstrap.servers", bootstrap);
+    if let Ok(admin) = cfg.create::<AdminClient<DefaultClientContext>>() {
+        let new_topic = NewTopic::new(topic, partitions, TopicReplication::Fixed(1));
+        let opts = AdminOptions::new();
+    let fut = admin.create_topics([&new_topic], &opts);
+    if let Err(e) = bevy_event_bus::block_on(fut) {
+            let msg = e.to_string();
+            if !msg.contains("TopicAlreadyExists") { tracing::warn!(topic=%topic, err=%msg, "ensure_topic create failed"); }
+        }
+    } else {
+        tracing::warn!(topic=%topic, "ensure_topic could not build admin client");
+    }
+}
+
+/// Build a baseline Bevy `App` with the event bus plugins wired to a fresh Kafka backend from `setup()`.
+/// An optional customization closure can further configure the `App` (e.g., inserting resources, systems).
+/// This centralizes construction so tests share identical initialization semantics.
+pub fn build_basic_app<F>(customize: F) -> bevy::prelude::App
+where
+    F: FnOnce(&mut bevy::prelude::App),
+{
+    let (backend, _bootstrap, _timings) = setup();
+    let mut app = bevy::prelude::App::new();
+    app.add_plugins(bevy_event_bus::EventBusPlugins(backend, bevy_event_bus::PreconfiguredTopics::new(["default_topic"])));
+    customize(&mut app);
+    app
+}
+
+/// Convenience overload when no customization is needed.
+pub fn build_basic_app_simple() -> bevy::prelude::App {
+    build_basic_app(|_| {})
 }

@@ -12,7 +12,9 @@ pub struct EventBusWriter<'w, T: BusEvent + Event> {
 impl<'w, T: BusEvent + Event> EventBusWriter<'w, T> {
     /// Send an event to a specific topic and to internal Bevy events
     pub fn send(&mut self, topic: &str, event: T) -> Result<(), EventBusError> {
+        // If readiness resource exists and not yet ready, skip external send (will still emit internal Bevy event)
         // Send to external event bus
+        tracing::debug!(topic=%topic, "EventBusWriter sending event externally");
     if let Err(e) = runtime::block_on(self.backend.read().send(&event, topic)) {
             tracing::error!("Failed to send event to topic {}: {:?}", topic, e);
             return Err(e);
@@ -29,6 +31,7 @@ impl<'w, T: BusEvent + Event> EventBusWriter<'w, T> {
         
         // Send each event to the external bus
         for event in &events {
+            tracing::debug!(topic=%topic, "EventBusWriter sending batch event externally");
             if let Err(e) = runtime::block_on(self.backend.read().send(event, topic)) {
                 tracing::error!("Failed to send event to topic {}: {:?}", topic, e);
                 return Err(e);

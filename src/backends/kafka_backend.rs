@@ -118,6 +118,12 @@ impl KafkaEventBusBackend {
             task_abort: None,
         }
     }
+
+    /// Access to underlying config bootstrap servers (needed for admin topic creation in plugin)
+    pub fn bootstrap_servers(&self) -> &str { &self.config.bootstrap_servers }
+    #[allow(dead_code)]
+    pub fn group_id(&self) -> &str { &self.config.group_id }
+    pub fn current_subscriptions(&self) -> Vec<String> { self.subscriptions.lock().unwrap().iter().cloned().collect() }
 }
 
 impl Clone for KafkaEventBusBackend {
@@ -211,25 +217,14 @@ impl EventBusBackend for KafkaEventBusBackend {
             let task = rt.spawn(async move {
                 let mut last_err: Option<String> = None;
                 let mut repeated: u32 = 0;
-                let mut idle_backoff = Duration::from_millis(1);
-                let max_idle = Duration::from_millis(150);
-                let mut error_backoff = Duration::from_millis(50);
-                let max_error = Duration::from_millis(500);
+                let mut error_backoff = Duration::from_millis(100);
+                let max_error = Duration::from_millis(1000);
                 while running.load(Ordering::Relaxed) {
-                    // Poll with zero timeout for responsiveness
-                    match consumer.as_ref().poll(Duration::from_millis(0)) {
-                        None => {
-                            // Exponential idle backoff
-                            tokio::time::sleep(idle_backoff).await;
-                            idle_backoff = std::cmp::min(idle_backoff * 2, max_idle);
-                        }
+                    match consumer.as_ref().poll(Duration::from_millis(50)) {
+                        None => { /* timeout, loop */ }
                         Some(Ok(m)) => {
-                            idle_backoff = Duration::from_millis(1); // reset on activity
                             let topic = m.topic().to_string();
-                            {
-                                let mut guard = subs.lock().unwrap();
-                                guard.insert(topic.clone());
-                            }
+                            { subs.lock().unwrap().insert(topic.clone()); }
                             if let Some(payload) = m.payload() {
                                 let msg = IncomingMessage {
                                     topic,
@@ -239,20 +234,15 @@ impl EventBusBackend for KafkaEventBusBackend {
                                     payload: payload.to_vec(),
                                     timestamp: std::time::Instant::now(),
                                 };
-                                if tx.try_send(msg).is_err() {
-                                    dropped_counter.fetch_add(1, Ordering::Relaxed);
-                                }
+                                if tx.try_send(msg).is_err() { dropped_counter.fetch_add(1, Ordering::Relaxed); }
                             }
                         }
                         Some(Err(e)) => {
                             let msg = e.to_string();
                             if last_err.as_ref() == Some(&msg) {
                                 repeated += 1;
-                                if repeated % 20 == 0 {
-                                    warn!(repeats = repeated, err = %msg, bootstrap = %bootstrap, "Repeating Kafka consume error");
-                                }
+                                if repeated % 10 == 0 { warn!(repeats = repeated, err = %msg, bootstrap = %bootstrap, "Repeating Kafka consume error"); }
                             } else {
-                                error_backoff = Duration::from_millis(50); // reset on new error type
                                 error!(err = %msg, bootstrap = %bootstrap, "Background Kafka consume error");
                                 last_err = Some(msg);
                                 repeated = 0;
@@ -279,10 +269,12 @@ impl EventBusBackend for KafkaEventBusBackend {
         if let Err((e, _)) = self.producer.send(record) {
             return Err(EventBusError::Other(format!("Failed to enqueue message: {}", e)));
         }
-        // Fast-path flush: poll a few short times instead of full timeout_ms.
-        for _ in 0..20 { // ~200ms total
+        // Fast-path flush: poll more times to improve delivery reliability for burst batches in tests.
+        for _ in 0..40 { // ~400ms upper bound (usually exits earlier internally)
             self.producer.poll(Duration::from_millis(10));
         }
+        // Allow producer background delivery progress (slightly longer)
+        let _ = self.producer.flush(Duration::from_millis(150));
         Ok(())
     }
     async fn receive_serialized(&self, topic: &str) -> Result<Vec<Vec<u8>>, EventBusError> {
@@ -304,19 +296,19 @@ impl EventBusBackend for KafkaEventBusBackend {
         }
         
         let mut result = Vec::new();
-        let start = std::time::Instant::now();
-        let timeout = Duration::from_millis(500); // reduced for test responsiveness
-        while start.elapsed() < timeout {
-            match self.consumer.as_ref().poll(Duration::from_millis(50)) {
-                None => { /* no message this tick */ }
+        // Fast, non-blocking style receive: perform a small number of short polls (overall <100ms)
+        // to satisfy startup fallback path without stalling frames for idle topics.
+        for i in 0..2 { // at most ~40ms but likely exit on first iteration
+            match self.consumer.as_ref().poll(Duration::from_millis(5)) {
+                None => { break; }
                 Some(Ok(message)) => {
                     if message.topic() == topic {
                         if let Some(payload) = message.payload() { result.push(payload.to_vec()); }
                     }
+                    // If we got something, allow a second quick poll for possible batch continuation
+                    if i == 0 { continue; } else { break; }
                 }
-                Some(Err(e)) => {
-                    error!("Error receiving Kafka message: {}", e);
-                }
+                Some(Err(e)) => { error!("Error receiving Kafka message: {}", e); break; }
             }
         }
         Ok(result)

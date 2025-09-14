@@ -18,10 +18,11 @@ mod resources;
 pub use backends::{EventBusBackend, EventBusBackendExt};
 pub use error::EventBusError;
 pub use event::BusEvent;
-pub use plugin::{EventBusPlugin, EventBusPlugins};
+pub use plugin::{EventBusPlugin, EventBusPlugins, PreconfiguredTopics};
+pub use plugin::{BackendReadyEvent, BackendDownEvent, BackendStatus};
 pub use readers::event_bus_reader::EventBusReader;
 pub use writers::event_bus_writer::EventBusWriter;
-pub use resources::{IncomingMessage, MessageQueue, DrainedTopicBuffers, EventBusConsumerConfig, ConsumerMetrics};
+pub use resources::{IncomingMessage, MessageQueue, DrainedTopicBuffers, EventBusConsumerConfig, ConsumerMetrics, DrainMetricsEvent};
 
 // Re-export backends
 #[cfg(feature = "kafka")]
@@ -50,6 +51,7 @@ pub mod prelude {
     DrainedTopicBuffers,
     EventBusConsumerConfig,
     ConsumerMetrics,
+    DrainMetricsEvent,
     };
     
     #[cfg(feature = "kafka")]
