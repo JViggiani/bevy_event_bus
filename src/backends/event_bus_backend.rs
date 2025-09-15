@@ -1,6 +1,6 @@
-use std::fmt::Debug;
-use async_trait::async_trait;
 use crate::{BusEvent, EventBusError};
+use async_trait::async_trait;
+use std::fmt::Debug;
 
 /// Trait defining the common interface for event bus backends
 #[async_trait]
@@ -20,8 +20,8 @@ pub trait EventBusBackend: Send + Sync + 'static + Debug {
 #[async_trait]
 pub trait EventBusBackendExt: EventBusBackend {
     async fn send<T: BusEvent>(&self, event: &T, topic: &str) -> Result<(), EventBusError> {
-        let serialized = serde_json::to_vec(event)
-            .map_err(|e| EventBusError::Serialization(e.to_string()))?;
+        let serialized =
+            serde_json::to_vec(event).map_err(|e| EventBusError::Serialization(e.to_string()))?;
         self.send_serialized(&serialized, topic).await
     }
     async fn receive<T: BusEvent>(&self, topic: &str) -> Result<Vec<T>, EventBusError> {

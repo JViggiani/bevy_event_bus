@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy_event_bus::ExternalBusEvent;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(ExternalBusEvent, Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct TestEvent {

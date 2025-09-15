@@ -1,6 +1,6 @@
-use std::time::Instant;
 use bevy::prelude::*;
 use crossbeam_channel::Receiver;
+use std::time::Instant;
 
 /// Raw incoming message captured by background consumer task
 #[derive(Debug, Clone)]
@@ -22,16 +22,25 @@ pub struct EventBusConsumerConfig {
     pub max_drain_millis: Option<u64>,
 }
 impl Default for EventBusConsumerConfig {
-    fn default() -> Self { Self { max_events_per_frame: None, max_drain_millis: None } }
+    fn default() -> Self {
+        Self {
+            max_events_per_frame: None,
+            max_drain_millis: None,
+        }
+    }
 }
 
 /// Channel receiver resource for background consumer -> main thread
 #[derive(Resource)]
-pub struct MessageQueue { pub receiver: Receiver<IncomingMessage> }
+pub struct MessageQueue {
+    pub receiver: Receiver<IncomingMessage>,
+}
 
 /// Per-topic raw payload buffers filled by drain system each frame
 #[derive(Resource, Default, Debug)]
-pub struct DrainedTopicBuffers { pub topics: std::collections::HashMap<String, Vec<Vec<u8>>> }
+pub struct DrainedTopicBuffers {
+    pub topics: std::collections::HashMap<String, Vec<Vec<u8>>>,
+}
 
 /// Basic consumer metrics (frame-scoped counters + cumulative stats)
 #[derive(Resource, Debug, Clone)]
@@ -47,7 +56,16 @@ pub struct ConsumerMetrics {
 }
 impl Default for ConsumerMetrics {
     fn default() -> Self {
-        Self { drained_last_frame: 0, remaining_channel_after_drain: 0, dropped_messages: 0, total_drained: 0, queue_len_start: 0, queue_len_end: 0, drain_duration_us: 0, idle_frames: 0 }
+        Self {
+            drained_last_frame: 0,
+            remaining_channel_after_drain: 0,
+            dropped_messages: 0,
+            total_drained: 0,
+            queue_len_start: 0,
+            queue_len_end: 0,
+            drain_duration_us: 0,
+            idle_frames: 0,
+        }
     }
 }
 

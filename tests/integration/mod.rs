@@ -1,7 +1,8 @@
-pub mod basic;
 pub mod background_queue_tests;
-pub mod multi_topic;
-pub mod ordering;
-pub mod multi_type;
+pub mod basic;
+pub mod exactly_once_delivery;
 pub mod frame_limits;
 pub mod idle_read;
+pub mod multi_topic;
+pub mod multi_type;
+pub mod ordering;

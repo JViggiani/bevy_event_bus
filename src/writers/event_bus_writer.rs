@@ -1,6 +1,10 @@
 use bevy::prelude::*;
 
-use crate::{BusEvent, backends::{EventBusBackendResource, EventBusBackendExt}, EventBusError, runtime};
+use crate::{
+    BusEvent, EventBusError,
+    backends::{EventBusBackendExt, EventBusBackendResource},
+    runtime,
+};
 
 /// Writes events to both internal Bevy events and external message broker topics
 #[derive(bevy::ecs::system::SystemParam)]
@@ -15,20 +19,24 @@ impl<'w, T: BusEvent + Event> EventBusWriter<'w, T> {
         // If readiness resource exists and not yet ready, skip external send (will still emit internal Bevy event)
         // Send to external event bus
         tracing::debug!(topic=%topic, "EventBusWriter sending event externally");
-    if let Err(e) = runtime::block_on(self.backend.read().send(&event, topic)) {
+        if let Err(e) = runtime::block_on(self.backend.read().send(&event, topic)) {
             tracing::error!("Failed to send event to topic {}: {:?}", topic, e);
             return Err(e);
         }
-        
+
         // Also send to internal Bevy events
         self.events.write(event.clone());
         Ok(())
     }
-    
+
     /// Send multiple events to a specific topic and to internal Bevy events
-    pub fn send_batch(&mut self, topic: &str, events: impl IntoIterator<Item = T>) -> Result<(), EventBusError> {
+    pub fn send_batch(
+        &mut self,
+        topic: &str,
+        events: impl IntoIterator<Item = T>,
+    ) -> Result<(), EventBusError> {
         let events: Vec<_> = events.into_iter().collect();
-        
+
         // Send each event to the external bus
         for event in &events {
             tracing::debug!(topic=%topic, "EventBusWriter sending batch event externally");
@@ -37,28 +45,28 @@ impl<'w, T: BusEvent + Event> EventBusWriter<'w, T> {
                 return Err(e);
             }
         }
-        
+
         // Also send to internal Bevy events
         for event in events {
             self.events.write(event);
         }
-        
+
         Ok(())
     }
-    
+
     /// Send the default value of the event to a specific topic
     pub fn send_default(&mut self, topic: &str) -> Result<(), EventBusError>
-    where 
-        T: Default
+    where
+        T: Default,
     {
-    self.send(topic, T::default())
+        self.send(topic, T::default())
     }
-    
+
     /// Try to send an event - silently continues if error occurs
     pub fn try_send(&mut self, topic: &str, event: T) -> bool {
         self.send(topic, event).is_ok()
     }
-    
+
     /// Try to send a batch of events - silently continues if error occurs
     pub fn try_send_batch(&mut self, topic: &str, events: impl IntoIterator<Item = T>) -> bool {
         self.send_batch(topic, events).is_ok()

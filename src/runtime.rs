@@ -16,10 +16,14 @@ fn init_runtime() -> Arc<Runtime> {
 }
 
 /// Get a reference to the shared Tokio runtime (Arc inside OnceCell)
-pub fn runtime() -> &'static Runtime { &*RUNTIME.get_or_init(init_runtime) }
+pub fn runtime() -> &'static Runtime {
+    &*RUNTIME.get_or_init(init_runtime)
+}
 
 /// Block on a future using the shared runtime.
-pub fn block_on<F: std::future::Future>(fut: F) -> F::Output { runtime().block_on(fut) }
+pub fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+    runtime().block_on(fut)
+}
 
 /// Bevy resource wrapper for a shared Tokio runtime (Arc for cheap clone into async tasks)
 #[derive(Resource, Clone)]
@@ -27,7 +31,9 @@ pub struct SharedRuntime(pub Arc<Runtime>);
 
 /// Ensure a SharedRuntime resource exists in the provided app.
 pub fn ensure_runtime(app: &mut App) {
-    if app.world().contains_resource::<SharedRuntime>() { return; }
+    if app.world().contains_resource::<SharedRuntime>() {
+        return;
+    }
     let arc = RUNTIME.get_or_init(init_runtime).clone();
     app.insert_resource(SharedRuntime(arc));
 }

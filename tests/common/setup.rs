@@ -6,16 +6,16 @@
 //! 3. Exposes a simple `setup()` returning a configured `KafkaEventBusBackend`.
 //! For now the integration test assumes an external Kafka is available on localhost:9092.
 
-use bevy_event_bus::{KafkaEventBusBackend, KafkaConfig};
+use bevy_event_bus::{KafkaConfig, KafkaEventBusBackend};
 use once_cell::sync::Lazy;
-use std::process::Command;
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
-use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
-use tracing::{info, warn, debug, info_span};
-use rdkafka::producer::Producer as _;
 use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
 use rdkafka::client::DefaultClientContext;
+use rdkafka::producer::Producer as _;
+use std::process::Command;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use std::time::{Duration, Instant};
+use tracing::{debug, info, info_span, warn};
 
 const DEFAULT_IMAGE: &str = "bitnami/kafka:latest";
 const CONTAINER_NAME: &str = "bevy_event_bus_test_kafka";
@@ -28,7 +28,8 @@ struct ContainerState {
     launched: bool,
 }
 
-static CONTAINER_STATE: Lazy<Mutex<ContainerState>> = Lazy::new(|| Mutex::new(ContainerState::default()));
+static CONTAINER_STATE: Lazy<Mutex<ContainerState>> =
+    Lazy::new(|| Mutex::new(ContainerState::default()));
 
 fn docker_available() -> bool {
     Command::new("docker")
@@ -40,8 +41,12 @@ fn docker_available() -> bool {
 
 fn ensure_container() -> Option<String> {
     // Respect external override early
-    if std::env::var("KAFKA_BOOTSTRAP_SERVERS").is_ok() { return None; }
-    if !docker_available() { return None; }
+    if std::env::var("KAFKA_BOOTSTRAP_SERVERS").is_ok() {
+        return None;
+    }
+    if !docker_available() {
+        return None;
+    }
 
     let mut state = CONTAINER_STATE.lock().unwrap();
     if state.launched {
@@ -54,7 +59,13 @@ fn ensure_container() -> Option<String> {
     // Check existing running container
     let detect_start = Instant::now();
     let ps = Command::new("docker")
-        .args(["ps", "--filter", &format!("name={}", CONTAINER_NAME), "--format", "{{.ID}}"])
+        .args([
+            "ps",
+            "--filter",
+            &format!("name={}", CONTAINER_NAME),
+            "--format",
+            "{{.ID}}",
+        ])
         .output()
         .ok();
     if let Some(out) = ps {
@@ -72,7 +83,9 @@ fn ensure_container() -> Option<String> {
     let pull_span = info_span!("kafka_container.pull");
     {
         let _pg = pull_span.enter();
-        let _ = Command::new("docker").args(["pull", DEFAULT_IMAGE]).status();
+        let _ = Command::new("docker")
+            .args(["pull", DEFAULT_IMAGE])
+            .status();
     }
 
     let run_span = info_span!("kafka_container.run");
@@ -81,23 +94,45 @@ fn ensure_container() -> Option<String> {
         let _rg = run_span.enter();
         Command::new("docker")
             .args([
-                "run", "-d", "--rm", "--name", CONTAINER_NAME,
-                "-p", "9092:9092", "-p", "9093:9093",
-                "-e", "KAFKA_ENABLE_KRAFT=yes",
-                "-e", "ALLOW_PLAINTEXT_LISTENER=yes",
-                "-e", "KAFKA_KRAFT_CLUSTER_ID=abcdefghijklmnopqrstuv",
-                "-e", "KAFKA_CFG_NODE_ID=0",
-                "-e", "KAFKA_CFG_PROCESS_ROLES=broker,controller",
-                "-e", "KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@localhost:9093",
-                "-e", "KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093",
-                "-e", "KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092",
-                "-e", "KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT",
-                "-e", "KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER",
-                "-e", "KAFKA_CFG_INTER_BROKER_LISTENER_NAME=PLAINTEXT",
-                "-e", "KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true",
-                "-e", "KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR=1",
-                "-e", "KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1",
-                "-e", "KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR=1",
+                "run",
+                "-d",
+                "--rm",
+                "--name",
+                CONTAINER_NAME,
+                "-p",
+                "9092:9092",
+                "-p",
+                "9093:9093",
+                "-e",
+                "KAFKA_ENABLE_KRAFT=yes",
+                "-e",
+                "ALLOW_PLAINTEXT_LISTENER=yes",
+                "-e",
+                "KAFKA_KRAFT_CLUSTER_ID=abcdefghijklmnopqrstuv",
+                "-e",
+                "KAFKA_CFG_NODE_ID=0",
+                "-e",
+                "KAFKA_CFG_PROCESS_ROLES=broker,controller",
+                "-e",
+                "KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@localhost:9093",
+                "-e",
+                "KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093",
+                "-e",
+                "KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092",
+                "-e",
+                "KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT",
+                "-e",
+                "KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER",
+                "-e",
+                "KAFKA_CFG_INTER_BROKER_LISTENER_NAME=PLAINTEXT",
+                "-e",
+                "KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true",
+                "-e",
+                "KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR=1",
+                "-e",
+                "KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1",
+                "-e",
+                "KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR=1",
                 DEFAULT_IMAGE,
             ])
             .output()
@@ -130,12 +165,20 @@ fn wait_ready(bootstrap: &str) -> bool {
     while start.elapsed() < timeout {
         attempts += 1;
         if TcpStream::connect(bootstrap).is_ok() {
-            info!(attempts, waited_ms = start.elapsed().as_millis(), "Kafka ready");
+            info!(
+                attempts,
+                waited_ms = start.elapsed().as_millis(),
+                "Kafka ready"
+            );
             return true;
         }
         std::thread::sleep(Duration::from_millis(250));
     }
-    info!(attempts, waited_ms = start.elapsed().as_millis(), "Kafka NOT ready before timeout");
+    info!(
+        attempts,
+        waited_ms = start.elapsed().as_millis(),
+        "Kafka NOT ready before timeout"
+    );
     false
 }
 
@@ -143,9 +186,15 @@ fn wait_ready(bootstrap: &str) -> bool {
 #[ctor::dtor]
 fn teardown_container() {
     // Skip if user wants to keep for debugging or external bootstrap used
-    if std::env::var("BEVY_EVENT_BUS_KEEP_KAFKA").ok().as_deref() == Some("1") { return; }
-    if std::env::var("KAFKA_BOOTSTRAP_SERVERS").is_ok() { return; }
-    if !docker_available() { return; }
+    if std::env::var("BEVY_EVENT_BUS_KEEP_KAFKA").ok().as_deref() == Some("1") {
+        return;
+    }
+    if std::env::var("KAFKA_BOOTSTRAP_SERVERS").is_ok() {
+        return;
+    }
+    if !docker_available() {
+        return;
+    }
     let state = CONTAINER_STATE.lock().unwrap().clone();
     if let Some(id) = state.id {
         let span = info_span!("kafka_container.teardown", container_id = %id);
@@ -168,7 +217,8 @@ pub struct SetupTimings {
 }
 
 /// Robust metadata readiness loop; returns (ok, elapsed_ms)
-static METADATA_READY: Lazy<std::sync::atomic::AtomicBool> = Lazy::new(|| std::sync::atomic::AtomicBool::new(false));
+static METADATA_READY: Lazy<std::sync::atomic::AtomicBool> =
+    Lazy::new(|| std::sync::atomic::AtomicBool::new(false));
 
 fn wait_metadata(bootstrap: &str, max_wait: Duration) -> (bool, u128) {
     use rdkafka::config::ClientConfig;
@@ -183,9 +233,17 @@ fn wait_metadata(bootstrap: &str, max_wait: Duration) -> (bool, u128) {
         let mut cfg = ClientConfig::new();
         cfg.set("bootstrap.servers", bootstrap);
         if let Ok(producer) = cfg.create::<rdkafka::producer::BaseProducer>() {
-            match producer.client().fetch_metadata(None, Duration::from_millis(600)) {
+            match producer
+                .client()
+                .fetch_metadata(None, Duration::from_millis(600))
+            {
                 Ok(md) => {
-                    info!(brokers = md.brokers().len(), attempts = attempt, elapsed_ms = start.elapsed().as_millis(), "Metadata available");
+                    info!(
+                        brokers = md.brokers().len(),
+                        attempts = attempt,
+                        elapsed_ms = start.elapsed().as_millis(),
+                        "Metadata available"
+                    );
                     METADATA_READY.store(true, std::sync::atomic::Ordering::SeqCst);
                     return (true, start.elapsed().as_millis());
                 }
@@ -194,7 +252,11 @@ fn wait_metadata(bootstrap: &str, max_wait: Duration) -> (bool, u128) {
                     // Only escalate to warn after 3 distinct attempts or when >50% of max_wait elapsed
                     let escalate = attempt >= 3 || start.elapsed() > max_wait / 2;
                     if last_err.as_ref() != Some(&msg) {
-                        if escalate { warn!(attempt, err = %msg, "Metadata attempt failed"); } else { debug!(attempt, err = %msg, "Metadata attempt failed"); }
+                        if escalate {
+                            warn!(attempt, err = %msg, "Metadata attempt failed");
+                        } else {
+                            debug!(attempt, err = %msg, "Metadata attempt failed");
+                        }
                     }
                     last_err = Some(msg);
                 }
@@ -204,7 +266,11 @@ fn wait_metadata(bootstrap: &str, max_wait: Duration) -> (bool, u128) {
         // exponential backoff capped
         backoff = std::cmp::min(backoff * 2, Duration::from_millis(500));
     }
-    warn!(attempts = attempt, elapsed_ms = start.elapsed().as_millis(), "Metadata NOT ready before timeout");
+    warn!(
+        attempts = attempt,
+        elapsed_ms = start.elapsed().as_millis(),
+        "Metadata NOT ready before timeout"
+    );
     (false, start.elapsed().as_millis())
 }
 
@@ -215,7 +281,10 @@ pub fn ensure_kafka_ready(bootstrap: &str) -> u128 {
     let meta_wait_cap = Duration::from_secs(10); // allow up to 10s in CI / cold pull
     let (ok, elapsed) = wait_metadata(bootstrap, meta_wait_cap);
     if !ok {
-        panic!("Kafka metadata not ready after {}ms for {}", elapsed, bootstrap);
+        panic!(
+            "Kafka metadata not ready after {}ms for {}",
+            elapsed, bootstrap
+        );
     }
     elapsed
 }
@@ -225,14 +294,18 @@ pub fn setup() -> (KafkaEventBusBackend, String, SetupTimings) {
     let ensure_start = Instant::now();
     let container_bootstrap = ensure_container();
     let ensure_ms = ensure_start.elapsed().as_millis();
-    let bootstrap = container_bootstrap
-        .unwrap_or_else(|| std::env::var("KAFKA_BOOTSTRAP_SERVERS").unwrap_or_else(|_| "localhost:9092".into()));
+    let bootstrap = container_bootstrap.unwrap_or_else(|| {
+        std::env::var("KAFKA_BOOTSTRAP_SERVERS").unwrap_or_else(|_| "localhost:9092".into())
+    });
 
     bevy_event_bus::runtime(); // initialize shared runtime early
 
     let wait_start = Instant::now();
     if !wait_ready(&bootstrap) {
-        panic!("Kafka not TCP ready at {}. Ensure docker is running or set KAFKA_BOOTSTRAP_SERVERS.", bootstrap);
+        panic!(
+            "Kafka not TCP ready at {}. Ensure docker is running or set KAFKA_BOOTSTRAP_SERVERS.",
+            bootstrap
+        );
     }
     let wait_ms = wait_start.elapsed().as_millis();
 
@@ -243,7 +316,10 @@ pub fn setup() -> (KafkaEventBusBackend, String, SetupTimings) {
         let (metadata_ok, elapsed) = wait_metadata(&bootstrap, Duration::from_secs(15));
         metadata_ms = elapsed;
         if !metadata_ok {
-            panic!("Kafka metadata not ready at {} after {}ms", bootstrap, elapsed);
+            panic!(
+                "Kafka metadata not ready at {} after {}ms",
+                bootstrap, elapsed
+            );
         }
     } else {
         debug!("Metadata already confirmed ready earlier; skipping wait");
@@ -279,35 +355,6 @@ pub fn setup() -> (KafkaEventBusBackend, String, SetupTimings) {
 
 /// Same as `setup` but allows providing a unique suffix for the consumer group id so that
 /// multiple backends in the same test process do not share a group (ensuring each receives all messages).
-pub fn setup_with_group_suffix(suffix: &str) -> (KafkaEventBusBackend, String, SetupTimings) {
-    let total_start = Instant::now();
-    let ensure_start = Instant::now();
-    let container_bootstrap = ensure_container();
-    let ensure_ms = ensure_start.elapsed().as_millis();
-    let bootstrap = container_bootstrap
-        .unwrap_or_else(|| std::env::var("KAFKA_BOOTSTRAP_SERVERS").unwrap_or_else(|_| "localhost:9092".into()));
-    bevy_event_bus::runtime();
-    let wait_start = Instant::now();
-    if !wait_ready(&bootstrap) { panic!("Kafka not TCP ready at {}", bootstrap); }
-    let wait_ms = wait_start.elapsed().as_millis();
-    let mut metadata_ms = 0u128;
-    if !METADATA_READY.load(std::sync::atomic::Ordering::SeqCst) {
-        let (ok, elapsed) = wait_metadata(&bootstrap, Duration::from_secs(15));
-        metadata_ms = elapsed; if !ok { panic!("Kafka metadata not ready after {}ms", elapsed); }
-    }
-    let config = KafkaConfig {
-        bootstrap_servers: bootstrap.clone(),
-        group_id: format!("bevy_event_bus_test_{}_{}", std::process::id(), suffix),
-        client_id: Some(format!("bevy_event_bus_test_client_{}", suffix)),
-        timeout_ms: 3000,
-        additional_config: Default::default(),
-    };
-    let connect_start = Instant::now();
-    let backend = KafkaEventBusBackend::new(config);
-    let connect_ms = connect_start.elapsed().as_millis();
-    let timings = SetupTimings { total_ms: total_start.elapsed().as_millis(), ensure_container_ms: ensure_ms, wait_ready_ms: wait_ms, connect_ms, metadata_ms };
-    (backend, bootstrap, timings)
-}
 
 /// Ensure a topic exists (idempotent) using Kafka Admin API. Best-effort; ignores 'topic already exists' errors.
 pub fn ensure_topic(bootstrap: &str, topic: &str, partitions: i32) {
@@ -316,10 +363,12 @@ pub fn ensure_topic(bootstrap: &str, topic: &str, partitions: i32) {
     if let Ok(admin) = cfg.create::<AdminClient<DefaultClientContext>>() {
         let new_topic = NewTopic::new(topic, partitions, TopicReplication::Fixed(1));
         let opts = AdminOptions::new();
-    let fut = admin.create_topics([&new_topic], &opts);
-    if let Err(e) = bevy_event_bus::block_on(fut) {
+        let fut = admin.create_topics([&new_topic], &opts);
+        if let Err(e) = bevy_event_bus::block_on(fut) {
             let msg = e.to_string();
-            if !msg.contains("TopicAlreadyExists") { tracing::warn!(topic=%topic, err=%msg, "ensure_topic create failed"); }
+            if !msg.contains("TopicAlreadyExists") {
+                tracing::warn!(topic=%topic, err=%msg, "ensure_topic create failed");
+            }
         }
     } else {
         tracing::warn!(topic=%topic, "ensure_topic could not build admin client");
@@ -335,7 +384,10 @@ where
 {
     let (backend, _bootstrap, _timings) = setup();
     let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy_event_bus::EventBusPlugins(backend, bevy_event_bus::PreconfiguredTopics::new(["default_topic"])));
+    app.add_plugins(bevy_event_bus::EventBusPlugins(
+        backend,
+        bevy_event_bus::PreconfiguredTopics::new(["default_topic"]),
+    ));
     customize(&mut app);
     app
 }

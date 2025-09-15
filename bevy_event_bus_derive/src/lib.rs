@@ -2,7 +2,7 @@ extern crate proc_macro;
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, DeriveInput};
+use syn::{DeriveInput, parse_macro_input};
 
 /// Derive macro for automatically implementing EventBus functionality.
 ///
@@ -23,9 +23,12 @@ use syn::{parse_macro_input, DeriveInput};
 pub fn derive_external_bus_event(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
-    
+
     let upper_name = name.to_string().to_uppercase();
-    let static_ident = syn::Ident::new(&format!("__BEVY_EVENT_BUS_REGISTER_{}", upper_name), name.span());
+    let static_ident = syn::Ident::new(
+        &format!("__BEVY_EVENT_BUS_REGISTER_{}", upper_name),
+        name.span(),
+    );
     let expanded = quote! {
         impl bevy::prelude::Event for #name { type Traversal = (); }
         #[allow(non_upper_case_globals)]

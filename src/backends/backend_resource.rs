@@ -16,9 +16,12 @@ impl EventBusBackendResource {
     }
 }
 
-
 // Provide explicit helpers instead of Deref for clarity
 impl EventBusBackendResource {
-    pub fn read(&self) -> std::sync::RwLockReadGuard<'_, Box<dyn EventBusBackend>> { self.0.read().unwrap() }
-    pub fn write(&self) -> std::sync::RwLockWriteGuard<'_, Box<dyn EventBusBackend>> { self.0.write().unwrap() }
+    pub fn read(&self) -> std::sync::RwLockReadGuard<'_, Box<dyn EventBusBackend>> {
+        self.0.read().unwrap()
+    }
+    pub fn write(&self) -> std::sync::RwLockWriteGuard<'_, Box<dyn EventBusBackend>> {
+        self.0.write().unwrap()
+    }
 }

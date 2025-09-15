@@ -1,8 +1,8 @@
-use bevy::prelude::*;
-use bevy_event_bus::{EventBusWriter, EventBusReader, EventBusPlugins};
 use crate::common::events::TestEvent;
 use crate::common::helpers::{unique_topic, update_until};
 use crate::common::setup::setup;
+use bevy::prelude::*;
+use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter};
 
 #[test]
 fn multi_topic_isolation() {
@@ -11,25 +11,53 @@ fn multi_topic_isolation() {
     let topic_a = unique_topic("topicA");
     let topic_b = unique_topic("topicB");
 
-    let mut writer = App::new(); writer.add_plugins(EventBusPlugins(backend_w, bevy_event_bus::PreconfiguredTopics::new([topic_a.clone(), topic_b.clone()])));
-    let mut reader = App::new(); reader.add_plugins(EventBusPlugins(backend_r, bevy_event_bus::PreconfiguredTopics::new([topic_a.clone(), topic_b.clone()])));
+    let mut writer = App::new();
+    writer.add_plugins(EventBusPlugins(
+        backend_w,
+        bevy_event_bus::PreconfiguredTopics::new([topic_a.clone(), topic_b.clone()]),
+    ));
+    let mut reader = App::new();
+    reader.add_plugins(EventBusPlugins(
+        backend_r,
+        bevy_event_bus::PreconfiguredTopics::new([topic_a.clone(), topic_b.clone()]),
+    ));
 
     let ta = topic_a.clone();
     let tb = topic_b.clone();
     writer.add_systems(Update, move |mut w: EventBusWriter<TestEvent>| {
-        let _ = w.send(&ta, TestEvent { message: "A1".into(), value: 1 });
-        let _ = w.send(&tb, TestEvent { message: "B1".into(), value: 2 });
+        let _ = w.send(
+            &ta,
+            TestEvent {
+                message: "A1".into(),
+                value: 1,
+            },
+        );
+        let _ = w.send(
+            &tb,
+            TestEvent {
+                message: "B1".into(),
+                value: 2,
+            },
+        );
     });
     writer.update();
 
-    #[derive(Resource, Default)] struct Collected(Vec<TestEvent>);
+    #[derive(Resource, Default)]
+    struct Collected(Vec<TestEvent>);
     reader.insert_resource(Collected::default());
     let ta_r = topic_a.clone();
     let tb_r = topic_b.clone();
-    reader.add_systems(Update, move |mut r: EventBusReader<TestEvent>, mut col: ResMut<Collected>| {
-        for ev in r.try_read(&ta_r) { col.0.push(ev.clone()); }
-        for ev in r.try_read(&tb_r) { col.0.push(ev.clone()); }
-    });
+    reader.add_systems(
+        Update,
+        move |mut r: EventBusReader<TestEvent>, mut col: ResMut<Collected>| {
+            for ev in r.try_read(&ta_r) {
+                col.0.push(ev.clone());
+            }
+            for ev in r.try_read(&tb_r) {
+                col.0.push(ev.clone());
+            }
+        },
+    );
 
     // Spin until both messages observed or timeout
     let (ok, _frames) = update_until(&mut reader, 5000, |app| {
@@ -40,6 +68,16 @@ fn multi_topic_isolation() {
     let col = reader.world().resource::<Collected>();
     assert!(col.0.iter().any(|e| e.message == "A1"));
     assert!(col.0.iter().any(|e| e.message == "B1"));
-    assert!(col.0.iter().filter(|e| e.message.starts_with('A')).all(|e| e.message == "A1"));
-    assert!(col.0.iter().filter(|e| e.message.starts_with('B')).all(|e| e.message == "B1"));
+    assert!(
+        col.0
+            .iter()
+            .filter(|e| e.message.starts_with('A'))
+            .all(|e| e.message == "A1")
+    );
+    assert!(
+        col.0
+            .iter()
+            .filter(|e| e.message.starts_with('B'))
+            .all(|e| e.message == "B1")
+    );
 }
