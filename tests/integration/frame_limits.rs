@@ -8,8 +8,8 @@ use bevy_event_bus::{
 
 #[test]
 fn frame_limit_spreads_drain() {
-    let (backend_w, _b1, _t1) = setup();
-    let (backend_r, _b2, _t2) = setup();
+    let (backend_w, _b1) = setup();
+    let (backend_r, _b2) = setup();
     let topic = unique_topic("limit");
     let mut writer = App::new();
     writer.add_plugins(EventBusPlugins(

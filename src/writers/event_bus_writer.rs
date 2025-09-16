@@ -1,35 +1,33 @@
 use bevy::prelude::*;
-
 use crate::{
     BusEvent, EventBusError,
-    backends::{EventBusBackendExt, EventBusBackendResource},
-    runtime,
+    backends::{EventBusBackendResource, EventBusBackendExt},
 };
 
 /// Writes events to both internal Bevy events and external message broker topics
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct EventBusWriter<'w, T: BusEvent + Event> {
-    backend: Res<'w, EventBusBackendResource>,
+    backend: Option<Res<'w, EventBusBackendResource>>,
     events: EventWriter<'w, T>,
 }
 
 impl<'w, T: BusEvent + Event> EventBusWriter<'w, T> {
     /// Send an event to a specific topic and to internal Bevy events
+    /// The external delivery happens immediately (non-blocking)
     pub fn send(&mut self, topic: &str, event: T) -> Result<(), EventBusError> {
-        // If readiness resource exists and not yet ready, skip external send (will still emit internal Bevy event)
-        // Send to external event bus
-        tracing::debug!(topic=%topic, "EventBusWriter sending event externally");
-        if let Err(e) = runtime::block_on(self.backend.read().send(&event, topic)) {
-            tracing::error!("Failed to send event to topic {}: {:?}", topic, e);
-            return Err(e);
+        // Send to external backend immediately if available
+        if let Some(backend_res) = &self.backend {
+            let backend = backend_res.read();
+            backend.try_send(&event, topic)?;
         }
 
-        // Also send to internal Bevy events
-        self.events.write(event.clone());
+        // Also send to internal Bevy events immediately
+        self.events.write(event);
         Ok(())
     }
 
     /// Send multiple events to a specific topic and to internal Bevy events
+    /// The external delivery happens immediately (non-blocking)
     pub fn send_batch(
         &mut self,
         topic: &str,
@@ -37,16 +35,15 @@ impl<'w, T: BusEvent + Event> EventBusWriter<'w, T> {
     ) -> Result<(), EventBusError> {
         let events: Vec<_> = events.into_iter().collect();
 
-        // Send each event to the external bus
-        for event in &events {
-            tracing::debug!(topic=%topic, "EventBusWriter sending batch event externally");
-            if let Err(e) = runtime::block_on(self.backend.read().send(event, topic)) {
-                tracing::error!("Failed to send event to topic {}: {:?}", topic, e);
-                return Err(e);
+        // Send each event to external backend immediately if available
+        if let Some(backend_res) = &self.backend {
+            let backend = backend_res.read();
+            for event in &events {
+                backend.try_send(event, topic)?;
             }
         }
 
-        // Also send to internal Bevy events
+        // Also send to internal Bevy events immediately
         for event in events {
             self.events.write(event);
         }

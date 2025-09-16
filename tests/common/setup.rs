@@ -205,18 +205,7 @@ fn teardown_container() {
     }
 }
 
-/// Timing data returned to tests for diagnostics
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub struct SetupTimings {
-    pub total_ms: u128,
-    pub ensure_container_ms: u128,
-    pub wait_ready_ms: u128,
-    pub connect_ms: u128,
-    pub metadata_ms: u128,
-}
-
-/// Robust metadata readiness loop; returns (ok, elapsed_ms)
+/// Simple metadata readiness check - just verify Kafka broker metadata is accessible
 static METADATA_READY: Lazy<std::sync::atomic::AtomicBool> =
     Lazy::new(|| std::sync::atomic::AtomicBool::new(false));
 
@@ -226,17 +215,13 @@ fn wait_metadata(bootstrap: &str, max_wait: Duration) -> (bool, u128) {
     let _g = span.enter();
     let start = Instant::now();
     let mut attempt: u32 = 0;
-    let mut last_err: Option<String> = None;
-    let mut backoff = Duration::from_millis(60);
+    
     while start.elapsed() < max_wait {
         attempt += 1;
         let mut cfg = ClientConfig::new();
         cfg.set("bootstrap.servers", bootstrap);
         if let Ok(producer) = cfg.create::<rdkafka::producer::BaseProducer>() {
-            match producer
-                .client()
-                .fetch_metadata(None, Duration::from_millis(600))
-            {
+            match producer.client().fetch_metadata(None, Duration::from_millis(1000)) {
                 Ok(md) => {
                     info!(
                         brokers = md.brokers().len(),
@@ -247,24 +232,12 @@ fn wait_metadata(bootstrap: &str, max_wait: Duration) -> (bool, u128) {
                     METADATA_READY.store(true, std::sync::atomic::Ordering::SeqCst);
                     return (true, start.elapsed().as_millis());
                 }
-                Err(e) => {
-                    let msg = e.to_string();
-                    // Only escalate to warn after 3 distinct attempts or when >50% of max_wait elapsed
-                    let escalate = attempt >= 3 || start.elapsed() > max_wait / 2;
-                    if last_err.as_ref() != Some(&msg) {
-                        if escalate {
-                            warn!(attempt, err = %msg, "Metadata attempt failed");
-                        } else {
-                            debug!(attempt, err = %msg, "Metadata attempt failed");
-                        }
-                    }
-                    last_err = Some(msg);
+                Err(_) => {
+                    // Simple fixed backoff - metadata is usually ready quickly once TCP is up
+                    std::thread::sleep(Duration::from_millis(200));
                 }
             }
         }
-        std::thread::sleep(backoff);
-        // exponential backoff capped
-        backoff = std::cmp::min(backoff * 2, Duration::from_millis(500));
     }
     warn!(
         attempts = attempt,
@@ -274,51 +247,33 @@ fn wait_metadata(bootstrap: &str, max_wait: Duration) -> (bool, u128) {
     (false, start.elapsed().as_millis())
 }
 
-/// Ensure Kafka is fully ready (TCP + metadata) before tests proceed. Returns elapsed ms.
-#[allow(dead_code)]
-pub fn ensure_kafka_ready(bootstrap: &str) -> u128 {
-    // Already did TCP wait in setup path; here we re-verify quickly and then demand metadata.
-    let meta_wait_cap = Duration::from_secs(10); // allow up to 10s in CI / cold pull
-    let (ok, elapsed) = wait_metadata(bootstrap, meta_wait_cap);
-    if !ok {
-        panic!(
-            "Kafka metadata not ready after {}ms for {}",
-            elapsed, bootstrap
-        );
-    }
-    elapsed
+pub fn setup() -> (KafkaEventBusBackend, String) {
+    setup_with_offset("earliest")
 }
 
-pub fn setup() -> (KafkaEventBusBackend, String, SetupTimings) {
-    let total_start = Instant::now();
-    let ensure_start = Instant::now();
+pub fn setup_with_offset(offset: &str) -> (KafkaEventBusBackend, String) {
     let container_bootstrap = ensure_container();
-    let ensure_ms = ensure_start.elapsed().as_millis();
     let bootstrap = container_bootstrap.unwrap_or_else(|| {
         std::env::var("KAFKA_BOOTSTRAP_SERVERS").unwrap_or_else(|_| "localhost:9092".into())
     });
 
     bevy_event_bus::runtime(); // initialize shared runtime early
 
-    let wait_start = Instant::now();
     if !wait_ready(&bootstrap) {
         panic!(
             "Kafka not TCP ready at {}. Ensure docker is running or set KAFKA_BOOTSTRAP_SERVERS.",
             bootstrap
         );
     }
-    let wait_ms = wait_start.elapsed().as_millis();
 
     // Require metadata readiness once per test process; subsequent setup() calls skip wait.
-    let mut metadata_ms = 0u128;
     if !METADATA_READY.load(std::sync::atomic::Ordering::SeqCst) {
         // Allow more generous window for fresh Kafka container internal initialization (KRaft can take >10s cold)
-        let (metadata_ok, elapsed) = wait_metadata(&bootstrap, Duration::from_secs(15));
-        metadata_ms = elapsed;
+        let (metadata_ok, _elapsed) = wait_metadata(&bootstrap, Duration::from_secs(15));
         if !metadata_ok {
             panic!(
                 "Kafka metadata not ready at {} after {}ms",
-                bootstrap, elapsed
+                bootstrap, _elapsed
             );
         }
     } else {
@@ -330,27 +285,22 @@ pub fn setup() -> (KafkaEventBusBackend, String, SetupTimings) {
     // writer and reader apps both receive all messages (Kafka replicates to distinct groups).
     static GROUP_COUNTER: AtomicUsize = AtomicUsize::new(0);
     let unique = GROUP_COUNTER.fetch_add(1, AtomicOrdering::SeqCst);
+    let mut additional_config = std::collections::HashMap::new();
+    
+    // Set offset configuration
+    additional_config.insert("auto.offset.reset".to_string(), offset.to_string());
+    
     let config = KafkaConfig {
         bootstrap_servers: bootstrap.clone(),
         group_id: format!("bevy_event_bus_test_{}_{}", std::process::id(), unique),
         client_id: Some(format!("bevy_event_bus_test_client_{}", unique)),
         timeout_ms: 3000, // modest timeout
-        additional_config: Default::default(),
+        additional_config,
     };
 
-    let connect_start = Instant::now();
     let backend = KafkaEventBusBackend::new(config);
-    let connect_ms = connect_start.elapsed().as_millis();
-
-    let timings = SetupTimings {
-        total_ms: total_start.elapsed().as_millis(),
-        ensure_container_ms: ensure_ms,
-        wait_ready_ms: wait_ms,
-        connect_ms,
-        metadata_ms,
-    };
-    info!(?timings, "Kafka test setup complete (ready)");
-    (backend, bootstrap, timings)
+    info!("Kafka test setup complete (ready)");
+    (backend, bootstrap)
 }
 
 /// Same as `setup` but allows providing a unique suffix for the consumer group id so that
@@ -375,6 +325,77 @@ pub fn ensure_topic(bootstrap: &str, topic: &str, partitions: i32) {
     }
 }
 
+/// Create a topic and wait for it to be fully ready for read/write operations.
+/// Combines topic creation with readiness verification in a single call.
+/// Returns true if the topic is ready, false if timeout exceeded.
+pub fn ensure_topic_ready(bootstrap: &str, topic: &str, partitions: i32, timeout: Duration) -> bool {
+    use rdkafka::config::ClientConfig;
+    use rdkafka::consumer::{BaseConsumer, Consumer};
+    use rdkafka::producer::{BaseProducer, Producer};
+    
+    let span = info_span!("kafka_container.ensure_topic_ready", bootstrap = bootstrap, topic = topic);
+    let _g = span.enter();
+    let start = Instant::now();
+    let mut attempts = 0u32;
+    
+    // First ensure topic exists using Admin API
+    ensure_topic(bootstrap, topic, partitions);
+    
+    while start.elapsed() < timeout {
+        attempts += 1;
+        
+        // Test both producer and consumer can see the topic
+        let mut producer_cfg = ClientConfig::new();
+        producer_cfg.set("bootstrap.servers", bootstrap);
+        producer_cfg.set("client.id", &format!("topic_readiness_producer_{}", attempts));
+        
+        let mut consumer_cfg = ClientConfig::new();
+        consumer_cfg.set("bootstrap.servers", bootstrap);
+        consumer_cfg.set("group.id", &format!("topic_readiness_consumer_{}", attempts));
+        consumer_cfg.set("client.id", &format!("topic_readiness_consumer_{}", attempts));
+        consumer_cfg.set("auto.offset.reset", "earliest");
+        
+        if let (Ok(producer), Ok(consumer)) = (
+            producer_cfg.create::<BaseProducer>(),
+            consumer_cfg.create::<BaseConsumer>(),
+        ) {
+            // Check if producer can fetch metadata for this specific topic
+            match producer.client().fetch_metadata(Some(topic), Duration::from_millis(1000)) {
+                Ok(metadata) => {
+                    // Check if topic exists in metadata with at least one partition
+                    if let Some(topic_metadata) = metadata.topics().iter().find(|t| t.name() == topic) {
+                        if !topic_metadata.partitions().is_empty() && topic_metadata.error().is_none() {
+                            // Topic exists with partitions, now test consumer can subscribe
+                            if consumer.subscribe(&[topic]).is_ok() {
+                                info!(
+                                    attempts,
+                                    elapsed_ms = start.elapsed().as_millis(),
+                                    "Topic created and ready for read/write operations"
+                                );
+                                return true;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    debug!(attempt = attempts, err = %e, "Topic metadata fetch failed");
+                }
+            }
+        }
+        
+        // Progressive backoff: 50ms, 100ms, 200ms, 400ms, 400ms...
+        let delay_ms = std::cmp::min(50 * 2_u64.pow((attempts - 1).min(3)), 400);
+        std::thread::sleep(Duration::from_millis(delay_ms));
+    }
+    
+    warn!(
+        attempts,
+        elapsed_ms = start.elapsed().as_millis(),
+        "Topic NOT ready before timeout"
+    );
+    false
+}
+
 /// Build a baseline Bevy `App` with the event bus plugins wired to a fresh Kafka backend from `setup()`.
 /// An optional customization closure can further configure the `App` (e.g., inserting resources, systems).
 /// This centralizes construction so tests share identical initialization semantics.
@@ -382,7 +403,7 @@ pub fn build_basic_app<F>(customize: F) -> bevy::prelude::App
 where
     F: FnOnce(&mut bevy::prelude::App),
 {
-    let (backend, _bootstrap, _timings) = setup();
+    let (backend, _bootstrap) = setup();
     let mut app = bevy::prelude::App::new();
     app.add_plugins(bevy_event_bus::EventBusPlugins(
         backend,

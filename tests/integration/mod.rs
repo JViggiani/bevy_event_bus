@@ -5,4 +5,5 @@ pub mod frame_limits;
 pub mod idle_read;
 pub mod multi_topic;
 pub mod multi_type;
+pub mod offset_configuration;
 pub mod ordering;

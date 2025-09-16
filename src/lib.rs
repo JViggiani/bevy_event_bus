@@ -22,8 +22,8 @@ pub use plugin::{BackendDownEvent, BackendReadyEvent, BackendStatus};
 pub use plugin::{EventBusPlugin, EventBusPlugins, PreconfiguredTopics};
 pub use readers::event_bus_reader::EventBusReader;
 pub use resources::{
-    ConsumerMetrics, DrainMetricsEvent, DrainedTopicBuffers, EventBusConsumerConfig,
-    IncomingMessage, MessageQueue,
+    ConsumerMetrics, DeliveryEvent, DrainMetricsEvent, DrainedTopicBuffers, EventBusConsumerConfig,
+    IncomingMessage, MessageQueue, OutboundMessage, OutboundMessageQueue,
 };
 pub use writers::event_bus_writer::EventBusWriter;
 
@@ -40,9 +40,10 @@ pub use runtime::{block_on, runtime};
 /// Re-export common items for convenience
 pub mod prelude {
     pub use crate::{
-        BusEvent, ConsumerMetrics, DrainMetricsEvent, DrainedTopicBuffers, EventBusBackend,
+        BusEvent, ConsumerMetrics, DeliveryEvent, DrainMetricsEvent, DrainedTopicBuffers, EventBusBackend,
         EventBusBackendExt, EventBusConsumerConfig, EventBusError, EventBusPlugin, EventBusPlugins,
         EventBusReader, EventBusWriter, ExternalBusEvent, IncomingMessage, MessageQueue,
+        OutboundMessage, OutboundMessageQueue,
     };
 
     #[cfg(feature = "kafka")]

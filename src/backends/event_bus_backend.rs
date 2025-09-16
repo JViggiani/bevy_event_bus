@@ -10,7 +10,8 @@ pub trait EventBusBackend: Send + Sync + 'static + Debug {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
     async fn connect(&mut self) -> Result<(), EventBusError>;
     async fn disconnect(&mut self) -> Result<(), EventBusError>;
-    async fn send_serialized(&self, event_json: &[u8], topic: &str) -> Result<(), EventBusError>;
+    /// Non-blocking send that queues the event for delivery
+    fn try_send_serialized(&self, event_json: &[u8], topic: &str) -> Result<(), EventBusError>;
     async fn receive_serialized(&self, topic: &str) -> Result<Vec<Vec<u8>>, EventBusError>;
     async fn subscribe(&mut self, topic: &str) -> Result<(), EventBusError>;
     async fn unsubscribe(&mut self, topic: &str) -> Result<(), EventBusError>;
@@ -19,10 +20,11 @@ pub trait EventBusBackend: Send + Sync + 'static + Debug {
 // Extension methods for the EventBusBackend trait
 #[async_trait]
 pub trait EventBusBackendExt: EventBusBackend {
-    async fn send<T: BusEvent>(&self, event: &T, topic: &str) -> Result<(), EventBusError> {
+    /// Non-blocking send that queues the event for delivery
+    fn try_send<T: BusEvent>(&self, event: &T, topic: &str) -> Result<(), EventBusError> {
         let serialized =
             serde_json::to_vec(event).map_err(|e| EventBusError::Serialization(e.to_string()))?;
-        self.send_serialized(&serialized, topic).await
+        self.try_send_serialized(&serialized, topic)
     }
     async fn receive<T: BusEvent>(&self, topic: &str) -> Result<Vec<T>, EventBusError> {
         let serialized_messages = self.receive_serialized(topic).await?;

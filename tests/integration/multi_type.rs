@@ -6,8 +6,8 @@ use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter};
 
 #[test]
 fn single_topic_multiple_types_same_frame() {
-    let (backend_w, _b1, _t1) = setup();
-    let (backend_r, _b2, _t2) = setup();
+    let (backend_w, _b1) = setup();
+    let (backend_r, _b2) = setup();
     let topic = unique_topic("mixed");
 
     let mut writer = App::new();
@@ -21,6 +21,41 @@ fn single_topic_multiple_types_same_frame() {
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
 
+    #[derive(Resource, Default)]
+    struct CollectedA(Vec<TestEvent>);
+    #[derive(Resource, Default)]
+    struct CollectedB(Vec<UserLoginEvent>);
+    reader.insert_resource(CollectedA::default());
+    reader.insert_resource(CollectedB::default());
+    let tr_a = topic.clone();
+    reader.add_systems(
+        Update,
+        move |mut r1: EventBusReader<TestEvent>, mut a: ResMut<CollectedA>| {
+            for ev in r1.try_read(&tr_a) {
+                a.0.push(ev.clone());
+            }
+        },
+    );
+    let tr_b = topic.clone();
+    reader.add_systems(
+        Update,
+        move |mut r2: EventBusReader<UserLoginEvent>, mut b: ResMut<CollectedB>| {
+            for ev in r2.try_read(&tr_b) {
+                b.0.push(ev.clone());
+            }
+        },
+    );
+
+    // Ensure topic is ready before proceeding
+    let topic_ready = crate::common::setup::ensure_topic_ready(
+        &_b2, 
+        &topic, 
+        1, // partitions
+        std::time::Duration::from_secs(5)
+    );
+    assert!(topic_ready, "Topic {} not ready within timeout", topic);
+
+    // Now set up and run the writer to send events
     let tclone = topic.clone();
     writer.add_systems(
         Update,
@@ -50,47 +85,24 @@ fn single_topic_multiple_types_same_frame() {
     writer.update(); // warm
     writer.update(); // send
 
-    #[derive(Resource, Default)]
-    struct CollectedA(Vec<TestEvent>);
-    #[derive(Resource, Default)]
-    struct CollectedB(Vec<UserLoginEvent>);
-    reader.insert_resource(CollectedA::default());
-    reader.insert_resource(CollectedB::default());
-    let tr_a = topic.clone();
-    reader.add_systems(
-        Update,
-        move |mut r1: EventBusReader<TestEvent>, mut a: ResMut<CollectedA>| {
-            for ev in r1.try_read(&tr_a) {
-                a.0.push(ev.clone());
-            }
-        },
-    );
-    let tr_b = topic.clone();
-    reader.add_systems(
-        Update,
-        move |mut r2: EventBusReader<UserLoginEvent>, mut b: ResMut<CollectedB>| {
-            for ev in r2.try_read(&tr_b) {
-                b.0.push(ev.clone());
-            }
-        },
-    );
-
     let (ok, _frames) = update_until(&mut reader, 5000, |app| {
         let a = app.world().resource::<CollectedA>();
         let b = app.world().resource::<CollectedB>();
-        a.0.len() >= 1 && b.0.len() >= 1
+        !a.0.is_empty() && !b.0.is_empty()
     });
-    assert!(ok, "Timed out waiting for both event types");
+    
+    assert!(ok, "Timed out waiting for both event types within timeout");
+    
     let a = reader.world().resource::<CollectedA>();
     let b = reader.world().resource::<CollectedB>();
-    assert_eq!(a.0.len(), 1);
-    assert_eq!(b.0.len(), 1);
+    assert_eq!(a.0.len(), 1, "Expected 1 TestEvent, got {}", a.0.len());
+    assert_eq!(b.0.len(), 1, "Expected 1 UserLoginEvent, got {}", b.0.len());
 }
 
 #[test]
 fn single_topic_multiple_types_interleaved_frames() {
-    let (backend_w, _b1, _t1) = setup();
-    let (backend_r, _b2, _t2) = setup();
+    let (backend_w, _b1) = setup();
+    let (backend_r, _b2) = setup();
     let topic = unique_topic("mixed2");
 
     let mut writer = App::new();
@@ -104,6 +116,41 @@ fn single_topic_multiple_types_interleaved_frames() {
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
 
+    #[derive(Resource, Default)]
+    struct CollectedA(Vec<TestEvent>);
+    #[derive(Resource, Default)]
+    struct CollectedB(Vec<UserLoginEvent>);
+    reader.insert_resource(CollectedA::default());
+    reader.insert_resource(CollectedB::default());
+    let tr_a2 = topic.clone();
+    reader.add_systems(
+        Update,
+        move |mut r1: EventBusReader<TestEvent>, mut a: ResMut<CollectedA>| {
+            for ev in r1.try_read(&tr_a2) {
+                a.0.push(ev.clone());
+            }
+        },
+    );
+    let tr_b2 = topic.clone();
+    reader.add_systems(
+        Update,
+        move |mut r2: EventBusReader<UserLoginEvent>, mut b: ResMut<CollectedB>| {
+            for ev in r2.try_read(&tr_b2) {
+                b.0.push(ev.clone());
+            }
+        },
+    );
+
+    // Ensure topic is ready before proceeding
+    let topic_ready = crate::common::setup::ensure_topic_ready(
+        &_b2, 
+        &topic, 
+        1, // partitions
+        std::time::Duration::from_secs(5)
+    );
+    assert!(topic_ready, "Topic {} not ready within timeout", topic);
+
+    // Now set up and run the writer
     #[derive(Resource)]
     struct Counter(u32);
     writer.insert_resource(Counter(0));
@@ -137,45 +184,14 @@ fn single_topic_multiple_types_interleaved_frames() {
         writer.update();
     }
 
-    #[derive(Resource, Default)]
-    struct CollectedA(Vec<TestEvent>);
-    #[derive(Resource, Default)]
-    struct CollectedB(Vec<UserLoginEvent>);
-    reader.insert_resource(CollectedA::default());
-    reader.insert_resource(CollectedB::default());
-    let tr_a2 = topic.clone();
-    reader.add_systems(
-        Update,
-        move |mut r1: EventBusReader<TestEvent>, mut a: ResMut<CollectedA>| {
-            for ev in r1.try_read(&tr_a2) {
-                a.0.push(ev.clone());
-            }
-        },
-    );
-    let tr_b2 = topic.clone();
-    reader.add_systems(
-        Update,
-        move |mut r2: EventBusReader<UserLoginEvent>, mut b: ResMut<CollectedB>| {
-            for ev in r2.try_read(&tr_b2) {
-                b.0.push(ev.clone());
-            }
-        },
-    );
-    // Eventual consistency loop for background delivery
-    let start = std::time::Instant::now();
-    let timeout = std::time::Duration::from_secs(12);
-    loop {
-        reader.update();
-        std::thread::sleep(std::time::Duration::from_millis(25));
-        let a = reader.world().resource::<CollectedA>();
-        let b = reader.world().resource::<CollectedB>();
-        if a.0.len() >= 3 && b.0.len() >= 3 {
-            break;
-        }
-        if start.elapsed() > timeout {
-            panic!("Timed out waiting for interleaved events");
-        }
-    }
+    // Wait for background delivery using proper polling
+    let (ok, _frames) = update_until(&mut reader, 12000, |app| {
+        let a = app.world().resource::<CollectedA>();
+        let b = app.world().resource::<CollectedB>();
+        a.0.len() >= 3 && b.0.len() >= 3
+    });
+    
+    assert!(ok, "Timed out waiting for interleaved events within timeout");
     let a = reader.world().resource::<CollectedA>();
     let b = reader.world().resource::<CollectedB>();
     assert!(a.0.len() >= 3);

@@ -7,53 +7,76 @@ use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter};
 /// Test that events are delivered exactly once - no duplication
 #[test]
 fn no_event_duplication_exactly_once_delivery() {
-    let (backend_w, _b1, _t1) = setup();
-    let (backend_r, _b2, _t2) = setup();
+    // Create separate backends for writer and reader to simulate separate machines
+    let (backend_writer, _bootstrap_writer) = setup();
+    let (backend_reader, _bootstrap_reader) = setup();
+    
     let topic = unique_topic("exactly_once");
     
+    // Create topic and wait for it to be fully ready
+    let topic_ready = crate::common::setup::ensure_topic_ready(
+        &_bootstrap_reader, 
+        &topic, 
+        1, // partitions
+        std::time::Duration::from_secs(5)
+    );
+    assert!(topic_ready, "Topic {} not ready within timeout", topic);
+    
+    // Writer app
     let mut writer = App::new();
     writer.add_plugins(EventBusPlugins(
-        backend_w,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
-    
-    let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(
-        backend_r,
+        backend_writer,
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
 
-    // Send exactly 10 unique events
+    // Send exactly 10 unique events (as a resource to avoid closure issues)
+    #[derive(Resource, Clone)]
+    struct ToSend(Vec<TestEvent>, String);
+    
     let expected_events: Vec<TestEvent> = (0..10)
         .map(|i| TestEvent {
             message: format!("unique_event_{}", i),
             value: i,
         })
         .collect();
-
-    let topic_clone = topic.clone();
-    let expected_clone = expected_events.clone();
-    writer.add_systems(Update, move |mut w: EventBusWriter<TestEvent>| {
-        for event in &expected_clone {
-            let _ = w.send(&topic_clone, event.clone());
-        }
-    });
     
-    writer.update(); // Send all events
+    writer.insert_resource(ToSend(expected_events.clone(), topic.clone()));
+
+    fn writer_system(mut w: EventBusWriter<TestEvent>, data: Res<ToSend>) {
+        for event in &data.0 {
+            let _ = w.send(&data.1, event.clone());
+        }
+    }
+    writer.add_systems(Update, writer_system);
+
+    // Reader app with separate backend 
+    let mut reader = App::new();
+    reader.add_plugins(EventBusPlugins(
+        backend_reader,
+        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
+    ));
 
     #[derive(Resource, Default)]
     struct Collected(Vec<TestEvent>);
     reader.insert_resource(Collected::default());
     
-    let topic_read = topic.clone();
-    reader.add_systems(
-        Update,
-        move |mut r: EventBusReader<TestEvent>, mut c: ResMut<Collected>| {
-            for ev in r.try_read(&topic_read) {
-                c.0.push(ev.clone());
-            }
-        },
-    );
+    #[derive(Resource, Clone)]
+    struct Topic(String);
+    reader.insert_resource(Topic(topic.clone()));
+    
+    fn reader_system(
+        mut r: EventBusReader<TestEvent>,
+        topic: Res<Topic>,
+        mut collected: ResMut<Collected>,
+    ) {
+        for e in r.try_read(&topic.0) {
+            collected.0.push(e.clone());
+        }
+    }
+    reader.add_systems(Update, reader_system);
+
+    // Start writer to send events
+    writer.update();
 
     // Wait for all 10 events to be received
     let (ok, _frames) = update_until(&mut reader, 5000, |app| {
@@ -61,9 +84,9 @@ fn no_event_duplication_exactly_once_delivery() {
         c.0.len() >= 10
     });
 
-    assert!(ok, "Timed out waiting for events");
-    
     let collected = reader.world().resource::<Collected>();
+    
+    assert!(ok, "Timed out waiting for events. Got {} events", collected.0.len());
     
     // Verify exactly 10 events were received (no duplication)
     assert_eq!(collected.0.len(), 10, "Expected exactly 10 events, got {}", collected.0.len());

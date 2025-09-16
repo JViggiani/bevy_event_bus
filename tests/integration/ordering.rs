@@ -6,8 +6,8 @@ use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter};
 
 #[test]
 fn per_topic_order_preserved() {
-    let (backend_w, _b1, _t1) = crate::common::setup::setup();
-    let (backend_r, _b2, _t2) = crate::common::setup::setup();
+    let (backend_w, _b1) = crate::common::setup::setup();
+    let (backend_r, _b2) = crate::common::setup::setup();
     let topic = unique_topic("ordered");
     bevy_event_bus::runtime();
     crate::common::setup::ensure_topic(&_b2, &topic, 1);
@@ -72,8 +72,8 @@ fn per_topic_order_preserved() {
 
 #[test]
 fn cross_topic_interleave_each_ordered() {
-    let (backend_w, _b1, _t1) = crate::common::setup::setup();
-    let (backend_r, _b2, _t2) = crate::common::setup::setup();
+    let (backend_w, _b1) = crate::common::setup::setup();
+    let (backend_r, _b2) = crate::common::setup::setup();
     let t1 = unique_topic("t1");
     let t2 = unique_topic("t2");
     bevy_event_bus::runtime();

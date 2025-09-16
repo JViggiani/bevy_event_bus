@@ -13,21 +13,46 @@ pub struct IncomingMessage {
     pub timestamp: Instant,
 }
 
+/// Outbound message queued for delivery to external broker
+#[derive(Debug, Clone)]
+pub struct OutboundMessage {
+    pub topic: String,
+    pub payload: Vec<u8>,
+    /// Unique ID for tracking delivery success/failure
+    pub delivery_id: u64,
+}
+
+/// Events fired when messages are successfully delivered or fail
+#[derive(Event, Debug, Clone)]
+pub enum DeliveryEvent {
+    Success { delivery_id: u64, topic: String },
+    Failed { delivery_id: u64, topic: String, error: String },
+}
+
+/// Queue of outbound messages waiting to be sent
+#[derive(Resource, Debug)]
+pub struct OutboundMessageQueue {
+    pub messages: std::sync::Mutex<std::collections::VecDeque<OutboundMessage>>,
+    pub next_delivery_id: std::sync::atomic::AtomicU64,
+}
+
+impl Default for OutboundMessageQueue {
+    fn default() -> Self {
+        Self {
+            messages: std::sync::Mutex::new(std::collections::VecDeque::new()),
+            next_delivery_id: std::sync::atomic::AtomicU64::new(1),
+        }
+    }
+}
+
 /// Configuration controlling how many events are drained each frame
 #[derive(Resource, Debug, Clone)]
+#[derive(Default)]
 pub struct EventBusConsumerConfig {
     /// Maximum events to drain per frame (None = unlimited)
     pub max_events_per_frame: Option<usize>,
     /// Optional millisecond budget for drain loop (None = no time limit)
     pub max_drain_millis: Option<u64>,
-}
-impl Default for EventBusConsumerConfig {
-    fn default() -> Self {
-        Self {
-            max_events_per_frame: None,
-            max_drain_millis: None,
-        }
-    }
 }
 
 /// Channel receiver resource for background consumer -> main thread
@@ -44,6 +69,7 @@ pub struct DrainedTopicBuffers {
 
 /// Basic consumer metrics (frame-scoped counters + cumulative stats)
 #[derive(Resource, Debug, Clone)]
+#[derive(Default)]
 pub struct ConsumerMetrics {
     pub drained_last_frame: usize,
     pub remaining_channel_after_drain: usize,
@@ -53,20 +79,6 @@ pub struct ConsumerMetrics {
     pub queue_len_end: usize,
     pub drain_duration_us: u128,
     pub idle_frames: usize,
-}
-impl Default for ConsumerMetrics {
-    fn default() -> Self {
-        Self {
-            drained_last_frame: 0,
-            remaining_channel_after_drain: 0,
-            dropped_messages: 0,
-            total_drained: 0,
-            queue_len_start: 0,
-            queue_len_end: 0,
-            drain_duration_us: 0,
-            idle_frames: 0,
-        }
-    }
 }
 
 /// Event emitted after each drain with snapshot metrics (optional for user systems)

@@ -29,10 +29,10 @@ pub struct KafkaConfig {
     /// Additional Kafka configuration
     /// 
     /// Common settings you might want to configure:
-    /// - `"auto.offset.reset"` - Set to "earliest" to consume from beginning, "latest" for new messages only (default)
-    /// - `"enable.auto.commit"` - Whether to automatically commit offsets (default: true)
+    /// - `"auto.offset.reset"` - Set to "earliest" to consume from beginning, "latest" for new messages only (default: "latest")
+    /// - `"enable.auto.commit"` - Whether to automatically commit offsets (default: "true")
     /// - `"auto.commit.interval.ms"` - How often to commit offsets (default: 5000)
-    /// - `"session.timeout.ms"` - Consumer session timeout (default: 6000)
+    /// - `"session.timeout.ms"` - Consumer session timeout (default: "6000")
     /// - `"security.protocol"` - Set to "SSL" or "SASL_SSL" for secure connections
     /// 
     /// Example:
@@ -41,7 +41,9 @@ pub struct KafkaConfig {
     /// use bevy_event_bus::KafkaConfig;
     /// 
     /// let mut config = KafkaConfig::default();
+    /// // To consume all historical messages:
     /// config.additional_config.insert("auto.offset.reset".to_string(), "earliest".to_string());
+    /// // To use SSL:
     /// config.additional_config.insert("security.protocol".to_string(), "SSL".to_string());
     /// ```
     pub additional_config: HashMap<String, String>,
@@ -105,19 +107,22 @@ impl KafkaEventBusBackend {
             .create()
             .expect("Failed to create Kafka producer");
 
-        // Configure consumer
+        // Configure consumer - only set essentials, let user override everything
         let mut consumer_config = ClientConfig::new();
         consumer_config.set("bootstrap.servers", &config.bootstrap_servers);
         consumer_config.set("group.id", &config.group_id);
+        
+        // Set sensible defaults that user can override
         consumer_config.set("enable.auto.commit", "true");
-        consumer_config.set("auto.offset.reset", "earliest");
         consumer_config.set("session.timeout.ms", "6000");
+        // Default to "latest" for real-time applications (games) - user can override to "earliest"
+        consumer_config.set("auto.offset.reset", "latest");
 
         if let Some(client_id) = &config.client_id {
             consumer_config.set("client.id", client_id);
         }
 
-        // Add any additional configuration
+        // Add any additional configuration (this can override our defaults)
         for (key, value) in &config.additional_config {
             consumer_config.set(key, value);
         }
@@ -143,7 +148,6 @@ impl KafkaEventBusBackend {
     pub fn bootstrap_servers(&self) -> &str {
         &self.config.bootstrap_servers
     }
-    #[allow(dead_code)]
     pub fn group_id(&self) -> &str {
         &self.config.group_id
     }
@@ -208,7 +212,8 @@ impl EventBusBackend for KafkaEventBusBackend {
         self
     }
     async fn connect(&mut self) -> Result<(), EventBusError> {
-        if self.bg_running.load(Ordering::Relaxed) {
+        // Use compare_exchange to atomically check and set - prevents race condition
+        if self.bg_running.compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed).is_err() {
             debug!("Kafka backend connect() called but background already running");
             return Ok(());
         }
@@ -264,64 +269,61 @@ impl EventBusBackend for KafkaEventBusBackend {
             }
         }
         // Spawn background consumer task once (Tokio)
-        if !self.bg_running.swap(true, Ordering::SeqCst) {
-            let (tx, rx) = bounded::<IncomingMessage>(10_000);
-            self.sender = Some(tx.clone());
-            self.receiver = Some(rx);
-            let consumer = self.consumer.clone();
-            let producer = self.producer.clone();
-            let subs = self.subscriptions.clone();
-            let running = self.bg_running.clone();
-            let dropped_counter = self.dropped.clone();
-            let bootstrap = self.config.bootstrap_servers.clone();
-            let rt = crate::runtime::runtime();
-            // spawn_blocking not needed; poll is non-blocking with small timeout, but we use spawn to keep simple
-            let task = rt.spawn(async move {
-                let mut last_err: Option<String> = None;
-                let mut repeated: u32 = 0;
-                let mut error_backoff = Duration::from_millis(100);
-                let max_error = Duration::from_millis(1000);
-                while running.load(Ordering::Relaxed) {
-                    // Drive producer delivery callbacks (non-blocking)
-                    // A few tight polls amortize wakeups without blocking frame thread.
-                    for _ in 0..3 { producer.poll(Duration::from_millis(0)); }
-                    match consumer.as_ref().poll(Duration::from_millis(50)) {
-                        None => { /* timeout, loop */ }
-                        Some(Ok(m)) => {
-                            let topic = m.topic().to_string();
-                            { subs.lock().unwrap().insert(topic.clone()); }
-                            if let Some(payload) = m.payload() {
-                                let msg = IncomingMessage {
-                                    topic,
-                                    partition: m.partition(),
-                                    offset: m.offset(),
-                                    key: m.key().map(|k| k.to_vec()),
-                                    payload: payload.to_vec(),
-                                    timestamp: std::time::Instant::now(),
-                                };
-                                if tx.try_send(msg).is_err() { dropped_counter.fetch_add(1, Ordering::Relaxed); }
-                            }
-                        }
-                        Some(Err(e)) => {
-                            let msg = e.to_string();
-                            if last_err.as_ref() == Some(&msg) {
-                                repeated += 1;
-                                if repeated % 10 == 0 { warn!(repeats = repeated, err = %msg, bootstrap = %bootstrap, "Repeating Kafka consume error"); }
-                            } else {
-                                error!(err = %msg, bootstrap = %bootstrap, "Background Kafka consume error");
-                                last_err = Some(msg);
-                                repeated = 0;
-                            }
-                            tokio::time::sleep(error_backoff).await;
-                            error_backoff = std::cmp::min(error_backoff * 2, max_error);
+        let (tx, rx) = bounded::<IncomingMessage>(10_000);
+        self.sender = Some(tx.clone());
+        self.receiver = Some(rx);
+        let consumer = self.consumer.clone();
+        let producer = self.producer.clone();
+        let subs = self.subscriptions.clone();
+        let running = self.bg_running.clone();
+        let dropped_counter = self.dropped.clone();
+        let bootstrap = self.config.bootstrap_servers.clone();
+        let rt = crate::runtime::runtime();
+        // spawn_blocking not needed; poll is non-blocking with small timeout, but we use spawn to keep simple
+        let task = rt.spawn(async move {
+            let mut last_err: Option<String> = None;
+            let mut repeated: u32 = 0;
+            let mut error_backoff = Duration::from_millis(100);
+            let max_error = Duration::from_millis(1000);
+            while running.load(Ordering::Relaxed) {
+                // Drive producer delivery callbacks
+                producer.poll(Duration::from_millis(0));
+                match consumer.as_ref().poll(Duration::from_millis(50)) {
+                    None => { /* timeout, loop */ }
+                    Some(Ok(m)) => {
+                        let topic = m.topic().to_string();
+                        { subs.lock().unwrap().insert(topic.clone()); }
+                        if let Some(payload) = m.payload() {
+                            let msg = IncomingMessage {
+                                topic,
+                                partition: m.partition(),
+                                offset: m.offset(),
+                                key: m.key().map(|k| k.to_vec()),
+                                payload: payload.to_vec(),
+                                timestamp: std::time::Instant::now(),
+                            };
+                            if tx.try_send(msg).is_err() { dropped_counter.fetch_add(1, Ordering::Relaxed); }
                         }
                     }
-                    // Light additional producer progress after consumer activity to reduce tail latency.
-                    for _ in 0..2 { producer.poll(Duration::from_millis(0)); }
+                    Some(Err(e)) => {
+                        let msg = e.to_string();
+                        if last_err.as_ref() == Some(&msg) {
+                            repeated += 1;
+                            if repeated % 10 == 0 { warn!(repeats = repeated, err = %msg, bootstrap = %bootstrap, "Repeating Kafka consume error"); }
+                        } else {
+                            error!(err = %msg, bootstrap = %bootstrap, "Background Kafka consume error");
+                            last_err = Some(msg);
+                            repeated = 0;
+                        }
+                        tokio::time::sleep(error_backoff).await;
+                        error_backoff = std::cmp::min(error_backoff * 2, max_error);
+                    }
                 }
-            });
-            self.task_abort = Some(task.abort_handle());
-        }
+                // Light additional producer progress after consumer activity to reduce tail latency.
+                for _ in 0..2 { producer.poll(Duration::from_millis(0)); }
+            }
+        });
+        self.task_abort = Some(task.abort_handle());
         Ok(())
     }
     async fn disconnect(&mut self) -> Result<(), EventBusError> {
@@ -333,7 +335,7 @@ impl EventBusBackend for KafkaEventBusBackend {
         // Nothing special needed for disconnection, Kafka clients clean up on drop
         Ok(())
     }
-    async fn send_serialized(&self, event_json: &[u8], topic: &str) -> Result<(), EventBusError> {
+    fn try_send_serialized(&self, event_json: &[u8], topic: &str) -> Result<(), EventBusError> {
         let record: BaseRecord<'_, (), [u8]> = BaseRecord::to(topic).payload(event_json);
         if let Err((e, _)) = self.producer.send(record) {
             return Err(EventBusError::Other(format!(
@@ -341,7 +343,7 @@ impl EventBusBackend for KafkaEventBusBackend {
                 e
             )));
         }
-        // Non-blocking send; delivery progress advanced by per-frame producer_progress system.
+        // Non-blocking send; delivery progress advanced by background producer polling.
         Ok(())
     }
     async fn receive_serialized(&self, topic: &str) -> Result<Vec<Vec<u8>>, EventBusError> {

@@ -17,7 +17,7 @@ fn init_runtime() -> Arc<Runtime> {
 
 /// Get a reference to the shared Tokio runtime (Arc inside OnceCell)
 pub fn runtime() -> &'static Runtime {
-    &*RUNTIME.get_or_init(init_runtime)
+    RUNTIME.get_or_init(init_runtime)
 }
 
 /// Block on a future using the shared runtime.

@@ -7,7 +7,7 @@ use bevy_event_bus::{EventBusPlugins, EventBusReader};
 // Test that repeatedly reading an empty topic does not hang or block frames.
 #[test]
 fn idle_empty_topic_poll_does_not_block() {
-    let (backend, _b, _t) = setup();
+    let (backend, _) = setup();
     let topic = unique_topic("idle"); // preconfigure but never send
     let mut app = App::new();
     app.add_plugins(EventBusPlugins(

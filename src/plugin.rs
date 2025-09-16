@@ -231,6 +231,25 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
             if metrics.drained_last_frame == 0 {
                 metrics.idle_frames += 1;
             }
+            
+            // Smarter cleanup: trim consumed messages from topic buffers
+            // This is better than periodic cleanup of empty topics since it actually reclaims memory
+            if metrics.idle_frames % 30 == 0 && metrics.idle_frames > 0 {
+                // For each topic, check if we can trim old consumed messages
+                // This would require coordination with EventBusReader offsets, but we don't have access here
+                // For now, keep the existing strategy but make it more aggressive
+                let before_count = buffers.topics.len();
+                buffers.topics.retain(|_topic, buffer| !buffer.is_empty());
+                let after_count = buffers.topics.len();
+                
+                if before_count > after_count {
+                    tracing::debug!(
+                        cleaned_topics = before_count - after_count,
+                        remaining_topics = after_count,
+                        "Cleaned up empty topic buffers"
+                    );
+                }
+            }
             metrics.drain_duration_us = frame_start.elapsed().as_micros();
             if metrics.drain_duration_us == 0
                 && (metrics.drained_last_frame > 0 || metrics.queue_len_start > 0)
@@ -248,7 +267,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
         }
         app.add_systems(PreUpdate, drain_system);
 
-        // Producer progress now handled entirely by backend background task; frame system removed.
+        // Producer progress now handled entirely by backend background task; sender_system removed since sends are now direct.
 
         // Lifecycle drain system converts internal channel messages to Bevy events
         fn lifecycle_system(

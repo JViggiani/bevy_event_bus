@@ -6,10 +6,26 @@ use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter};
 
 #[test]
 fn multi_topic_isolation() {
-    let (backend_w, _b1, _t1) = setup();
-    let (backend_r, _b2, _t2) = setup();
+    let (backend_w, _b1) = setup();
+    let (backend_r, _b2) = setup();
     let topic_a = unique_topic("topicA");
     let topic_b = unique_topic("topicB");
+
+    // Create topics and wait for them to be fully ready
+    let topic_a_ready = crate::common::setup::ensure_topic_ready(
+        &_b2, 
+        &topic_a, 
+        1, // partitions
+        std::time::Duration::from_secs(5)
+    );
+    let topic_b_ready = crate::common::setup::ensure_topic_ready(
+        &_b2, 
+        &topic_b, 
+        1, // partitions
+        std::time::Duration::from_secs(5)
+    );
+    assert!(topic_a_ready, "Topic {} not ready within timeout", topic_a);
+    assert!(topic_b_ready, "Topic {} not ready within timeout", topic_b);
 
     let mut writer = App::new();
     writer.add_plugins(EventBusPlugins(

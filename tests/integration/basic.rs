@@ -1,5 +1,6 @@
 use crate::common::TestEvent;
 use crate::common::setup::setup;
+use crate::common::helpers::update_until;
 use bevy::prelude::*;
 use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter};
 use tracing::{info, info_span};
@@ -18,20 +19,22 @@ fn test_basic_kafka_event_bus() {
     let total_span = info_span!("test_basic_kafka_event_bus.total");
     let _tg = total_span.enter();
     let setup_start = std::time::Instant::now();
-    let (backend, _bootstrap, setup_timings) = setup();
     let topic = format!("bevy-event-bus-test-{}", uuid_suffix());
     info!(
-        ?setup_timings,
         setup_total_ms = setup_start.elapsed().as_millis(),
         "Setup complete"
     );
 
     // Broker is assured ready by setup(); proceed.
 
+    // Create separate backends for writer and reader to simulate separate machines
+    let (backend_writer, _bootstrap_writer) = setup();
+    let (backend_reader, _bootstrap_reader) = setup();
+
     // Writer app
     let mut writer_app = App::new();
     writer_app.add_plugins(EventBusPlugins(
-        backend.clone(),
+        backend_writer,
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
 
@@ -56,10 +59,10 @@ fn test_basic_kafka_event_bus() {
 
     // Instead of fixed sleep loop we'll actively poll the reader app
 
-    // Reader app (separate consumer group)
+    // Reader app (separate consumer group with separate backend)
     let mut reader_app = App::new();
     reader_app.add_plugins(EventBusPlugins(
-        backend,
+        backend_reader,
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
 
@@ -85,28 +88,19 @@ fn test_basic_kafka_event_bus() {
     let recv_span = info_span!("reader.poll");
     let _rg = recv_span.enter();
     let start_poll = std::time::Instant::now();
-    let timeout = std::time::Duration::from_secs(2);
-    let mut frames = 0u32;
-    loop {
-        frames += 1;
-        reader_app.update();
-        // Check collected
-        {
-            let collected = reader_app.world().resource::<Collected>();
-            if !collected.0.is_empty() {
-                info!(
-                    frames,
-                    elapsed_ms = start_poll.elapsed().as_millis(),
-                    "Received first message"
-                );
-                break;
-            }
-        }
-        if start_poll.elapsed() > timeout {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(120));
+    let (received, frames) = update_until(&mut reader_app, 5000, |app| {
+        let collected = app.world().resource::<Collected>();
+        !collected.0.is_empty()
+    });
+    
+    if received {
+        info!(
+            frames,
+            elapsed_ms = start_poll.elapsed().as_millis(),
+            "Received first message"
+        );
     }
+    
     info!(
         total_frames = frames,
         poll_elapsed_ms = start_poll.elapsed().as_millis(),
@@ -114,19 +108,11 @@ fn test_basic_kafka_event_bus() {
     );
 
     let collected = reader_app.world().resource::<Collected>();
-    if !collected.0.iter().any(|e| e == &event_to_send) {
-        if std::env::var("FORCE_KAFKA_TEST").ok().as_deref() == Some("1") {
-            panic!(
-                "Expected to find sent event in collected list (collected={:?})",
-                collected.0
-            );
-        } else {
-            info!(
-                "Kafka message not received; skipping assertion (set FORCE_KAFKA_TEST=1 to enforce)"
-            );
-            return; // treat as skipped soft pass
-        }
-    }
+    assert!(
+        collected.0.iter().any(|e| e == &event_to_send),
+        "Expected to find sent event in collected list (collected={:?})",
+        collected.0
+    );
     info!(
         total_elapsed_ms = total_start.elapsed().as_millis(),
         "Test complete"
