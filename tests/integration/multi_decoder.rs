@@ -15,6 +15,7 @@ use bevy_event_bus::PreconfiguredTopics;
 use serde::{Deserialize, Serialize};
 
 use crate::common::setup::setup;
+use crate::common::helpers::unique_topic;
 
 // Event types for the comprehensive test
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Event)]
@@ -45,9 +46,9 @@ struct GameStateUpdate {
 /// Comprehensive integration test with multiple topics, events, and complex relationships
 #[test]
 fn test_multi_decoder() {
-    let topic_game = format!("game_events_{}", uuid_suffix());
-    let topic_combat = format!("combat_events_{}", uuid_suffix());
-    let topic_analytics = format!("analytics_events_{}", uuid_suffix());
+    let topic_game = unique_topic("game_events");
+    let topic_combat = unique_topic("combat_events");
+    let topic_analytics = unique_topic("analytics_events");
     
     // Set up a single app that demonstrates comprehensive many-to-many relationships
     let (backend, _) = setup();
@@ -174,13 +175,4 @@ fn test_multi_decoder() {
     println!("   - PlayerAttack: combat_events ✓ (game_events ✗, analytics_events ✗)");
     println!("   - GameStateUpdate: game_events ✓, analytics_events ✓ (combat_events ✗)");
     println!("   - All decoders working correctly with proper isolation");
-}
-
-// Helper function to generate unique suffixes for topic names
-fn uuid_suffix() -> String {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .to_string()
 }

@@ -1,6 +1,6 @@
 use crate::common::TestEvent;
 use crate::common::setup::setup;
-use crate::common::helpers::update_until;
+use crate::common::helpers::{unique_topic, update_until};
 use bevy::prelude::*;
 use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter};
 use tracing::{info, info_span};
@@ -19,7 +19,7 @@ fn test_basic_kafka_event_bus() {
     let total_span = info_span!("test_basic_kafka_event_bus.total");
     let _tg = total_span.enter();
     let setup_start = std::time::Instant::now();
-    let topic = format!("bevy-event-bus-test-{}", uuid_suffix());
+    let topic = unique_topic("bevy-event-bus-test");
     info!(
         setup_total_ms = setup_start.elapsed().as_millis(),
         "Setup complete"
@@ -117,13 +117,4 @@ fn test_basic_kafka_event_bus() {
         total_elapsed_ms = total_start.elapsed().as_millis(),
         "Test complete"
     );
-}
-
-fn uuid_suffix() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    format!("{}", nanos)
 }

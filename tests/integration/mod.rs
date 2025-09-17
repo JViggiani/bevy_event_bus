@@ -1,5 +1,6 @@
 pub mod background_queue_tests;
 pub mod basic;
+pub mod error_handling_tests;
 pub mod exactly_once_delivery;
 pub mod frame_limits;
 pub mod idle_read;
