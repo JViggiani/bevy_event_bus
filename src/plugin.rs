@@ -2,10 +2,11 @@ use bevy::prelude::*;
 
 use crate::{
     backends::{EventBusBackend, EventBusBackendResource},
+    decoder::DecoderRegistry,
     registration::EVENT_REGISTRY,
     resources::{
-        ConsumerMetrics, DrainMetricsEvent, DrainedTopicMetadata, EventBusConsumerConfig, EventMetadata, ProcessedMessage,
-        MessageQueue,
+        ConsumerMetrics, DecodedEventBuffer, DrainMetricsEvent, DrainedTopicMetadata, EventBusConsumerConfig, EventMetadata, ProcessedMessage,
+        MessageQueue, TopicDecodedEvents,
     },
     runtime::{block_on, ensure_runtime},
 };
@@ -153,17 +154,21 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
 
         // Initialize background consumer related resources if not present
         app.init_resource::<DrainedTopicMetadata>();
+        app.init_resource::<DecodedEventBuffer>();
+        app.init_resource::<DecoderRegistry>();
         app.init_resource::<ConsumerMetrics>();
         app.init_resource::<EventBusConsumerConfig>();
         app.add_event::<DrainMetricsEvent>();
         app.add_event::<BackendReadyEvent>();
         // MessageQueue will be inserted lazily once backend spawns sender & channel
 
-        // Drain system
+        // Drain system with multi-decoder pipeline
         fn drain_system(
             mut commands: Commands,
             backend: Option<Res<EventBusBackendResource>>,
             mut metadata_buffers: ResMut<DrainedTopicMetadata>,
+            mut decoded_buffer: ResMut<DecodedEventBuffer>,
+            mut decoder_registry: ResMut<DecoderRegistry>,
             mut metrics: ResMut<ConsumerMetrics>,
             config: Res<EventBusConsumerConfig>,
             maybe_queue: Option<Res<MessageQueue>>,
@@ -174,13 +179,15 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
             // Default queue length metrics when no queue
             metrics.queue_len_start = 0;
             metrics.queue_len_end = 0;
+            
             if let Some(queue) = maybe_queue {
                 metrics.queue_len_start = queue.receiver.len();
                 let limit = config.max_events_per_frame;
                 let time_budget = config
                     .max_drain_millis
                     .map(std::time::Duration::from_millis);
-                // Drain loop
+                
+                // Drain loop with multi-decoder pipeline
                 while limit
                     .map(|l| metrics.drained_last_frame < l)
                     .unwrap_or(true)
@@ -196,12 +203,13 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                             break;
                         }
                     }
+                    
                     match queue.receiver.try_recv() {
                         Ok(msg) => {
-                            let tname = msg.topic.clone();
-                            tracing::debug!(topic=%tname, "Draining message into metadata buffer");
+                            let topic_name = msg.topic.clone();
+                            tracing::debug!(topic=%topic_name, "Processing message with multi-decoder pipeline");
                             
-                            // Pre-compute metadata during drain to avoid repeated conversions in readers
+                            // Create metadata for this message
                             let metadata = EventMetadata {
                                 topic: msg.topic.clone(),
                                 partition: msg.partition,
@@ -211,14 +219,52 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                                 key: msg.key.clone(),
                             };
                             
+                            // Store raw message for backward compatibility (legacy readers)
                             let processed_msg = ProcessedMessage {
-                                payload: msg.payload,
-                                metadata,
+                                payload: msg.payload.clone(),
+                                metadata: metadata.clone(),
                             };
-                            
-                            // Store the processed message with pre-computed metadata (single source of truth)
-                            let metadata_entry = metadata_buffers.topics.entry(msg.topic).or_default();
+                            let metadata_entry = metadata_buffers.topics.entry(msg.topic.clone()).or_default();
                             metadata_entry.push(processed_msg);
+                            
+                            // Attempt multi-decode using registered decoders
+                            let decoded_events = decoder_registry.decode_all(&topic_name, &msg.payload);
+                            
+                            // Get or create topic buffer
+                            let topic_buffer = decoded_buffer.topics.entry(topic_name.clone()).or_insert_with(TopicDecodedEvents::new);
+                            topic_buffer.total_processed += 1;
+                            
+                            if decoded_events.is_empty() {
+                                // No decoder succeeded
+                                topic_buffer.decode_failures += 1;
+                                tracing::debug!(
+                                    topic = %topic_name,
+                                    decoders_tried = decoder_registry.decoder_count(&topic_name),
+                                    "No decoder succeeded for message"
+                                );
+                            } else {
+                                // At least one decoder succeeded
+                                for decoded_event in decoded_events {
+                                    tracing::trace!(
+                                        topic = %topic_name,
+                                        decoder = %decoded_event.decoder_name,
+                                        "Successfully decoded event"
+                                    );
+                                    
+                                    // Store the decoded event in the type-erased buffer
+                                    // The event Box contains the actual event, we need to store it properly
+                                    let type_erased = crate::resources::TypeErasedEvent {
+                                        event: decoded_event.event,
+                                        metadata: metadata.clone(),
+                                        decoder_name: decoded_event.decoder_name,
+                                    };
+                                    
+                                    topic_buffer.events_by_type
+                                        .entry(decoded_event.type_id)
+                                        .or_insert_with(Vec::new)
+                                        .push(type_erased);
+                                }
+                            }
                             
                             metrics.drained_last_frame += 1;
                         }
@@ -226,10 +272,10 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                         Err(crossbeam_channel::TryRecvError::Disconnected) => break,
                     }
                 }
+                
                 metrics.remaining_channel_after_drain = queue.receiver.len();
                 metrics.queue_len_end = metrics.remaining_channel_after_drain;
                 metrics.total_drained += metrics.drained_last_frame;
-                // Mark first drain and move any staged messages from backend into queue for next frame
             } else if let Some(backend_res) = backend {
                 let mut guard = backend_res.write();
                 if let Some(kafka) = guard
@@ -241,21 +287,17 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                     if let Some(rx) = kafka.take_receiver() {
                         // Insert queue so next frame we can drain
                         commands.insert_resource(MessageQueue { receiver: rx });
-                        // Also flush any staged messages into newly inserted queue by swapping
                     }
                 }
             }
-            // Count idle frame if nothing drained (covers both queue-present and queue-absent cases)
+            
+            // Count idle frame if nothing drained
             if metrics.drained_last_frame == 0 {
                 metrics.idle_frames += 1;
             }
             
-            // Occasional cleanup of empty topic buffers to prevent unbounded memory usage
-            // This is better than periodic cleanup of empty topics since it actually reclaims memory
+            // Periodic cleanup of empty topic buffers
             if metrics.idle_frames % 30 == 0 && metrics.idle_frames > 0 {
-                // For each topic, check if we can trim old consumed messages
-                // This would require coordination with EventBusReader offsets, but we don't have access here
-                // For now, keep the existing strategy but make it more aggressive
                 let before_count = metadata_buffers.topics.len();
                 metadata_buffers.topics.retain(|_topic, buffer| !buffer.is_empty());
                 let after_count = metadata_buffers.topics.len();
@@ -267,13 +309,28 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                         "Cleaned up empty topic metadata buffers"
                     );
                 }
+                
+                // Also clean up decoded event buffers
+                let before_decoded = decoded_buffer.topics.len();
+                decoded_buffer.topics.retain(|_topic, buffer| buffer.total_events() > 0);
+                let after_decoded = decoded_buffer.topics.len();
+                
+                if before_decoded > after_decoded {
+                    tracing::debug!(
+                        cleaned_decoded_topics = before_decoded - after_decoded,
+                        remaining_decoded_topics = after_decoded,
+                        "Cleaned up empty decoded event buffers"
+                    );
+                }
             }
+            
             metrics.drain_duration_us = frame_start.elapsed().as_micros();
             if metrics.drain_duration_us == 0
                 && (metrics.drained_last_frame > 0 || metrics.queue_len_start > 0)
             {
                 metrics.drain_duration_us = 1; // avoid zero-duration flake
             }
+            
             // Emit metrics snapshot every frame for observability
             drain_events.write(DrainMetricsEvent {
                 drained: metrics.drained_last_frame,

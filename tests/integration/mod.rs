@@ -4,6 +4,7 @@ pub mod exactly_once_delivery;
 pub mod frame_limits;
 pub mod idle_read;
 pub mod metadata_tests;
+pub mod multi_decoder;
 pub mod multi_topic;
 pub mod multi_type;
 pub mod offset_configuration;

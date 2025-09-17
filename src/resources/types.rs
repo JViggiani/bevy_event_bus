@@ -225,3 +225,102 @@ pub struct DrainMetricsEvent {
     pub dropped: usize,
     pub drain_duration_us: u128,
 }
+
+/// Multi-decoded event storage that groups all successfully decoded events by topic
+/// This replaces DrainedTopicMetadata for the new multi-decoder pipeline
+#[derive(Resource, Default)]
+pub struct DecodedEventBuffer {
+    /// Maps topic name to lists of decoded events (organized by type)
+    pub topics: HashMap<String, TopicDecodedEvents>,
+}
+
+/// Storage for all decoded events from a single topic, organized by event type
+#[derive(Default)]
+pub struct TopicDecodedEvents {
+    /// Maps TypeId to a vector of type-erased decoded events with metadata
+    pub events_by_type: HashMap<std::any::TypeId, Vec<TypeErasedEvent>>,
+    
+    /// Total number of raw messages processed for this topic
+    pub total_processed: usize,
+    
+    /// Number of messages that failed to decode with any decoder
+    pub decode_failures: usize,
+}
+
+/// Type-erased event with metadata, used for storage before type-specific retrieval
+pub struct TypeErasedEvent {
+    /// The decoded event as a type-erased box
+    pub event: Box<dyn std::any::Any + Send + Sync>,
+    
+    /// Metadata associated with this event
+    pub metadata: EventMetadata,
+    
+    /// Name of the decoder that produced this event (for debugging)
+    pub decoder_name: String,
+}
+
+impl TopicDecodedEvents {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    
+    /// Add a decoded event to the appropriate type bucket
+    pub fn add_event<T: 'static + Send + Sync>(&mut self, event: T, metadata: EventMetadata, decoder_name: String) {
+        let type_id = std::any::TypeId::of::<T>();
+        let type_erased = TypeErasedEvent {
+            event: Box::new(event),
+            metadata,
+            decoder_name,
+        };
+        
+        self.events_by_type
+            .entry(type_id)
+            .or_insert_with(Vec::new)
+            .push(type_erased);
+    }
+    
+    /// Get events of a specific type, converting them back from type-erased storage
+    pub fn get_events<T: BusEvent>(&self) -> Vec<ExternalEvent<T>> {
+        let type_id = std::any::TypeId::of::<T>();
+        
+        if let Some(type_erased_events) = self.events_by_type.get(&type_id) {
+            type_erased_events
+                .iter()
+                .filter_map(|te| {
+                    te.event
+                        .downcast_ref::<T>()
+                        .map(|event| ExternalEvent::new(event.clone(), te.metadata.clone()))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+    
+    /// Get the number of events of a specific type
+    pub fn count_events<T: 'static>(&self) -> usize {
+        let type_id = std::any::TypeId::of::<T>();
+        self.events_by_type.get(&type_id).map(|v| v.len()).unwrap_or(0)
+    }
+    
+    /// Get total number of successfully decoded events across all types
+    pub fn total_events(&self) -> usize {
+        self.events_by_type.values().map(|v| v.len()).sum()
+    }
+    
+    /// Clear all events (typically called after processing)
+    pub fn clear(&mut self) {
+        self.events_by_type.clear();
+        self.total_processed = 0;
+        self.decode_failures = 0;
+    }
+    
+    /// Get decode success rate as a percentage
+    pub fn success_rate(&self) -> f32 {
+        if self.total_processed == 0 {
+            0.0
+        } else {
+            (self.total_events() as f32 / self.total_processed as f32) * 100.0
+        }
+    }
+}
