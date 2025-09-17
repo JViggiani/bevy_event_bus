@@ -69,7 +69,7 @@ fn no_event_duplication_exactly_once_delivery() {
         topic: Res<Topic>,
         mut collected: ResMut<Collected>,
     ) {
-        for e in r.try_read(&topic.0) {
+        for e in r.read(&topic.0) {
             collected.0.push(e.clone());
         }
     }

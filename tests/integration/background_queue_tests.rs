@@ -2,7 +2,7 @@ use crate::common::setup::build_basic_app_simple;
 use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
 use bevy_event_bus::{ConsumerMetrics, DrainMetricsEvent};
-use bevy_event_bus::{DrainedTopicBuffers, EventBusConsumerConfig, EventBusReader};
+use bevy_event_bus::{DrainedTopicMetadata, EventBusConsumerConfig, EventBusReader, ProcessedMessage, EventMetadata};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, bevy_event_bus::ExternalBusEvent)]
@@ -14,7 +14,7 @@ struct TestMsg {
 fn drain_empty_ok() {
     let mut app = build_basic_app_simple();
     app.update(); // run drain once
-    let buffers = app.world().resource::<DrainedTopicBuffers>();
+    let buffers = app.world().resource::<DrainedTopicMetadata>();
     assert!(buffers.topics.is_empty() || buffers.topics.values().all(|v| v.is_empty()));
 }
 
@@ -23,11 +23,20 @@ fn unlimited_buffer_gathers() {
     let mut app = build_basic_app_simple();
     // Simulate manually inserting drained payloads (bypass Kafka for unit-style test)
     {
-        let mut buffers = app.world_mut().resource_mut::<DrainedTopicBuffers>();
+        let mut buffers = app.world_mut().resource_mut::<DrainedTopicMetadata>();
         let topic = "t".to_string();
         let entry = buffers.topics.entry(topic.clone()).or_default();
         for i in 0..5u32 {
-            entry.push(serde_json::to_vec(&TestMsg { v: i }).unwrap());
+            let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
+            let metadata = EventMetadata {
+                topic: topic.clone(),
+                partition: 0,
+                offset: i as i64,
+                timestamp: std::time::Instant::now(),
+                headers: std::collections::HashMap::new(),
+                key: None,
+            };
+            entry.push(ProcessedMessage { payload, metadata });
         }
     }
     // Reader should deserialize all
@@ -35,7 +44,7 @@ fn unlimited_buffer_gathers() {
         .world_mut()
         .run_system_once(|mut r: EventBusReader<TestMsg>| {
             let mut collected = Vec::new();
-            for ev in r.try_read("t") {
+            for ev in r.read("t") {
                 collected.push(ev.clone());
             }
             assert_eq!(collected.len(), 5);
@@ -51,17 +60,26 @@ fn frame_limit_respected() {
     });
     // Preload channel by faking buffers (simulate drain would only take first 3)
     {
-        let mut buffers = app.world_mut().resource_mut::<DrainedTopicBuffers>();
+        let mut buffers = app.world_mut().resource_mut::<DrainedTopicMetadata>();
         let entry = buffers.topics.entry("cap".into()).or_default();
         for i in 0..10u32 {
-            entry.push(serde_json::to_vec(&TestMsg { v: i }).unwrap());
+            let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
+            let metadata = EventMetadata {
+                topic: "cap".to_string(),
+                partition: 0,
+                offset: i as i64,
+                timestamp: std::time::Instant::now(),
+                headers: std::collections::HashMap::new(),
+                key: None,
+            };
+            entry.push(ProcessedMessage { payload, metadata });
         }
     }
     // Reader only sees existing buffer; limit logic applies only during drain; since we injected directly this test is less meaningful but placeholder.
     let _ = app
         .world_mut()
         .run_system_once(|mut r: EventBusReader<TestMsg>| {
-            let count = r.try_read("cap").count();
+            let count = r.read("cap").count();
             assert_eq!(count, 10);
         });
 }
@@ -72,10 +90,19 @@ fn drain_metrics_emitted_and_updated() {
     // Ensure event type registered
     // Preload channel indirectly: insert some drained payloads, then run one update to emit metrics
     {
-        let mut buffers = app.world_mut().resource_mut::<DrainedTopicBuffers>();
+        let mut buffers = app.world_mut().resource_mut::<DrainedTopicMetadata>();
         let entry = buffers.topics.entry("m".into()).or_default();
         for i in 0..3u32 {
-            entry.push(serde_json::to_vec(&TestMsg { v: i }).unwrap());
+            let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
+            let metadata = EventMetadata {
+                topic: "m".to_string(),
+                partition: 0,
+                offset: i as i64,
+                timestamp: std::time::Instant::now(),
+                headers: std::collections::HashMap::new(),
+                key: None,
+            };
+            entry.push(ProcessedMessage { payload, metadata });
         }
     }
     // First update drains nothing new (already in buffers) but still emits metrics event with drained=0

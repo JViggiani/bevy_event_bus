@@ -4,7 +4,7 @@ use crate::{
     backends::{EventBusBackend, EventBusBackendResource},
     registration::EVENT_REGISTRY,
     resources::{
-        ConsumerMetrics, DrainMetricsEvent, DrainedTopicBuffers, EventBusConsumerConfig,
+        ConsumerMetrics, DrainMetricsEvent, DrainedTopicMetadata, EventBusConsumerConfig, EventMetadata, ProcessedMessage,
         MessageQueue,
     },
     runtime::{block_on, ensure_runtime},
@@ -152,7 +152,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
         }
 
         // Initialize background consumer related resources if not present
-        app.init_resource::<DrainedTopicBuffers>();
+        app.init_resource::<DrainedTopicMetadata>();
         app.init_resource::<ConsumerMetrics>();
         app.init_resource::<EventBusConsumerConfig>();
         app.add_event::<DrainMetricsEvent>();
@@ -163,7 +163,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
         fn drain_system(
             mut commands: Commands,
             backend: Option<Res<EventBusBackendResource>>,
-            mut buffers: ResMut<DrainedTopicBuffers>,
+            mut metadata_buffers: ResMut<DrainedTopicMetadata>,
             mut metrics: ResMut<ConsumerMetrics>,
             config: Res<EventBusConsumerConfig>,
             maybe_queue: Option<Res<MessageQueue>>,
@@ -199,9 +199,27 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                     match queue.receiver.try_recv() {
                         Ok(msg) => {
                             let tname = msg.topic.clone();
-                            let entry = buffers.topics.entry(msg.topic).or_default();
-                            tracing::debug!(topic=%tname, size_before=entry.len(), "Draining message into buffer");
-                            entry.push(msg.payload);
+                            tracing::debug!(topic=%tname, "Draining message into metadata buffer");
+                            
+                            // Pre-compute metadata during drain to avoid repeated conversions in readers
+                            let metadata = EventMetadata {
+                                topic: msg.topic.clone(),
+                                partition: msg.partition,
+                                offset: msg.offset,
+                                timestamp: msg.timestamp,
+                                headers: msg.headers.clone(),
+                                key: msg.key.clone(),
+                            };
+                            
+                            let processed_msg = ProcessedMessage {
+                                payload: msg.payload,
+                                metadata,
+                            };
+                            
+                            // Store the processed message with pre-computed metadata (single source of truth)
+                            let metadata_entry = metadata_buffers.topics.entry(msg.topic).or_default();
+                            metadata_entry.push(processed_msg);
+                            
                             metrics.drained_last_frame += 1;
                         }
                         Err(crossbeam_channel::TryRecvError::Empty) => break,
@@ -232,21 +250,21 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                 metrics.idle_frames += 1;
             }
             
-            // Smarter cleanup: trim consumed messages from topic buffers
+            // Occasional cleanup of empty topic buffers to prevent unbounded memory usage
             // This is better than periodic cleanup of empty topics since it actually reclaims memory
             if metrics.idle_frames % 30 == 0 && metrics.idle_frames > 0 {
                 // For each topic, check if we can trim old consumed messages
                 // This would require coordination with EventBusReader offsets, but we don't have access here
                 // For now, keep the existing strategy but make it more aggressive
-                let before_count = buffers.topics.len();
-                buffers.topics.retain(|_topic, buffer| !buffer.is_empty());
-                let after_count = buffers.topics.len();
+                let before_count = metadata_buffers.topics.len();
+                metadata_buffers.topics.retain(|_topic, buffer| !buffer.is_empty());
+                let after_count = metadata_buffers.topics.len();
                 
                 if before_count > after_count {
                     tracing::debug!(
                         cleaned_topics = before_count - after_count,
                         remaining_topics = after_count,
-                        "Cleaned up empty topic buffers"
+                        "Cleaned up empty topic metadata buffers"
                     );
                 }
             }

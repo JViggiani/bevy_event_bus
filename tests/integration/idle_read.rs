@@ -23,7 +23,7 @@ fn idle_empty_topic_poll_does_not_block() {
         Update,
         move |mut r: EventBusReader<TestEvent>, mut ticks: ResMut<Ticks>| {
             // Try reading every frame; should be instant (reader fallback/drained path fast)
-            for _ in r.try_read(&topic_read) { /* none expected */ }
+            for _ in r.read(&topic_read) { /* none expected */ }
             ticks.0 += 1;
         },
     );

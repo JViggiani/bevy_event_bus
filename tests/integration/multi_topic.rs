@@ -66,10 +66,10 @@ fn multi_topic_isolation() {
     reader.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>, mut col: ResMut<Collected>| {
-            for ev in r.try_read(&ta_r) {
+            for ev in r.read(&ta_r) {
                 col.0.push(ev.clone());
             }
-            for ev in r.try_read(&tb_r) {
+            for ev in r.read(&tb_r) {
                 col.0.push(ev.clone());
             }
         },

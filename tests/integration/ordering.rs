@@ -50,7 +50,7 @@ fn per_topic_order_preserved() {
     reader.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>, mut c: ResMut<Collected>| {
-            for ev in r.try_read(&tr) {
+            for ev in r.read(&tr) {
                 c.0.push(ev.clone());
             }
         },
@@ -133,10 +133,10 @@ fn cross_topic_interleave_each_ordered() {
         move |mut r: EventBusReader<TestEvent>,
               mut c1: ResMut<CollectedT1>,
               mut c2: ResMut<CollectedT2>| {
-            for ev in r.try_read(&ta) {
+            for ev in r.read(&ta) {
                 c1.0.push(ev.clone());
             }
-            for ev in r.try_read(&tb) {
+            for ev in r.read(&tb) {
                 c2.0.push(ev.clone());
             }
         },

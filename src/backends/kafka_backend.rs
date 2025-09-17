@@ -1,7 +1,7 @@
 use rdkafka::{
     config::ClientConfig,
     consumer::{BaseConsumer, Consumer},
-    message::Message,
+    message::{Headers, Message},
     producer::{BaseProducer, BaseRecord, Producer},
 };
 use std::collections::{HashMap, HashSet};
@@ -294,6 +294,20 @@ impl EventBusBackend for KafkaEventBusBackend {
                         let topic = m.topic().to_string();
                         { subs.lock().unwrap().insert(topic.clone()); }
                         if let Some(payload) = m.payload() {
+                            // Extract headers from Kafka message
+                            let mut headers = std::collections::HashMap::new();
+                            if let Some(msg_headers) = m.headers() {
+                                for header in msg_headers.iter() {
+                                    if let Some(value_bytes) = header.value {
+                                        // Convert header value to string (UTF-8 only for now)
+                                        if let Ok(value_str) = String::from_utf8(value_bytes.to_vec()) {
+                                            headers.insert(header.key.to_string(), value_str);
+                                        }
+                                        // Skip non-UTF-8 headers for simplicity
+                                    }
+                                }
+                            }
+                            
                             let msg = IncomingMessage {
                                 topic,
                                 partition: m.partition(),
@@ -301,6 +315,7 @@ impl EventBusBackend for KafkaEventBusBackend {
                                 key: m.key().map(|k| k.to_vec()),
                                 payload: payload.to_vec(),
                                 timestamp: std::time::Instant::now(),
+                                headers,
                             };
                             if tx.try_send(msg).is_err() { dropped_counter.fetch_add(1, Ordering::Relaxed); }
                         }
@@ -340,6 +355,33 @@ impl EventBusBackend for KafkaEventBusBackend {
         if let Err((e, _)) = self.producer.send(record) {
             return Err(EventBusError::Other(format!(
                 "Failed to enqueue message: {}",
+                e
+            )));
+        }
+        // Non-blocking send; delivery progress advanced by background producer polling.
+        Ok(())
+    }
+    
+    fn try_send_serialized_with_headers(&self, event_json: &[u8], topic: &str, headers: &std::collections::HashMap<String, String>) -> Result<(), EventBusError> {
+        use rdkafka::message::OwnedHeaders;
+        
+        let mut record: BaseRecord<'_, (), [u8]> = BaseRecord::to(topic).payload(event_json);
+        
+        // Add headers if any
+        if !headers.is_empty() {
+            let mut owned_headers = OwnedHeaders::new();
+            for (key, value) in headers {
+                owned_headers = owned_headers.insert(rdkafka::message::Header {
+                    key,
+                    value: Some(value),
+                });
+            }
+            record = record.headers(owned_headers);
+        }
+        
+        if let Err((e, _)) = self.producer.send(record) {
+            return Err(EventBusError::Other(format!(
+                "Failed to enqueue message with headers: {}",
                 e
             )));
         }

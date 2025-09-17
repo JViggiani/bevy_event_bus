@@ -1,7 +1,7 @@
 //! bevy_event_bus: Connect Bevy events to external message brokers
 //!
 //! This crate provides an interface similar to Bevy's EventReader/EventWriter
-//! but connected to external message brokers like Kafka or AMQP.
+//! but connected to external message brokers like Kafka.
 
 // Core modules
 pub mod backends;
@@ -22,8 +22,8 @@ pub use plugin::{BackendDownEvent, BackendReadyEvent, BackendStatus};
 pub use plugin::{EventBusPlugin, EventBusPlugins, PreconfiguredTopics};
 pub use readers::event_bus_reader::EventBusReader;
 pub use resources::{
-    ConsumerMetrics, DeliveryEvent, DrainMetricsEvent, DrainedTopicBuffers, EventBusConsumerConfig,
-    IncomingMessage, MessageQueue, OutboundMessage, OutboundMessageQueue,
+    ConsumerMetrics, DeliveryEvent, DrainMetricsEvent, DrainedTopicMetadata, EventBusConsumerConfig,
+    EventMetadata, ExternalEvent, IncomingMessage, MessageQueue, OutboundMessage, OutboundMessageQueue, ProcessedMessage,
 };
 pub use writers::event_bus_writer::EventBusWriter;
 
@@ -40,10 +40,10 @@ pub use runtime::{block_on, runtime};
 /// Re-export common items for convenience
 pub mod prelude {
     pub use crate::{
-        BusEvent, ConsumerMetrics, DeliveryEvent, DrainMetricsEvent, DrainedTopicBuffers, EventBusBackend,
+        BusEvent, ConsumerMetrics, DeliveryEvent, DrainMetricsEvent, DrainedTopicMetadata, EventBusBackend,
         EventBusBackendExt, EventBusConsumerConfig, EventBusError, EventBusPlugin, EventBusPlugins,
-        EventBusReader, EventBusWriter, ExternalBusEvent, IncomingMessage, MessageQueue,
-        OutboundMessage, OutboundMessageQueue,
+        EventBusReader, EventBusWriter, EventMetadata, ExternalBusEvent, ExternalEvent, IncomingMessage, MessageQueue,
+        OutboundMessage, OutboundMessageQueue, ProcessedMessage,
     };
 
     #[cfg(feature = "kafka")]

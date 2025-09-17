@@ -63,7 +63,7 @@ fn offset_configuration_earliest_receives_historical_events() {
     earliest_app.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>, mut c: ResMut<CollectedEarliest>| {
-            for ev in r.try_read(&topic_read) {
+            for ev in r.read(&topic_read) {
                 c.0.push(ev.clone());
             }
         },
@@ -149,7 +149,7 @@ fn offset_configuration_latest_ignores_historical_events() {
     latest_app.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>, mut c: ResMut<CollectedLatest>| {
-            for ev in r.try_read(&topic_read) {
+            for ev in r.read(&topic_read) {
                 c.0.push(ev.clone());
             }
         },
@@ -248,7 +248,7 @@ fn default_offset_configuration_is_latest() {
     app.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>, mut c: ResMut<Collected>| {
-            for ev in r.try_read(&topic_read) {
+            for ev in r.read(&topic_read) {
                 c.0.push(ev.clone());
             }
         },
