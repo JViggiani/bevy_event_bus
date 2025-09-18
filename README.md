@@ -313,3 +313,33 @@ let config = KafkaConfig {
 
 let kafka_backend = KafkaEventBusBackend::new(config);
 ```
+
+## Performance Testing
+
+The library includes comprehensive performance tests to measure throughput and latency under various conditions. See [PERFORMANCE_TESTING.md](PERFORMANCE_TESTING.md) for detailed documentation.
+
+### Quick Performance Test
+```bash
+# Run all performance benchmarks
+./run_performance_tests.sh
+
+# Run specific test
+./run_performance_tests.sh test_message_throughput
+
+# Results are automatically saved to event_bus_perf_results.csv
+```
+
+### Sample Performance Results
+```
+Test: test_message_throughput        | Send Rate:    76373 msg/s | Receive Rate:    78000 msg/s | Payload:   100 bytes
+Test: test_high_volume_small_messages | Send Rate:    73742 msg/s | Receive Rate:    74083 msg/s | Payload:    20 bytes
+Test: test_large_message_throughput   | Send Rate:     8234 msg/s | Receive Rate:     8156 msg/s | Payload: 10000 bytes
+```
+
+The performance tests measure:
+- **Message throughput** (messages per second)
+- **Data throughput** (MB/s) 
+- **End-to-end latency**
+- **System stability** under load
+
+Performance results are tracked over time with git commit hashes for regression analysis.

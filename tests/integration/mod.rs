@@ -10,3 +10,4 @@ pub mod multi_topic;
 pub mod multi_type;
 pub mod offset_configuration;
 pub mod ordering;
+pub mod performance_tests;
