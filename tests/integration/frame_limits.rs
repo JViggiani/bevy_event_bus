@@ -3,7 +3,7 @@ use crate::common::helpers::{unique_topic, update_until};
 use crate::common::setup::setup;
 use bevy::prelude::*;
 use bevy_event_bus::{
-    EventBusConsumerConfig, EventBusPlugins, EventBusReader, EventBusWriter,
+    EventBusConsumerConfig, EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt,
 };
 
 #[test]
@@ -16,15 +16,18 @@ fn frame_limit_spreads_drain() {
         backend_w,
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
+    writer.add_bus_event::<TestEvent>(&topic);
+    
     let mut reader = App::new();
     reader.add_plugins(EventBusPlugins(
         backend_r,
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
+    reader.add_bus_event::<TestEvent>(&topic);
     let tclone = topic.clone();
     writer.add_systems(Update, move |mut w: EventBusWriter<TestEvent>| {
         for i in 0..15 {
-            let _ = w.send(
+            let _ = w.write(
                 &tclone,
                 TestEvent {
                     message: format!("v{i}"),

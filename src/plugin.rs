@@ -5,10 +5,11 @@ use crate::{
     decoder::DecoderRegistry,
     registration::EVENT_REGISTRY,
     resources::{
-        ConsumerMetrics, DecodedEventBuffer, DrainMetricsEvent, DrainedTopicMetadata, EventBusConsumerConfig, EventMetadata, ProcessedMessage,
-        MessageQueue, TopicDecodedEvents,
+        ConsumerMetrics, DecodedEventBuffer, DrainMetricsEvent, DrainedTopicMetadata, EventBusConsumerConfig, EventMetadata,
+        MessageQueue, ProcessedMessage, TopicDecodedEvents,
     },
     runtime::{block_on, ensure_runtime},
+    writers::event_bus_writer::EventBusErrorQueue,
 };
 
 /// Pre-configured topics resource inserted at plugin construction.
@@ -25,6 +26,9 @@ pub struct EventBusPlugin;
 
 impl Plugin for EventBusPlugin {
     fn build(&self, app: &mut App) {
+        // Register core error events
+        app.add_event::<crate::EventBusDecodeError>();
+        
         // Invoke registration callbacks (derive macro populated). We DO NOT drain so multiple Apps each see events.
         let guard = EVENT_REGISTRY.lock().unwrap();
         for cb in guard.iter() {
@@ -78,6 +82,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
         let boxed = self.0.clone_box();
         app.insert_resource(EventBusBackendResource::from_box(boxed));
         app.insert_resource(self.1.clone());
+        app.insert_resource(EventBusErrorQueue::default());
         // Pre-create topics and subscribe BEFORE connecting so background consumer starts with full assignment.
         if let Some(pre) = app.world().get_resource::<PreconfiguredTopics>().cloned() {
             if let Some(backend_res) = app
@@ -113,8 +118,8 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                     }
                 }
                 for topic in pre.0.iter() {
-                    if let Err(e) = block_on(guard.subscribe(topic)) {
-                        tracing::warn!(topic = %topic, err = ?e, "Failed to pre-subscribe to topic");
+                    if !block_on(guard.subscribe(topic)) {
+                        tracing::warn!(topic = %topic, "Failed to pre-subscribe to topic");
                     }
                 }
             }
@@ -127,6 +132,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
         {
             let mut guard = backend_res.write();
             let _ = block_on(guard.connect());
+            
             if let Some(kafka) = guard
                 .as_any_mut()
                 .downcast_mut::<crate::backends::kafka_backend::KafkaEventBusBackend>(
@@ -135,6 +141,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                     app.world_mut()
                         .insert_resource(MessageQueue { receiver: rx });
                 }
+                
                 // Inject lifecycle sender into kafka backend by wrapping its background task via a helper channel
                 // (Since backend code owns spawning, we detect readiness here: receiver presence == ready)
                 let (tx, rx_life) = crossbeam_channel::unbounded::<LifecycleMessage>();
@@ -219,14 +226,6 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                                 key: msg.key.clone(),
                             };
                             
-                            // Store raw message for backward compatibility (legacy readers)
-                            let processed_msg = ProcessedMessage {
-                                payload: msg.payload.clone(),
-                                metadata: metadata.clone(),
-                            };
-                            let metadata_entry = metadata_buffers.topics.entry(msg.topic.clone()).or_default();
-                            metadata_entry.push(processed_msg);
-                            
                             // Attempt multi-decode using registered decoders
                             let decoded_events = decoder_registry.decode_all(&topic_name, &msg.payload);
                             
@@ -235,13 +234,28 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                             topic_buffer.total_processed += 1;
                             
                             if decoded_events.is_empty() {
-                                // No decoder succeeded
+                                // No decoder succeeded - fire decode error event
                                 topic_buffer.decode_failures += 1;
                                 tracing::debug!(
                                     topic = %topic_name,
                                     decoders_tried = decoder_registry.decoder_count(&topic_name),
                                     "No decoder succeeded for message"
                                 );
+                                
+                                // Generate decode error event
+                                let decode_error = crate::EventBusDecodeError::new(
+                                    topic_name.clone(),
+                                    format!("No decoder succeeded. Tried {} decoders", decoder_registry.decoder_count(&topic_name)),
+                                    msg.payload.clone(),
+                                    format!("tried_{}_decoders", decoder_registry.decoder_count(&topic_name)),
+                                    Some(metadata.partition),
+                                    Some(metadata.offset),
+                                );
+                                
+                                // Store decode error for event dispatch 
+                                metadata_buffers
+                                    .decode_errors
+                                    .push(decode_error);
                             } else {
                                 // At least one decoder succeeded
                                 for decoded_event in decoded_events {
@@ -264,6 +278,19 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                                         .or_insert_with(Vec::new)
                                         .push(type_erased);
                                 }
+                                
+                                // Also add the original message to DrainedTopicMetadata for EventBusReader compatibility
+                                // This allows existing EventBusReader<T> to find the events by deserializing the original payload
+                                let processed_msg = ProcessedMessage {
+                                    payload: msg.payload.clone(),
+                                    metadata: metadata.clone(),
+                                };
+                                
+                                metadata_buffers
+                                    .topics
+                                    .entry(topic_name.clone())
+                                    .or_insert_with(Vec::new)
+                                    .push(processed_msg);
                             }
                             
                             metrics.drained_last_frame += 1;
@@ -341,6 +368,22 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
             });
         }
         app.add_systems(PreUpdate, drain_system);
+        app.add_systems(PreUpdate, decode_error_dispatch_system.after(drain_system));
+
+        // Error queue flush system - runs in PostUpdate to ensure all EventBusWriter operations complete first
+        fn error_queue_flush_system(world: &mut World) {
+            // Extract the pending errors first
+            let pending_errors = {
+                let error_queue = world.resource::<EventBusErrorQueue>();
+                error_queue.drain_pending()
+            };
+            
+            // Then flush them
+            for error_fn in pending_errors {
+                error_fn(world);
+            }
+        }
+        app.add_systems(PostUpdate, error_queue_flush_system);
 
         // Producer progress now handled entirely by backend background task; sender_system removed since sends are now direct.
 
@@ -376,5 +419,16 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
             }
         }
         app.add_systems(PreUpdate, backend_status_update);
+
+        // Decode error dispatch system - sends EventBusDecodeError events
+        fn decode_error_dispatch_system(
+            mut drained_metadata: ResMut<DrainedTopicMetadata>,
+            mut decode_error_writer: EventWriter<crate::EventBusDecodeError>,
+        ) {
+            // Dispatch all accumulated decode errors as events
+            for decode_error in drained_metadata.decode_errors.drain(..) {
+                decode_error_writer.write(decode_error);
+            }
+        }
     }
 }

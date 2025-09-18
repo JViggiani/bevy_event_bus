@@ -11,7 +11,7 @@
 
 use bevy::prelude::*;
 use bevy_event_bus::prelude::*;
-use bevy_event_bus::PreconfiguredTopics;
+use bevy_event_bus::{PreconfiguredTopics, EventBusAppExt};
 use serde::{Deserialize, Serialize};
 
 use crate::common::setup::setup;

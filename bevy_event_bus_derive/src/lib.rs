@@ -10,10 +10,15 @@ use syn::{DeriveInput, parse_macro_input};
 /// 1. Implements bevy::prelude::Event automatically
 /// 2. Registers the type with the EventBusPlugin so you don't need to call register_bus_event
 ///
+/// **Important**: Your event struct must also derive `Serialize` and `Deserialize` from serde
+/// for external event bus compatibility.
+///
 /// # Example
 ///
 /// ```
-/// #[derive(ExternalBusEvent, Clone, Debug)]
+/// use serde::{Serialize, Deserialize};
+///
+/// #[derive(ExternalBusEvent, Serialize, Deserialize, Clone, Debug)]
 /// struct PlayerLevelUpEvent {
 ///     entity_id: u64,
 ///     new_level: u32,
@@ -31,6 +36,7 @@ pub fn derive_external_bus_event(input: TokenStream) -> TokenStream {
     );
     let expanded = quote! {
         impl bevy::prelude::Event for #name { type Traversal = (); }
+        
         #[allow(non_upper_case_globals)]
         #[ctor::ctor]
         static #static_ident: () = {

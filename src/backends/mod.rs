@@ -1,5 +1,5 @@
-mod backend_resource;
-mod event_bus_backend;
+pub mod backend_resource;
+pub mod event_bus_backend;
 
 #[cfg(feature = "kafka")]
 pub mod kafka_backend;

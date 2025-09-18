@@ -2,7 +2,7 @@ use crate::common::TestEvent;
 use crate::common::setup::setup;
 use crate::common::helpers::{unique_topic, update_until};
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter};
+use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt};
 use tracing::{info, info_span};
 use tracing_subscriber::EnvFilter;
 
@@ -37,6 +37,9 @@ fn test_basic_kafka_event_bus() {
         backend_writer,
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
+    
+    // Register bus event to enable EventBusWriter error handling
+    writer_app.add_bus_event::<TestEvent>(&topic);
 
     #[derive(Resource, Clone)]
     struct ToSend(TestEvent, String);
@@ -48,7 +51,7 @@ fn test_basic_kafka_event_bus() {
     writer_app.insert_resource(ToSend(event_to_send.clone(), topic.clone()));
 
     fn writer_system(mut w: EventBusWriter<TestEvent>, data: Res<ToSend>) {
-        let _ = w.send(&data.1, data.0.clone());
+        let _ = w.write(&data.1, data.0.clone());
     }
     writer_app.add_systems(Update, writer_system);
     let writer_span = info_span!("writer_app.update");
@@ -65,6 +68,9 @@ fn test_basic_kafka_event_bus() {
         backend_reader,
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
+    
+    // Register bus event for reading
+    reader_app.add_bus_event::<TestEvent>(&topic);
 
     #[derive(Resource, Default)]
     struct Collected(Vec<TestEvent>);

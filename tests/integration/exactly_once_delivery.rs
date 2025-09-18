@@ -2,7 +2,7 @@ use crate::common::events::TestEvent;
 use crate::common::helpers::{unique_topic, update_until};
 use crate::common::setup::setup;
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter};
+use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt};
 
 /// Test that events are delivered exactly once - no duplication
 #[test]
@@ -28,6 +28,7 @@ fn no_event_duplication_exactly_once_delivery() {
         backend_writer,
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
+    writer.add_bus_event::<TestEvent>(&topic);
 
     // Send exactly 10 unique events (as a resource to avoid closure issues)
     #[derive(Resource, Clone)]
@@ -44,7 +45,7 @@ fn no_event_duplication_exactly_once_delivery() {
 
     fn writer_system(mut w: EventBusWriter<TestEvent>, data: Res<ToSend>) {
         for event in &data.0 {
-            let _ = w.send(&data.1, event.clone());
+            let _ = w.write(&data.1, event.clone());
         }
     }
     writer.add_systems(Update, writer_system);
@@ -55,6 +56,7 @@ fn no_event_duplication_exactly_once_delivery() {
         backend_reader,
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
+    reader.add_bus_event::<TestEvent>(&topic);
 
     #[derive(Resource, Default)]
     struct Collected(Vec<TestEvent>);

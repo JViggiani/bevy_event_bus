@@ -2,7 +2,7 @@ use crate::common::events::TestEvent;
 use crate::common::helpers::unique_topic;
 use crate::common::helpers::wait_for_events;
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter};
+use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt};
 
 #[test]
 fn per_topic_order_preserved() {
@@ -17,10 +17,12 @@ fn per_topic_order_preserved() {
         backend_w,
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
+    writer.add_bus_event::<TestEvent>(&topic);
     reader.add_plugins(EventBusPlugins(
         backend_r,
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
+    reader.add_bus_event::<TestEvent>(&topic);
     let tclone = topic.clone();
     writer.add_systems(
         Update,
@@ -30,7 +32,7 @@ fn per_topic_order_preserved() {
                 return;
             }
             for i in 0..10 {
-                let _ = w.send(
+                let _ = w.write(
                     &tclone,
                     TestEvent {
                         message: format!("msg-{i}"),
@@ -85,10 +87,12 @@ fn cross_topic_interleave_each_ordered() {
         backend_w,
         bevy_event_bus::PreconfiguredTopics::new([t1.clone(), t2.clone()]),
     ));
+    writer.add_bus_event_topics::<TestEvent>(&[&t1, &t2]);
     reader.add_plugins(EventBusPlugins(
         backend_r,
         bevy_event_bus::PreconfiguredTopics::new([t1.clone(), t2.clone()]),
     ));
+    reader.add_bus_event_topics::<TestEvent>(&[&t1, &t2]);
     let t1c = t1.clone();
     let t2c = t2.clone();
     // Single send frame like earlier test
@@ -100,14 +104,14 @@ fn cross_topic_interleave_each_ordered() {
                 return;
             }
             for i in 0..5 {
-                let _ = w.send(
+                let _ = w.write(
                     &t1c,
                     TestEvent {
                         message: format!("A{i}"),
                         value: i,
                     },
                 );
-                let _ = w.send(
+                let _ = w.write(
                     &t2c,
                     TestEvent {
                         message: format!("B{i}"),

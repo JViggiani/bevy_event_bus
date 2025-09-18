@@ -2,7 +2,7 @@ use crate::common::events::{TestEvent, UserLoginEvent};
 use crate::common::helpers::{unique_topic, update_until};
 use crate::common::setup::setup;
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter};
+use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt};
 
 #[test]
 fn single_topic_multiple_types_same_frame() {
@@ -15,11 +15,15 @@ fn single_topic_multiple_types_same_frame() {
         backend_w,
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
+    writer.add_bus_event::<TestEvent>(&topic);
+    writer.add_bus_event::<UserLoginEvent>(&topic);
     let mut reader = App::new();
     reader.add_plugins(EventBusPlugins(
         backend_r,
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
+    reader.add_bus_event::<TestEvent>(&topic);
+    reader.add_bus_event::<UserLoginEvent>(&topic);
 
     #[derive(Resource, Default)]
     struct CollectedA(Vec<TestEvent>);
@@ -66,14 +70,14 @@ fn single_topic_multiple_types_same_frame() {
                 *started = true;
                 return;
             }
-            let _ = w1.send(
+            let _ = w1.write(
                 &tclone,
                 TestEvent {
                     message: "hello".into(),
                     value: 42,
                 },
             );
-            let _ = w2.send(
+            let _ = w2.write(
                 &tclone,
                 UserLoginEvent {
                     user_id: "u1".into(),
@@ -110,11 +114,15 @@ fn single_topic_multiple_types_interleaved_frames() {
         backend_w,
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
+    writer.add_bus_event::<TestEvent>(&topic);
+    writer.add_bus_event::<UserLoginEvent>(&topic);
     let mut reader = App::new();
     reader.add_plugins(EventBusPlugins(
         backend_r,
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
+    reader.add_bus_event::<TestEvent>(&topic);
+    reader.add_bus_event::<UserLoginEvent>(&topic);
 
     #[derive(Resource, Default)]
     struct CollectedA(Vec<TestEvent>);
@@ -161,7 +169,7 @@ fn single_topic_multiple_types_interleaved_frames() {
               mut w2: EventBusWriter<UserLoginEvent>,
               mut c: ResMut<Counter>| {
             if c.0 % 2 == 0 {
-                let _ = w1.send(
+                let _ = w1.write(
                     &tclone,
                     TestEvent {
                         message: format!("m{}", c.0),
@@ -169,7 +177,7 @@ fn single_topic_multiple_types_interleaved_frames() {
                     },
                 );
             } else {
-                let _ = w2.send(
+                let _ = w2.write(
                     &tclone,
                     UserLoginEvent {
                         user_id: format!("u{}", c.0),

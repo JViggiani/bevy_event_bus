@@ -10,6 +10,7 @@ A Bevy plugin that connects Bevy's event system to external message brokers like
 
 - **Automatic event registration**
   - Simply derive `ExternalBusEvent` on your event types
+  - Must also derive `Serialize` and `Deserialize` from serde for external broker compatibility
   - No manual registration required
 
 - **Topic-based messaging**
@@ -18,7 +19,8 @@ A Bevy plugin that connects Bevy's event system to external message brokers like
 
 - **Error handling**
   - Provides detailed error information for connectivity and serialization issues
-  - "Try" methods that silently continue on errors for non-critical messaging
+  - Fire-and-forget behavior available by ignoring the Result (e.g., `let _ = writer.write(...)`)
+  - Bevy events fired to describe event bus errors (connection issues etc)
 
 - **Backends**
   - Kafka support (with the "kafka" feature)
@@ -47,9 +49,10 @@ bevy_event_bus = { version = "0.1", features = ["kafka"] }
 ```rust
 use bevy::prelude::*;
 use bevy_event_bus::prelude::*;
+use serde::{Deserialize, Serialize};
 
 // Define an event - no manual registration needed!
-#[derive(ExternalBusEvent, Clone, Debug)]
+#[derive(ExternalBusEvent, Serialize, Deserialize, Clone, Debug)]
 struct PlayerLevelUpEvent {
     entity_id: u64,
     new_level: u32,
@@ -91,7 +94,7 @@ fn player_level_up_system(
     for (entity, xp, level) in query.iter() {
         if xp.0 >= level.next_level_requirement {
             // Send to specific topic - will also trigger Bevy event system
-            let _ = ev_writer.send(
+            let _ = ev_writer.write(
                 "game-events.level-up",
                 PlayerLevelUpEvent { 
                     entity_id: entity.to_bits(), 
@@ -108,7 +111,7 @@ fn player_level_up_system(
 ```rust
 // System that receives events
 fn handle_level_ups(mut ev_reader: EventBusReader<PlayerLevelUpEvent>) {
-    for event in ev_reader.try_read("game-events.level-up") {
+    for event in ev_reader.read("game-events.level-up") {
         println!("Entity {} leveled up to level {}!", event.entity_id, event.new_level);
     }
 }
@@ -116,39 +119,70 @@ fn handle_level_ups(mut ev_reader: EventBusReader<PlayerLevelUpEvent>) {
 
 ## Error Handling
 
-Use `try_` methods for non-critical messaging:
+### Synchronous Validation Errors
+
+Handle validation and serialization errors explicitly:
 
 ```rust
-// This will silently continue if the message cannot be sent
-ev_writer.try_send("topic", event);
-```
-
-Or handle errors explicitly:
-
-```rust
-match ev_writer.send("topic", event) {
-    Ok(_) => println!("Message sent successfully"),
-    Err(e) => eprintln!("Failed to send message: {:?}", e),
+match ev_writer.write("topic", event) {
+    Ok(_) => println!("Message queued successfully"),
+    Err(e) => eprintln!("Failed to queue message: {:?}", e),
 }
 ```
 
-## Kafka Backend Configuration
+For fire-and-forget behavior:
 
 ```rust
+// This will ignore any write errors
+let _ = ev_writer.write("topic", event);
+```
+
+### Asynchronous Delivery Error Handling
+
+Kafka delivery failures are automatically forwarded to Bevy events that you can listen for:
+
+```rust
+use bevy_event_bus::prelude::*;
+
+fn handle_delivery_errors(mut errors: EventReader<EventBusDeliveryFailure>) {
+    for error in errors.read() {
+        error!(
+            "Message delivery failed to topic '{}': {} (backend: {})",
+            error.topic, error.error, error.backend
+        );
+        
+        // Implement your error handling logic:
+        // - Retry logic
+        // - Circuit breaker
+        // - Alerting
+        // - Fallback mechanisms
+    }
+}
+
+// Add the system to your app
+app.add_systems(Update, handle_delivery_errors);
+```
+
+**Note**: Delivery errors occur asynchronously after `write()` returns `Ok(())`. The `write()` method only validates serialization and local queueing, not network delivery.
+
+## Backend Configuration
+
+### Kafka
+
+```rust
+use std::collections::HashMap;
+use bevy_event_bus::prelude::*;
+
 let config = KafkaConfig {
-        bootstrap_servers: std::env::var("KAFKA_BOOTSTRAP_SERVERS").unwrap_or_else(|_| "localhost:9092".into()),
-        group_id: "bevy_game".to_string(),
-        client_id: Some("game-client".to_string()),
-        timeout_ms: 5000,
-        additional_config: HashMap::new(),
+    bootstrap_servers: "localhost:9092".to_string(),
+    group_id: "bevy_game".to_string(),
+    client_id: Some("game-client".to_string()),
+    timeout_ms: 5000,
+    additional_config: HashMap::new(),
 };
+
 let kafka_backend = KafkaEventBusBackend::new(config);
-
-// Add plugin
-App::new().add_plugins(EventBusPlugins(kafka_backend));
-
-// Event sending: writer.send(topic, event)
-// Event reading: reader.try_read(topic) -> iterator of &T
+```
 
 ### Auto-Subscription
 Reading from a topic automatically subscribes the consumer to that topic on first use.
@@ -157,12 +191,12 @@ Reading from a topic automatically subscribes the consumer to that topic on firs
 Use `additional_config` to pass through arbitrary librdkafka properties (e.g. security, retries, acks).
 
 Common keys:
-* enable.idempotence=true
-* message.timeout.ms=5000 (already set on producer)
-* security.protocol=SSL
-* ssl.ca.location=/path/to/ca.pem
-* ssl.certificate.location=/path/to/cert.pem
-* ssl.key.location=/path/to/key.pem
+* `enable.idempotence=true`
+* `message.timeout.ms=5000` (already set on producer)
+* `security.protocol=SSL`
+* `ssl.ca.location=/path/to/ca.pem`
+* `ssl.certificate.location=/path/to/cert.pem`
+* `ssl.key.location=/path/to/key.pem`
 
 ### Local Development (Docker)
 You can spin up a single-node Kafka (KRaft) automatically in tests. The test harness will:
@@ -191,118 +225,17 @@ export KAFKA_BOOTSTRAP_SERVERS=my-broker:9092
 ```
 
 ### Testing Notes
-Integration test `tests/integration/temp.rs` uses the docker harness or external broker.
-It generates a unique topic name per run to avoid offset collisions.
-```
-
-
-With Kafka support:
-
-```toml
-[dependencies]
-bevy_event_bus = { version = "0.1", features = ["kafka"] }
-```
-
-## Usage
-
-### Define your events
-
-```rust
-use bevy::prelude::*;
-use bevy_event_bus::prelude::*;
-
-// Define an event - no manual registration needed!
-#[derive(ExternalBusEvent, Clone, Debug)]
-struct PlayerLevelUpEvent {
-    entity_id: u64,
-    new_level: u32,
-}
-```
-
-### Set up the plugin
-
-```rust
-use bevy::prelude::*;
-use bevy_event_bus::prelude::*;
-
-fn main() {
-    // Create a Kafka configuration
-    let kafka_config = KafkaConfig {
-        bootstrap_servers: "localhost:9092".to_string(),
-        group_id: "bevy_game".to_string(),
-        ..Default::default()
-    };
-    
-    // Create the Kafka backend
-    let kafka_backend = KafkaEventBusBackend::new(kafka_config);
-
-    App::new()
-        .add_plugins(EventBusPlugins(kafka_backend))
-        .add_systems(Update, (player_level_up_system, handle_level_ups))
-        .run();
-}
-```
-
-### Send events
-
-```rust
-// System that sends events
-fn player_level_up_system(
-    mut ev_writer: EventBusWriter<PlayerLevelUpEvent>,
-    query: Query<(Entity, &PlayerXp, &PlayerLevel)>,
-) {
-    for (entity, xp, level) in query.iter() {
-        if xp.0 >= level.next_level_requirement {
-            // Send to specific topic - will also trigger Bevy event system
-            let _ = ev_writer.send(
-                PlayerLevelUpEvent { 
-                    entity_id: entity.to_bits(), 
-                    new_level: level.0 + 1 
-                },
-                "game-events.level-up"
-            );
-        }
-    }
-}
-```
-
-### Receive events
-
-```rust
-// System that receives events
-fn handle_level_ups(
-    mut ev_reader: EventBusReader<PlayerLevelUpEvent>,
-) {
-    // Read from specific topic
-    for event in ev_reader.try_read("game-events.level-up") {
-        println!("Entity {} leveled up to level {}!", event.entity_id, event.new_level);
-    }
-}
-```
-
-## Error Handling
-
-Use `try_` methods for non-critical messaging:
-
-```rust
-// This will silently continue if the message cannot be sent
-ev_writer.try_send(event, "topic");
-```
-
-Or handle errors explicitly:
-
-```rust
-match ev_writer.send(event, "topic") {
-    Ok(_) => println!("Message sent successfully"),
-    Err(e) => eprintln!("Failed to send message: {:?}", e),
-}
-```
+Integration tests use the docker harness or external broker.
+They generate unique topic names per run to avoid offset collisions.
 
 ## Backend Configuration
 
 ### Kafka
 
 ```rust
+use std::collections::HashMap;
+use bevy_event_bus::prelude::*;
+
 let config = KafkaConfig {
     bootstrap_servers: "localhost:9092".to_string(),
     group_id: "bevy_game".to_string(),
@@ -316,7 +249,7 @@ let kafka_backend = KafkaEventBusBackend::new(config);
 
 ## Performance Testing
 
-The library includes comprehensive performance tests to measure throughput and latency under various conditions. See [PERFORMANCE_TESTING.md](PERFORMANCE_TESTING.md) for detailed documentation.
+The library includes comprehensive performance tests to measure throughput and latency under various conditions.
 
 ### Quick Performance Test
 ```bash

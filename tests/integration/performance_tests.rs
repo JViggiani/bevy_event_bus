@@ -6,7 +6,7 @@
 //! Run with: cargo test --test integration_tests performance_tests::test_message_throughput --release -- --ignored --nocapture
 
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, PreconfiguredTopics};
+use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, PreconfiguredTopics, EventBusAppExt};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use crate::common::setup::setup;
@@ -101,7 +101,7 @@ fn run_throughput_test(
         backend,
         PreconfiguredTopics::new([topic.clone()]),
     ));
-    app.add_event::<PerformanceTestEvent>();
+    app.add_bus_event::<PerformanceTestEvent>(&topic);
     
     #[derive(Resource)]
     struct PerformanceTestState {
@@ -159,15 +159,9 @@ fn run_throughput_test(
                 state.payload_size,
             );
             
-            match writer.send(&state.test_topic, event) {
-                Ok(_) => {
-                    state.messages_sent += 1;
-                }
-                Err(e) => {
-                    eprintln!("Failed to send message {}: {:?}", state.messages_sent, e);
-                    break;
-                }
-            }
+            // Fire-and-forget write - no Result to handle
+            writer.write(&state.test_topic, event);
+            state.messages_sent += 1;
         }
     }
     

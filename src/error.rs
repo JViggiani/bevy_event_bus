@@ -1,29 +1,126 @@
-use thiserror::Error;
+use bevy::prelude::*;
+use serde::{Serialize, Deserialize};
+use crate::BusEvent;
 
-/// Errors that can occur in the event bus
-#[derive(Error, Debug)]
-pub enum EventBusError {
-    #[error("Serialization error: {0}")]
-    Serialization(String),
-    
-    #[error("Connection error: {0}")]
-    Connection(String),
-    
-    #[error("Backend not configured: {0}")]
-    NotConfigured(String),
-    
-    #[error("Topic error: {0}")]
-    Topic(String),
-    
-    #[error("Timeout error")]
-    Timeout,
-    
-    #[error("Other error: {0}")]
-    Other(String),
+/// Types of errors that can occur in the event bus
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum EventBusErrorType {
+    Serialization,    // JSON serialization failed
+    Connection,       // Backend connection issues
+    NotConfigured,    // Backend not configured
+    Topic,           // Invalid topic name/format
+    Timeout,         // Network timeout
+    DeliveryFailure, // Async delivery failure from Kafka
+    Deserialization, // Failed to deserialize message from topic
+    ConsumerError,   // Background consumer error
+    Other,           // Catch-all
 }
 
-impl From<serde_json::Error> for EventBusError {
-    fn from(error: serde_json::Error) -> Self {
-        EventBusError::Serialization(error.to_string())
+/// Event fired when any operation on the event bus fails
+/// 
+/// This replaces both the old Result-based error handling and EventBusDeliveryFailure.
+/// All errors, whether immediate (serialization) or async (delivery), are sent as events.
+#[derive(Event, Debug, Clone)]
+pub struct EventBusError<T: BusEvent> {
+    /// The topic the event was being sent to
+    pub topic: String,
+    /// The specific type of error that occurred
+    pub error_type: EventBusErrorType,
+    /// Human-readable error message
+    pub error_message: String,
+    /// Timestamp when the error occurred
+    pub timestamp: std::time::SystemTime,
+    /// The original event data (available for immediate errors, None for async delivery errors)
+    pub original_event: Option<T>,
+    /// The backend that failed (e.g., "kafka")
+    pub backend: Option<String>,
+    /// Optional partition information (if available)
+    pub partition: Option<i32>,
+    /// Optional offset information (if available)  
+    pub offset: Option<i64>,
+}
+
+impl<T: BusEvent> EventBusError<T> {
+    /// Create a new immediate error (with original event available)
+    pub fn immediate(
+        topic: String,
+        error_type: EventBusErrorType,
+        error_message: String,
+        original_event: T,
+    ) -> Self {
+        Self {
+            topic,
+            error_type,
+            error_message,
+            timestamp: std::time::SystemTime::now(),
+            original_event: Some(original_event),
+            backend: None,
+            partition: None,
+            offset: None,
+        }
+    }
+
+    /// Create a new async error (no original event available)
+    pub fn async_delivery(
+        topic: String,
+        error_message: String,
+        backend: Option<String>,
+        partition: Option<i32>,
+        offset: Option<i64>,
+    ) -> Self {
+        Self {
+            topic,
+            error_type: EventBusErrorType::DeliveryFailure,
+            error_message,
+            timestamp: std::time::SystemTime::now(),
+            original_event: None,
+            backend,
+            partition,
+            offset,
+        }
+    }
+}
+
+/// Event fired when message deserialization fails
+/// 
+/// This is a non-generic error event for cases where we cannot create EventBusError<T>
+/// because the deserialization failed and we don't have a T instance.
+#[derive(Event, Debug, Clone)]
+pub struct EventBusDecodeError {
+    /// The topic the message was received from
+    pub topic: String,
+    /// Human-readable error message
+    pub error_message: String,
+    /// Timestamp when the error occurred
+    pub timestamp: std::time::SystemTime,
+    /// The raw message bytes that failed to decode
+    pub raw_payload: Vec<u8>,
+    /// The decoder name that failed
+    pub decoder_name: String,
+    /// Optional partition information (if available)
+    pub partition: Option<i32>,
+    /// Optional offset information (if available)  
+    pub offset: Option<i64>,
+}
+
+impl EventBusDecodeError {
+    /// Create a new decode error
+    pub fn new(
+        topic: String,
+        error_message: String,
+        raw_payload: Vec<u8>,
+        decoder_name: String,
+        partition: Option<i32>,
+        offset: Option<i64>,
+    ) -> Self {
+        Self {
+            topic,
+            error_message,
+            timestamp: std::time::SystemTime::now(),
+            raw_payload,
+            decoder_name,
+            partition,
+            offset,
+        }
     }
 }

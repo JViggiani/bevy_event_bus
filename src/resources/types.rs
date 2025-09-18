@@ -154,6 +154,7 @@ pub struct ProcessedMessage {
 #[derive(Resource, Default, Debug)]
 pub struct DrainedTopicMetadata {
     pub topics: std::collections::HashMap<String, Vec<ProcessedMessage>>,
+    pub decode_errors: Vec<crate::EventBusDecodeError>,
 }
 
 /// Basic consumer metrics (frame-scoped counters + cumulative stats)

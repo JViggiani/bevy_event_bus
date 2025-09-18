@@ -5,12 +5,28 @@ use crate::{BusEvent, decoder::{DecoderRegistry, TypedDecoder}};
 
 /// Extension trait for the Bevy App to simplify event bus registration
 pub trait EventBusAppExt {
-    /// Register an event with the event bus and automatically set up JSON decoding for a topic
+    /// Register an event with the event bus and automatically set up JSON decoding for topic(s)
     /// 
     /// This is the main convenience method that:
     /// 1. Registers the event in Bevy's event system (like `app.add_event::<T>()`)
     /// 2. Registers the event as a bus event
-    /// 3. Sets up a JSON decoder for the specified topic
+    /// 3. Sets up a JSON decoder for the specified topic(s)
+    /// 
+    /// # Examples
+    /// ```rust
+    /// use bevy::prelude::*;
+    /// use bevy_event_bus::prelude::*;
+    /// 
+    /// #[derive(Event, Clone, serde::Serialize, serde::Deserialize)]
+    /// struct PlayerMove { x: f32, y: f32 }
+    /// 
+    /// let mut app = App::new();
+    /// // Single topic
+    /// app.add_bus_event::<PlayerMove>("game_events");
+    /// ```
+    fn add_bus_event<T: BusEvent + Event>(&mut self, topic: &str) -> &mut Self;
+    
+    /// Register an event for a slice of topics 
     /// 
     /// # Example
     /// ```rust
@@ -21,10 +37,10 @@ pub trait EventBusAppExt {
     /// struct PlayerMove { x: f32, y: f32 }
     /// 
     /// let mut app = App::new();
-    /// // This combines Bevy's add_event(), register_bus_event(), and JSON decoder setup
-    /// app.add_bus_event::<PlayerMove>("game_events");
+    /// // Multiple topics at once
+    /// app.add_bus_event_topics::<PlayerMove>(&["game_events", "move_events"]);
     /// ```
-    fn add_bus_event<T: BusEvent + Event>(&mut self, topic: &str) -> &mut Self;
+    fn add_bus_event_topics<T: BusEvent + Event>(&mut self, topics: &[&str]) -> &mut Self;
 
     /// Register an event for multiple topics with automatic JSON decoding
     /// 
@@ -74,14 +90,33 @@ impl EventBusAppExt for App {
         // Add the event to Bevy's event system (equivalent to app.add_event::<T>())
         bevy::prelude::App::add_event::<T>(self);
         
+        // Auto-register the corresponding error event type
+        bevy::prelude::App::add_event::<crate::EventBusError<T>>(self);
+        
         // Register JSON decoder for the topic
         self.add_bus_event_multi::<T>(&[topic])
+    }
+    
+    fn add_bus_event_topics<T: BusEvent + Event>(&mut self, topics: &[&str]) -> &mut Self {
+        // Add the event to Bevy's event system (equivalent to app.add_event::<T>())
+        bevy::prelude::App::add_event::<T>(self);
+        
+        // Auto-register the corresponding error event type
+        bevy::prelude::App::add_event::<crate::EventBusError<T>>(self);
+        
+        // Register JSON decoder for the topics
+        self.add_bus_event_multi::<T>(topics)
     }
     
     fn add_bus_event_multi<T: BusEvent + Event>(&mut self, topics: &[&str]) -> &mut Self {
         // Ensure event is registered first
         if !self.world().contains_resource::<Events<T>>() {
             bevy::prelude::App::add_event::<T>(self);
+        }
+        
+        // Auto-register the corresponding error event type
+        if !self.world().contains_resource::<Events<crate::EventBusError<T>>>() {
+            bevy::prelude::App::add_event::<crate::EventBusError<T>>(self);
         }
         
         // Initialize decoder registry if it doesn't exist
@@ -119,6 +154,11 @@ impl EventBusAppExt for App {
         // Ensure event is registered first
         if !self.world().contains_resource::<Events<T>>() {
             bevy::prelude::App::add_event::<T>(self);
+        }
+        
+        // Auto-register the corresponding error event type
+        if !self.world().contains_resource::<Events<crate::EventBusError<T>>>() {
+            bevy::prelude::App::add_event::<crate::EventBusError<T>>(self);
         }
         
         // Add custom decoder to registry

@@ -2,7 +2,7 @@ use crate::common::events::TestEvent;
 use crate::common::helpers::{unique_topic, wait_for_events};
 use crate::common::setup::setup;
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, ExternalEvent};
+use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, ExternalEvent, EventBusAppExt};
 use std::collections::HashMap;
 use tracing::{info, info_span};
 
@@ -21,10 +21,13 @@ fn metadata_propagation_from_kafka_to_bevy() {
         backend_w,
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
+    writer.add_bus_event::<TestEvent>(&topic);
+    
     reader.add_plugins(EventBusPlugins(
         backend_r,
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
+    reader.add_bus_event::<TestEvent>(&topic);
 
     // Create test event
     let test_event = TestEvent {
@@ -39,7 +42,7 @@ fn metadata_propagation_from_kafka_to_bevy() {
         move |mut w: EventBusWriter<TestEvent>, mut sent: Local<bool>| {
             if !*sent {
                 *sent = true;
-                let _ = w.send(&topic_clone, test_event.clone());
+                let _ = w.write(&topic_clone, test_event.clone());
             }
         },
     );
@@ -103,10 +106,13 @@ fn header_forwarding_producer_to_consumer() {
         backend_w,
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
+    writer.add_bus_event::<TestEvent>(&topic);
+    
     reader.add_plugins(EventBusPlugins(
         backend_r,
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
+    reader.add_bus_event::<TestEvent>(&topic);
 
     // Create test event with headers
     let test_event = TestEvent {
@@ -126,7 +132,7 @@ fn header_forwarding_producer_to_consumer() {
         move |mut w: EventBusWriter<TestEvent>, mut sent: Local<bool>| {
             if !*sent {
                 *sent = true;
-                let _ = w.send_with_headers(&topic_clone, test_event.clone(), headers.clone());
+                let _ = w.write_with_headers(&topic_clone, test_event.clone(), headers.clone());
             }
         },
     );
@@ -187,10 +193,13 @@ fn timestamp_accuracy_for_latency_measurement() {
         backend_w,
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
+    writer.add_bus_event::<TestEvent>(&topic);
+    
     reader.add_plugins(EventBusPlugins(
         backend_r,
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
+    reader.add_bus_event::<TestEvent>(&topic);
 
     let send_time = std::time::Instant::now();
     
@@ -205,7 +214,7 @@ fn timestamp_accuracy_for_latency_measurement() {
                     message: "timestamp test".to_string(),
                     value: 999,
                 };
-                let _ = w.send(&topic_clone, event);
+                let _ = w.write(&topic_clone, event);
             }
         },
     );
@@ -273,14 +282,19 @@ fn mixed_metadata_and_regular_reading() {
         backend_w,
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
+    writer.add_bus_event::<TestEvent>(&topic);
+    
     regular_reader.add_plugins(EventBusPlugins(
         backend_r1,
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
+    regular_reader.add_bus_event::<TestEvent>(&topic);
+    
     metadata_reader.add_plugins(EventBusPlugins(
         backend_r2,
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
+    metadata_reader.add_bus_event::<TestEvent>(&topic);
 
     // Send events
     let topic_clone = topic.clone();
@@ -294,7 +308,7 @@ fn mixed_metadata_and_regular_reading() {
                         message: format!("mixed-{}", i),
                         value: i,
                     };
-                    let _ = w.send(&topic_clone, event);
+                    let _ = w.write(&topic_clone, event);
                 }
             }
         },

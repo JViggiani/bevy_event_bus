@@ -2,7 +2,7 @@ use crate::common::events::TestEvent;
 use crate::common::helpers::{unique_topic, update_until};
 use crate::common::setup::setup;
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter};
+use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt};
 
 #[test]
 fn multi_topic_isolation() {
@@ -32,23 +32,28 @@ fn multi_topic_isolation() {
         backend_w,
         bevy_event_bus::PreconfiguredTopics::new([topic_a.clone(), topic_b.clone()]),
     ));
+    writer.add_bus_event::<TestEvent>(&topic_a);
+    writer.add_bus_event::<TestEvent>(&topic_b);
+    
     let mut reader = App::new();
     reader.add_plugins(EventBusPlugins(
         backend_r,
         bevy_event_bus::PreconfiguredTopics::new([topic_a.clone(), topic_b.clone()]),
     ));
+    reader.add_bus_event::<TestEvent>(&topic_a);
+    reader.add_bus_event::<TestEvent>(&topic_b);
 
     let ta = topic_a.clone();
     let tb = topic_b.clone();
     writer.add_systems(Update, move |mut w: EventBusWriter<TestEvent>| {
-        let _ = w.send(
+        let _ = w.write(
             &ta,
             TestEvent {
                 message: "A1".into(),
                 value: 1,
             },
         );
-        let _ = w.send(
+        let _ = w.write(
             &tb,
             TestEvent {
                 message: "B1".into(),

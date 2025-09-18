@@ -2,7 +2,8 @@ use rdkafka::{
     config::ClientConfig,
     consumer::{BaseConsumer, Consumer},
     message::{Headers, Message},
-    producer::{BaseProducer, BaseRecord, Producer},
+    producer::{BaseProducer, BaseRecord, Producer, DeliveryResult, ProducerContext},
+    ClientContext,
 };
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
@@ -10,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
-use crate::{EventBusBackend, EventBusError, resources::IncomingMessage};
+use crate::{EventBusBackend, resources::IncomingMessage};
 use async_trait::async_trait;
 use crossbeam_channel::{Receiver, Sender, bounded};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -49,6 +50,38 @@ pub struct KafkaConfig {
     pub additional_config: HashMap<String, String>,
 }
 
+/// Custom producer context for Kafka delivery reporting
+#[derive(Clone)]
+struct EventBusProducerContext;
+
+impl ClientContext for EventBusProducerContext {}
+
+impl ProducerContext for EventBusProducerContext {
+    type DeliveryOpaque = ();
+    
+    fn delivery(&self, delivery_result: &DeliveryResult, _delivery_opaque: Self::DeliveryOpaque) {
+        match delivery_result {
+            Err((kafka_error, owned_message)) => {
+                warn!(
+                    topic = %owned_message.topic(),
+                    partition = owned_message.partition(),
+                    error = %kafka_error,
+                    "Kafka message delivery failed"
+                );
+                // TODO: Fire EventBusError<T> event when we have access to the event type
+            }
+            Ok(delivery) => {
+                debug!(
+                    topic = %delivery.topic(),
+                    partition = delivery.partition(),
+                    offset = delivery.offset(),
+                    "Kafka message delivered successfully"
+                );
+            }
+        }
+    }
+}
+
 impl Default for KafkaConfig {
     fn default() -> Self {
         Self {
@@ -64,7 +97,7 @@ impl Default for KafkaConfig {
 /// Kafka implementation of the EventBusBackend
 pub struct KafkaEventBusBackend {
     config: KafkaConfig,
-    producer: Arc<BaseProducer>,
+    producer: Arc<BaseProducer<EventBusProducerContext>>,
     consumer: Arc<BaseConsumer>,
     subscriptions: Arc<Mutex<HashSet<String>>>,
     bg_running: Arc<AtomicBool>,
@@ -103,8 +136,11 @@ impl KafkaEventBusBackend {
             producer_config.set(key, value);
         }
 
-        let producer: BaseProducer = producer_config
-            .create()
+        // Create custom producer context for delivery callbacks
+        let producer_context = EventBusProducerContext;
+
+        let producer: BaseProducer<EventBusProducerContext> = producer_config
+            .create_with_context(producer_context)
             .expect("Failed to create Kafka producer");
 
         // Configure consumer - only set essentials, let user override everything
@@ -176,6 +212,7 @@ impl KafkaEventBusBackend {
     pub fn take_receiver(&mut self) -> Option<Receiver<IncomingMessage>> {
         self.receiver.take()
     }
+    
     pub fn dropped_count(&self) -> usize {
         self.dropped.load(Ordering::Relaxed)
     }
@@ -211,11 +248,11 @@ impl EventBusBackend for KafkaEventBusBackend {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
-    async fn connect(&mut self) -> Result<(), EventBusError> {
+    async fn connect(&mut self) -> bool {
         // Use compare_exchange to atomically check and set - prevents race condition
         if self.bg_running.compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed).is_err() {
             debug!("Kafka backend connect() called but background already running");
-            return Ok(());
+            return true;
         }
         info!(
             "Initializing Kafka backend (lazy connect) for {}",
@@ -262,10 +299,8 @@ impl EventBusBackend for KafkaEventBusBackend {
         if !existing.is_empty() {
             let topics: Vec<&str> = existing.iter().map(|s| s.as_str()).collect();
             if let Err(e) = self.consumer.subscribe(&topics) {
-                return Err(EventBusError::Connection(format!(
-                    "Failed to subscribe to topics: {}",
-                    e
-                )));
+                error!("Failed to subscribe to topics: {}", e);
+                return false;
             }
         }
         // Spawn background consumer task once (Tokio)
@@ -339,30 +374,28 @@ impl EventBusBackend for KafkaEventBusBackend {
             }
         });
         self.task_abort = Some(task.abort_handle());
-        Ok(())
+        true
     }
-    async fn disconnect(&mut self) -> Result<(), EventBusError> {
+    async fn disconnect(&mut self) -> bool {
         info!("Disconnecting from Kafka");
         self.bg_running.store(false, Ordering::SeqCst);
         if let Some(abort) = self.task_abort.take() {
             abort.abort();
         }
         // Nothing special needed for disconnection, Kafka clients clean up on drop
-        Ok(())
+        true
     }
-    fn try_send_serialized(&self, event_json: &[u8], topic: &str) -> Result<(), EventBusError> {
+    fn try_send_serialized(&self, event_json: &[u8], topic: &str) -> bool {
         let record: BaseRecord<'_, (), [u8]> = BaseRecord::to(topic).payload(event_json);
         if let Err((e, _)) = self.producer.send(record) {
-            return Err(EventBusError::Other(format!(
-                "Failed to enqueue message: {}",
-                e
-            )));
+            debug!("Failed to enqueue message: {}", e);
+            return false;
         }
         // Non-blocking send; delivery progress advanced by background producer polling.
-        Ok(())
+        true
     }
     
-    fn try_send_serialized_with_headers(&self, event_json: &[u8], topic: &str, headers: &std::collections::HashMap<String, String>) -> Result<(), EventBusError> {
+    fn try_send_serialized_with_headers(&self, event_json: &[u8], topic: &str, headers: &std::collections::HashMap<String, String>) -> bool {
         use rdkafka::message::OwnedHeaders;
         
         let mut record: BaseRecord<'_, (), [u8]> = BaseRecord::to(topic).payload(event_json);
@@ -380,15 +413,13 @@ impl EventBusBackend for KafkaEventBusBackend {
         }
         
         if let Err((e, _)) = self.producer.send(record) {
-            return Err(EventBusError::Other(format!(
-                "Failed to enqueue message with headers: {}",
-                e
-            )));
+            debug!("Failed to enqueue message with headers: {}", e);
+            return false;
         }
         // Non-blocking send; delivery progress advanced by background producer polling.
-        Ok(())
+        true
     }
-    async fn receive_serialized(&self, topic: &str) -> Result<Vec<Vec<u8>>, EventBusError> {
+    async fn receive_serialized(&self, topic: &str) -> Vec<Vec<u8>> {
         // Auto-subscribe if not already
         let mut need_subscribe = false;
         {
@@ -402,9 +433,10 @@ impl EventBusBackend for KafkaEventBusBackend {
             let mut subs_guard = self.subscriptions.lock().unwrap();
             let mut all: Vec<&str> = subs_guard.iter().map(|s| s.as_str()).collect();
             all.push(topic);
-            self.consumer.subscribe(&all).map_err(|e| {
-                EventBusError::Topic(format!("Failed to auto-subscribe to {}: {}", topic, e))
-            })?;
+            if let Err(e) = self.consumer.subscribe(&all) {
+                error!("Failed to auto-subscribe to {}: {}", topic, e);
+                return Vec::new();
+            }
             subs_guard.insert(topic.to_string());
             info!("Auto-subscribed to Kafka topic: {}", topic);
         }
@@ -437,9 +469,9 @@ impl EventBusBackend for KafkaEventBusBackend {
                 }
             }
         }
-        Ok(result)
+        result
     }
-    async fn subscribe(&mut self, topic: &str) -> Result<(), EventBusError> {
+    async fn subscribe(&mut self, topic: &str) -> bool {
         let mut subscriptions = self.subscriptions.lock().unwrap();
 
         // Only subscribe if we haven't already
@@ -452,9 +484,10 @@ impl EventBusBackend for KafkaEventBusBackend {
             new_topics.push(topic);
 
             // Subscribe to all topics
-            self.consumer.subscribe(&new_topics).map_err(|e| {
-                EventBusError::Topic(format!("Failed to subscribe to topic {}: {}", topic, e))
-            })?;
+            if let Err(e) = self.consumer.subscribe(&new_topics) {
+                error!("Failed to subscribe to topic {}: {}", topic, e);
+                return false;
+            }
 
             // Update subscriptions
             subscriptions.insert(topic.to_string());
@@ -462,9 +495,9 @@ impl EventBusBackend for KafkaEventBusBackend {
             info!("Subscribed to Kafka topic: {}", topic);
         }
 
-        Ok(())
+        true
     }
-    async fn unsubscribe(&mut self, topic: &str) -> Result<(), EventBusError> {
+    async fn unsubscribe(&mut self, topic: &str) -> bool {
         let mut subscriptions = self.subscriptions.lock().unwrap();
         if subscriptions.remove(topic) {
             let remaining: Vec<&str> = subscriptions.iter().map(|s| s.as_str()).collect();
@@ -472,13 +505,25 @@ impl EventBusBackend for KafkaEventBusBackend {
                 // rdkafka's unsubscribe returns (), so no error handling required
                 self.consumer.unsubscribe();
             } else if let Err(e) = self.consumer.subscribe(&remaining) {
-                return Err(EventBusError::Topic(format!(
-                    "Failed to update subscriptions: {}",
-                    e
-                )));
+                error!("Failed to update subscriptions: {}", e);
+                return false;
             }
             info!("Unsubscribed from Kafka topic: {}", topic);
         }
-        Ok(())
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_producer_context_creation() {
+        // Test that we can create a producer context
+        let context = EventBusProducerContext;
+        
+        // The context should exist and be ready to use
+        assert_eq!(std::mem::size_of_val(&context), 0); // Empty struct
     }
 }

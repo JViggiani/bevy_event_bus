@@ -2,7 +2,7 @@ use crate::common::events::TestEvent;
 use crate::common::helpers::{unique_topic, update_until};
 use crate::common::setup::setup;
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, KafkaEventBusBackend, KafkaConfig};
+use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, KafkaEventBusBackend, KafkaConfig, EventBusAppExt};
 use std::collections::HashMap;
 
 /// Test that consumers with "earliest" offset receive historical events
@@ -28,12 +28,13 @@ fn offset_configuration_earliest_receives_historical_events() {
             backend_producer,
             bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
         ));
+    producer_app.add_bus_event::<TestEvent>(&topic);
         
         let topic_clone = topic.clone();
         producer_app.add_systems(Update, move |mut w: EventBusWriter<TestEvent>| {
             // Send 3 historical events
             for i in 0..3 {
-                let _ = w.send(&topic_clone, TestEvent {
+                let _ = w.write(&topic_clone, TestEvent {
                     message: format!("historical_{}", i),
                     value: i,
                 });
@@ -54,6 +55,7 @@ fn offset_configuration_earliest_receives_historical_events() {
         backend_earliest,
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
+    earliest_app.add_bus_event::<TestEvent>(&topic);
     
     #[derive(Resource, Default)]
     struct CollectedEarliest(Vec<TestEvent>);
@@ -114,12 +116,13 @@ fn offset_configuration_latest_ignores_historical_events() {
             backend_producer,
             bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
         ));
+    producer_app.add_bus_event::<TestEvent>(&topic);
         
         let topic_clone = topic.clone();
         producer_app.add_systems(Update, move |mut w: EventBusWriter<TestEvent>| {
             // Send 3 historical events that the latest consumer should NOT see
             for i in 0..3 {
-                let _ = w.send(&topic_clone, TestEvent {
+                let _ = w.write(&topic_clone, TestEvent {
                     message: format!("historical_{}", i),
                     value: i,
                 });
@@ -140,6 +143,7 @@ fn offset_configuration_latest_ignores_historical_events() {
         backend_latest,
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
+    latest_app.add_bus_event::<TestEvent>(&topic);
     
     #[derive(Resource, Default)]
     struct CollectedLatest(Vec<TestEvent>);
@@ -159,7 +163,7 @@ fn offset_configuration_latest_ignores_historical_events() {
     let topic_send = topic.clone();
     latest_app.add_systems(Update, move |mut w: EventBusWriter<TestEvent>| {
         // Send new event after consumer is established
-        let _ = w.send(&topic_send, TestEvent {
+        let _ = w.write(&topic_send, TestEvent {
             message: "new_event".to_string(),
             value: 999,
         });
@@ -213,10 +217,11 @@ fn default_offset_configuration_is_latest() {
             backend_producer,
             bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
         ));
+    producer_app.add_bus_event::<TestEvent>(&topic);
         
         let topic_clone = topic.clone();
         producer_app.add_systems(Update, move |mut w: EventBusWriter<TestEvent>| {
-            let _ = w.send(&topic_clone, TestEvent {
+            let _ = w.write(&topic_clone, TestEvent {
                 message: "should_not_see_this".to_string(),
                 value: 42,
             });
@@ -239,6 +244,7 @@ fn default_offset_configuration_is_latest() {
         backend,
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
+    app.add_bus_event::<TestEvent>(&topic);
     
     #[derive(Resource, Default)]
     struct Collected(Vec<TestEvent>);

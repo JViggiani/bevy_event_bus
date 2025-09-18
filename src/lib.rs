@@ -20,7 +20,7 @@ mod writers;
 pub use app_ext::EventBusAppExt;
 pub use backends::{EventBusBackend, EventBusBackendExt};
 pub use decoder::{DecoderRegistry, DecoderFn, TypedDecoder, DecodedEvent};
-pub use error::EventBusError;
+pub use error::{EventBusError, EventBusErrorType, EventBusDecodeError};
 pub use event::BusEvent;
 pub use plugin::{BackendDownEvent, BackendReadyEvent, BackendStatus};
 pub use plugin::{EventBusPlugin, EventBusPlugins, PreconfiguredTopics};
@@ -47,7 +47,7 @@ pub mod prelude {
     pub use crate::{
         app_ext::EventBusAppExt,
         BusEvent, ConsumerMetrics, DecodedEvent, DecodedEventBuffer, DecoderRegistry, DeliveryEvent, DrainMetricsEvent, DrainedTopicMetadata, EventBusBackend,
-        EventBusBackendExt, EventBusConsumerConfig, EventBusError, EventBusPlugin, EventBusPlugins,
+        EventBusBackendExt, EventBusConsumerConfig, EventBusError, EventBusErrorType, EventBusDecodeError, EventBusPlugin, EventBusPlugins,
         EventBusReader, EventBusWriter, EventMetadata, ExternalBusEvent, ExternalEvent, IncomingMessage, MessageQueue,
         OutboundMessage, OutboundMessageQueue, ProcessedMessage, TopicDecodedEvents, TypedDecoder, TypeErasedEvent,
     };
