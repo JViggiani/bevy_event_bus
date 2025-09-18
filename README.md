@@ -119,51 +119,94 @@ fn handle_level_ups(mut ev_reader: EventBusReader<PlayerLevelUpEvent>) {
 
 ## Error Handling
 
-### Synchronous Validation Errors
+The event bus provides comprehensive error handling for both sending and receiving events. All errors are reported as Bevy events, allowing you to handle them in your systems.
 
-Handle validation and serialization errors explicitly:
+### Write Errors
+
+When sending events, errors can occur asynchronously and handled with Bevy's inbuilt event system:
 
 ```rust
-match ev_writer.write("topic", event) {
-    Ok(_) => println!("Message queued successfully"),
-    Err(e) => eprintln!("Failed to queue message: {:?}", e),
+fn handle_delivery_errors(
+    mut delivery_errors: EventReader<EventBusError<PlayerLevelUpEvent>>,
+) {
+    for error in delivery_errors.read() {
+        if error.error_type == EventBusErrorType::DeliveryFailure {
+            error!(
+                "Message delivery failed to topic '{}' ({}): {}", 
+                error.topic, 
+                error.backend.as_deref().unwrap_or("unknown"), 
+                error.error_message
+            );
+            
+            // NOTE: delivery errors don't have the original event available
+            // Implement your error handling logic:
+            // - Retry mechanisms
+            // - Circuit breaker patterns  
+            // - Alerting systems
+            // - Fallback strategies
+        }
+    }
 }
 ```
 
-For fire-and-forget behavior:
+### Read Errors
+
+When receiving events, deserialization failures are reported as `EventBusDecodeError` events:
 
 ```rust
-// This will ignore any write errors
-let _ = ev_writer.write("topic", event);
+fn handle_read_errors(mut decode_errors: EventReader<EventBusDecodeError>) {
+    for error in decode_errors.read() {
+        warn!(
+            "Failed to decode message from topic '{}' using decoder '{}': {}",
+            error.topic, error.decoder_name, error.error_message
+        );
+        
+        // You can access the raw message bytes for debugging
+        debug!("Raw payload size: {} bytes", error.raw_payload.len());
+        
+        // Handle decoding errors:
+        // - Log malformed messages for debugging
+        // - Implement message format migration logic
+        // - Track error rates for monitoring
+        // - Skip corrupted messages gracefully
+    }
+}
 ```
 
-### Asynchronous Delivery Error Handling
+### Complete Error Handling Setup
 
-Kafka delivery failures are automatically forwarded to Bevy events that you can listen for:
+Add all error handling systems to your app:
 
 ```rust
 use bevy_event_bus::prelude::*;
 
-fn handle_delivery_errors(mut errors: EventReader<EventBusDeliveryFailure>) {
-    for error in errors.read() {
-        error!(
-            "Message delivery failed to topic '{}': {} (backend: {})",
-            error.topic, error.error, error.backend
-        );
-        
-        // Implement your error handling logic:
-        // - Retry logic
-        // - Circuit breaker
-        // - Alerting
-        // - Fallback mechanisms
-    }
+fn main() {
+    App::new()
+        .add_plugins(EventBusPlugins(kafka_backend))
+        .add_systems(Update, (
+            send_events_with_error_handling,
+            handle_delivery_errors,
+            handle_read_errors,
+            // Your other systems...
+        ))
+        .run();
 }
-
-// Add the system to your app
-app.add_systems(Update, handle_delivery_errors);
 ```
 
-**Note**: Delivery errors occur asynchronously after `write()` returns `Ok(())`. The `write()` method only validates serialization and local queueing, not network delivery.
+### Fire-and-Forget Usage
+
+If you don't want to handle errors explicitly, simply don't add error handling systems. The errors will still be logged as warnings but won't affect your application flow:
+
+```rust
+// Simple usage without explicit error handling
+fn simple_event_sending(mut ev_writer: EventBusWriter<PlayerLevelUpEvent>) {
+    ev_writer.write("game-events.level-up", PlayerLevelUpEvent { 
+        entity_id: 123, 
+        new_level: 5 
+    });
+    // Errors are logged but don't need to be handled
+}
+```
 
 ## Backend Configuration
 
