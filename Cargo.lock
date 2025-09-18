@@ -203,6 +203,8 @@ dependencies = [
 [[package]]
 name = "bevy_event_bus_derive"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e49a64158bf0947029be0fe1efe6e9ec91a9ada595eb8710590c03899e7ddf33"
 dependencies = [
  "ctor",
  "proc-macro-crate",
