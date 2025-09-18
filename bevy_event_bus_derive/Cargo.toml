@@ -2,6 +2,15 @@
 name = "bevy_event_bus_derive"
 version = "0.1.0"
 edition = "2024"
+description = "Procedural macros for bevy_event_bus"
+license-file = "LICENSE"
+repository = "https://github.com/JViggiani/bevy_event_bus"
+homepage = "https://github.com/JViggiani/bevy_event_bus"
+documentation = "https://docs.rs/bevy_event_bus"
+readme = "../README.md"
+keywords = ["bevy", "kafka", "events", "messaging", "gamedev"]
+categories = ["game-development", "development-tools", "network-programming", "asynchronous"]
+authors = ["Josh Viggiani"]
 
 [lib]
 proc-macro = true
