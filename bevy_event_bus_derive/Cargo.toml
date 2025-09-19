@@ -1,6 +1,6 @@
 [package]
 name = "bevy_event_bus_derive"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Procedural macros for bevy_event_bus"
 license-file = "LICENSE"
