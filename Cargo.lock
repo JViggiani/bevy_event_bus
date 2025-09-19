@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_event_bus"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "bevy",
@@ -202,9 +202,9 @@ dependencies = [
 
 [[package]]
 name = "bevy_event_bus_derive"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e49a64158bf0947029be0fe1efe6e9ec91a9ada595eb8710590c03899e7ddf33"
+checksum = "441144738163f829002bcb48ea7803f0a3801ef580737d7375c4d9c616d6d593"
 dependencies = [
  "ctor",
  "proc-macro-crate",
