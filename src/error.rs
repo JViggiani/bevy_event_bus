@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use serde::{Serialize, Deserialize};
 use crate::BusEvent;
+use crate::resources::EventMetadata;
 
 /// Types of errors that can occur in the event bus
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -34,10 +35,8 @@ pub struct EventBusError<T: BusEvent> {
     pub original_event: Option<T>,
     /// The backend that failed (e.g., "kafka")
     pub backend: Option<String>,
-    /// Optional partition information (if available)
-    pub partition: Option<i32>,
-    /// Optional offset information (if available)  
-    pub offset: Option<i64>,
+    /// Optional metadata for the event (contains backend-specific details like partition/offset)
+    pub metadata: Option<EventMetadata>,
 }
 
 impl<T: BusEvent> EventBusError<T> {
@@ -55,8 +54,7 @@ impl<T: BusEvent> EventBusError<T> {
             timestamp: std::time::SystemTime::now(),
             original_event: Some(original_event),
             backend: None,
-            partition: None,
-            offset: None,
+            metadata: None,
         }
     }
 
@@ -65,8 +63,7 @@ impl<T: BusEvent> EventBusError<T> {
         topic: String,
         error_message: String,
         backend: Option<String>,
-        partition: Option<i32>,
-        offset: Option<i64>,
+        metadata: Option<EventMetadata>,
     ) -> Self {
         Self {
             topic,
@@ -75,8 +72,7 @@ impl<T: BusEvent> EventBusError<T> {
             timestamp: std::time::SystemTime::now(),
             original_event: None,
             backend,
-            partition,
-            offset,
+            metadata,
         }
     }
 }
@@ -97,10 +93,8 @@ pub struct EventBusDecodeError {
     pub raw_payload: Vec<u8>,
     /// The decoder name that failed
     pub decoder_name: String,
-    /// Optional partition information (if available)
-    pub partition: Option<i32>,
-    /// Optional offset information (if available)  
-    pub offset: Option<i64>,
+    /// Optional metadata for the message (contains backend-specific details like partition/offset)
+    pub metadata: Option<EventMetadata>,
 }
 
 impl EventBusDecodeError {
@@ -110,8 +104,7 @@ impl EventBusDecodeError {
         error_message: String,
         raw_payload: Vec<u8>,
         decoder_name: String,
-        partition: Option<i32>,
-        offset: Option<i64>,
+        metadata: Option<EventMetadata>,
     ) -> Self {
         Self {
             topic,
@@ -119,8 +112,7 @@ impl EventBusDecodeError {
             timestamp: std::time::SystemTime::now(),
             raw_payload,
             decoder_name,
-            partition,
-            offset,
+            metadata,
         }
     }
 }

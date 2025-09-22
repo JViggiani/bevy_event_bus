@@ -175,8 +175,8 @@ fn run_throughput_test(
             println!("Started receiving messages...");
         }
         
-        for event in reader.read(&state.test_topic) {
-            state.messages_received.push(event.clone());
+        for wrapper in reader.read(&state.test_topic) {
+            state.messages_received.push(wrapper.event().clone());
             
             // Check if we've received all messages
             if state.messages_received.len() >= state.messages_to_send as usize

@@ -71,8 +71,8 @@ fn no_event_duplication_exactly_once_delivery() {
         topic: Res<Topic>,
         mut collected: ResMut<Collected>,
     ) {
-        for e in r.read(&topic.0) {
-            collected.0.push(e.clone());
+        for wrapper in r.read(&topic.0) {
+            collected.0.push(wrapper.event().clone());
         }
     }
     reader.add_systems(Update, reader_system);

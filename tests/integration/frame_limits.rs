@@ -49,8 +49,8 @@ fn frame_limit_spreads_drain() {
     reader.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>, mut c: ResMut<Collected>| {
-            for ev in r.read(&tr) {
-                c.0.push(ev.clone());
+            for wrapper in r.read(&tr) {
+                c.0.push(wrapper.event().clone());
             }
         },
     );

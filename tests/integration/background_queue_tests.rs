@@ -2,7 +2,7 @@ use crate::common::setup::build_basic_app_simple;
 use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
 use bevy_event_bus::{ConsumerMetrics, DrainMetricsEvent};
-use bevy_event_bus::{DrainedTopicMetadata, EventBusConsumerConfig, EventBusReader, ProcessedMessage, EventMetadata};
+use bevy_event_bus::{DrainedTopicMetadata, EventBusConsumerConfig, EventBusReader, ProcessedMessage, EventMetadata, KafkaMetadata};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, bevy_event_bus::ExternalBusEvent)]
@@ -29,12 +29,15 @@ fn unlimited_buffer_gathers() {
         for i in 0..5u32 {
             let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
             let metadata = EventMetadata {
-                topic: topic.clone(),
-                partition: 0,
-                offset: i as i64,
+                source: topic.clone(),
                 timestamp: std::time::Instant::now(),
                 headers: std::collections::HashMap::new(),
                 key: None,
+                backend_specific: Some(Box::new(KafkaMetadata {
+                    topic: topic.clone(),
+                    partition: 0,
+                    offset: i as i64,
+                })),
             };
             entry.push(ProcessedMessage { payload, metadata });
         }
@@ -44,8 +47,8 @@ fn unlimited_buffer_gathers() {
         .world_mut()
         .run_system_once(|mut r: EventBusReader<TestMsg>| {
             let mut collected = Vec::new();
-            for ev in r.read("t") {
-                collected.push(ev.clone());
+            for wrapper in r.read("t") {
+                collected.push(wrapper.event().clone());
             }
             assert_eq!(collected.len(), 5);
         });
@@ -65,12 +68,15 @@ fn frame_limit_respected() {
         for i in 0..10u32 {
             let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
             let metadata = EventMetadata {
-                topic: "cap".to_string(),
-                partition: 0,
-                offset: i as i64,
+                source: "cap".to_string(),
                 timestamp: std::time::Instant::now(),
                 headers: std::collections::HashMap::new(),
                 key: None,
+                backend_specific: Some(Box::new(KafkaMetadata {
+                    topic: "cap".to_string(),
+                    partition: 0,
+                    offset: i as i64,
+                })),
             };
             entry.push(ProcessedMessage { payload, metadata });
         }
@@ -95,12 +101,15 @@ fn drain_metrics_emitted_and_updated() {
         for i in 0..3u32 {
             let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
             let metadata = EventMetadata {
-                topic: "m".to_string(),
-                partition: 0,
-                offset: i as i64,
+                source: "m".to_string(),
                 timestamp: std::time::Instant::now(),
                 headers: std::collections::HashMap::new(),
                 key: None,
+                backend_specific: Some(Box::new(KafkaMetadata {
+                    topic: "m".to_string(),
+                    partition: 0,
+                    offset: i as i64,
+                })),
             };
             entry.push(ProcessedMessage { payload, metadata });
         }

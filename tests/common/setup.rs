@@ -268,8 +268,8 @@ pub fn setup_with_offset(offset: &str) -> (KafkaEventBusBackend, String) {
 
     // Require metadata readiness once per test process; subsequent setup() calls skip wait.
     if !METADATA_READY.load(std::sync::atomic::Ordering::SeqCst) {
-        // Allow more generous window for fresh Kafka container internal initialization (KRaft can take >10s cold)
-        let (metadata_ok, _elapsed) = wait_metadata(&bootstrap, Duration::from_secs(15));
+        // Allow more generous window for fresh Kafka container internal initialization (KRaft can take >20s cold)
+        let (metadata_ok, _elapsed) = wait_metadata(&bootstrap, Duration::from_secs(30));
         if !metadata_ok {
             panic!(
                 "Kafka metadata not ready at {} after {}ms",

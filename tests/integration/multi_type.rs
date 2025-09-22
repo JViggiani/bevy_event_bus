@@ -35,8 +35,8 @@ fn single_topic_multiple_types_same_frame() {
     reader.add_systems(
         Update,
         move |mut r1: EventBusReader<TestEvent>, mut a: ResMut<CollectedA>| {
-            for ev in r1.read(&tr_a) {
-                a.0.push(ev.clone());
+            for wrapper in r1.read(&tr_a) {
+                a.0.push(wrapper.event().clone());
             }
         },
     );
@@ -44,8 +44,8 @@ fn single_topic_multiple_types_same_frame() {
     reader.add_systems(
         Update,
         move |mut r2: EventBusReader<UserLoginEvent>, mut b: ResMut<CollectedB>| {
-            for ev in r2.read(&tr_b) {
-                b.0.push(ev.clone());
+            for wrapper in r2.read(&tr_b) {
+                b.0.push(wrapper.event().clone());
             }
         },
     );
@@ -134,8 +134,8 @@ fn single_topic_multiple_types_interleaved_frames() {
     reader.add_systems(
         Update,
         move |mut r1: EventBusReader<TestEvent>, mut a: ResMut<CollectedA>| {
-            for ev in r1.read(&tr_a2) {
-                a.0.push(ev.clone());
+            for wrapper in r1.read(&tr_a2) {
+                a.0.push(wrapper.event().clone());
             }
         },
     );
@@ -143,8 +143,8 @@ fn single_topic_multiple_types_interleaved_frames() {
     reader.add_systems(
         Update,
         move |mut r2: EventBusReader<UserLoginEvent>, mut b: ResMut<CollectedB>| {
-            for ev in r2.read(&tr_b2) {
-                b.0.push(ev.clone());
+            for wrapper in r2.read(&tr_b2) {
+                b.0.push(wrapper.event().clone());
             }
         },
     );

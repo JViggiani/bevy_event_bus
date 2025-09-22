@@ -2,7 +2,7 @@ use crate::common::events::TestEvent;
 use crate::common::helpers::{unique_topic, wait_for_events};
 use crate::common::setup::setup;
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, ExternalEvent, EventBusAppExt};
+use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventWrapper, EventBusAppExt};
 use std::collections::HashMap;
 use tracing::{info, info_span};
 
@@ -48,15 +48,17 @@ fn metadata_propagation_from_kafka_to_bevy() {
     );
 
     #[derive(Resource, Default)]
-    struct ReceivedEvents(Vec<ExternalEvent<TestEvent>>);
+    struct ReceivedEvents(Vec<EventWrapper<TestEvent>>);
 
     reader.insert_resource(ReceivedEvents::default());
     let tr = topic.clone();
     reader.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>, mut events: ResMut<ReceivedEvents>| {
-            for external_event in r.read_with_metadata(&tr) {
-                events.0.push(external_event.clone());
+            for wrapper in r.read(&tr) {
+                if wrapper.is_external() {
+                    events.0.push(wrapper.clone());
+                }
             }
         },
     );
@@ -74,21 +76,34 @@ fn metadata_propagation_from_kafka_to_bevy() {
     assert_eq!(received.len(), 1, "Should receive exactly one event with metadata");
     
     let external_event = &received[0];
-    assert_eq!(external_event.event.message, "metadata test");
-    assert_eq!(external_event.event.value, 42);
+    // Thanks to Deref, we can access event fields directly
+    assert_eq!(external_event.message, "metadata test");
+    assert_eq!(external_event.value, 42);
     
-    // Verify metadata
-    assert_eq!(external_event.metadata.topic, topic);
-    assert!(external_event.metadata.partition >= 0);
-    assert!(external_event.metadata.offset >= 0);
-    assert!(external_event.metadata.timestamp > std::time::Instant::now() - std::time::Duration::from_secs(10));
+    // Verify metadata using the metadata() method
+    let metadata = external_event.metadata().expect("External event should have metadata");
+    assert_eq!(metadata.source, topic);
+    assert!(metadata.timestamp > std::time::Instant::now() - std::time::Duration::from_secs(10));
     
-    info!(
-        topic = %external_event.metadata.topic,
-        partition = external_event.metadata.partition,
-        offset = external_event.metadata.offset,
-        "Metadata verification successful"
-    );
+    // Get Kafka-specific metadata
+    if let Some(backend_meta) = &metadata.backend_specific {
+        if let Some(kafka_meta) = backend_meta.as_any().downcast_ref::<bevy_event_bus::KafkaMetadata>() {
+            assert_eq!(kafka_meta.topic, topic);
+            assert!(kafka_meta.partition >= 0);
+            assert!(kafka_meta.offset >= 0);
+            
+            info!(
+                topic = %kafka_meta.topic,
+                partition = kafka_meta.partition,
+                offset = kafka_meta.offset,
+                "Metadata verification successful"
+            );
+        } else {
+            panic!("Expected Kafka metadata, but got different backend type");
+        }
+    } else {
+        panic!("No backend-specific metadata found");
+    }
 }
 
 #[test]
@@ -138,15 +153,17 @@ fn header_forwarding_producer_to_consumer() {
     );
 
     #[derive(Resource, Default)]
-    struct ReceivedEvents(Vec<ExternalEvent<TestEvent>>);
+    struct ReceivedEvents(Vec<EventWrapper<TestEvent>>);
 
     reader.insert_resource(ReceivedEvents::default());
     let tr = topic.clone();
     reader.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>, mut events: ResMut<ReceivedEvents>| {
-            for external_event in r.read_with_metadata(&tr) {
-                events.0.push(external_event.clone());
+            for wrapper in r.read(&tr) {
+                if wrapper.is_external() {
+                    events.0.push(wrapper.clone());
+                }
             }
         },
     );
@@ -164,16 +181,18 @@ fn header_forwarding_producer_to_consumer() {
     assert_eq!(received.len(), 1, "Should receive exactly one event with headers");
     
     let external_event = &received[0];
-    assert_eq!(external_event.event.message, "header test");
-    assert_eq!(external_event.event.value, 123);
+    // Thanks to Deref, we can access event fields directly
+    assert_eq!(external_event.message, "header test");
+    assert_eq!(external_event.value, 123);
     
-    // Verify headers
-    assert_eq!(external_event.metadata.headers.get("trace-id"), Some(&"abc-123".to_string()));
-    assert_eq!(external_event.metadata.headers.get("user-id"), Some(&"user-456".to_string()));
-    assert_eq!(external_event.metadata.headers.get("correlation-id"), Some(&"corr-789".to_string()));
+    // Verify headers using the metadata() method
+    let metadata = external_event.metadata().expect("External event should have metadata");
+    assert_eq!(metadata.headers.get("trace-id"), Some(&"abc-123".to_string()));
+    assert_eq!(metadata.headers.get("user-id"), Some(&"user-456".to_string()));
+    assert_eq!(metadata.headers.get("correlation-id"), Some(&"corr-789".to_string()));
     
     info!(
-        headers = ?external_event.metadata.headers,
+        headers = ?metadata.headers,
         "Header forwarding verification successful"
     );
 }
@@ -220,15 +239,17 @@ fn timestamp_accuracy_for_latency_measurement() {
     );
 
     #[derive(Resource, Default)]
-    struct ReceivedEvents(Vec<ExternalEvent<TestEvent>>);
+    struct ReceivedEvents(Vec<EventWrapper<TestEvent>>);
 
     reader.insert_resource(ReceivedEvents::default());
     let tr = topic.clone();
     reader.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>, mut events: ResMut<ReceivedEvents>| {
-            for external_event in r.read_with_metadata(&tr) {
-                events.0.push(external_event.clone());
+            for wrapper in r.read(&tr) {
+                if wrapper.is_external() {
+                    events.0.push(wrapper.clone());
+                }
             }
         },
     );
@@ -248,14 +269,17 @@ fn timestamp_accuracy_for_latency_measurement() {
     let external_event = &received[0];
     let receive_time = std::time::Instant::now();
     
+    // Get metadata for timestamp verification
+    let metadata = external_event.metadata().expect("External event should have metadata");
+    
     // Verify timestamp is reasonable (between send time and receive time)
-    assert!(external_event.metadata.timestamp >= send_time, 
+    assert!(metadata.timestamp >= send_time, 
             "Event timestamp should be after send time");
-    assert!(external_event.metadata.timestamp <= receive_time, 
+    assert!(metadata.timestamp <= receive_time, 
             "Event timestamp should be before receive time");
     
     // Calculate and verify latency is reasonable (should be less than 1 second for local test)
-    let latency = receive_time.saturating_duration_since(external_event.metadata.timestamp);
+    let latency = receive_time.saturating_duration_since(metadata.timestamp);
     assert!(latency < std::time::Duration::from_secs(1), 
             "Latency should be less than 1 second, got: {:?}", latency);
     
@@ -317,7 +341,7 @@ fn mixed_metadata_and_regular_reading() {
     #[derive(Resource, Default)]
     struct RegularEvents(Vec<TestEvent>);
     #[derive(Resource, Default)]  
-    struct MetadataEvents(Vec<ExternalEvent<TestEvent>>);
+    struct MetadataEvents(Vec<EventWrapper<TestEvent>>);
 
     regular_reader.insert_resource(RegularEvents::default());
     metadata_reader.insert_resource(MetadataEvents::default());
@@ -329,18 +353,20 @@ fn mixed_metadata_and_regular_reading() {
     regular_reader.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>, mut events: ResMut<RegularEvents>| {
-            for event in r.read(&tr1) {
-                events.0.push(event.clone());
+            for wrapper in r.read(&tr1) {
+                events.0.push(wrapper.event().clone());
             }
         },
     );
     
-    // Metadata reader using read_with_metadata()
+    // Metadata reader using read() with External filtering
     metadata_reader.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>, mut events: ResMut<MetadataEvents>| {
-            for external_event in r.read_with_metadata(&tr2) {
-                events.0.push(external_event.clone());
+            for wrapper in r.read(&tr2) {
+                if wrapper.is_external() {
+                    events.0.push(wrapper.clone());
+                }
             }
         },
     );
@@ -372,9 +398,14 @@ fn mixed_metadata_and_regular_reading() {
         // Metadata version should have the same event data (via Deref)
         assert_eq!(metadata_event.message, format!("mixed-{}", i));
         assert_eq!(metadata_event.value, i as i32);
-        assert_eq!(metadata_event.event.message, format!("mixed-{}", i));
-        assert_eq!(metadata_event.event.value, i as i32);
-        assert_eq!(metadata_event.metadata.topic, topic);
+        
+        // Verify Kafka metadata using the metadata() method
+        let metadata = metadata_event.metadata().expect("External event should have metadata");
+        if let Some(kafka_meta) = metadata.kafka_metadata() {
+            assert_eq!(kafka_meta.topic, topic);
+        } else {
+            panic!("Expected Kafka metadata for event {}", i);
+        }
     }
     
     info!("Mixed reading verification successful");

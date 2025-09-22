@@ -216,15 +216,18 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                             let topic_name = msg.topic.clone();
                             tracing::debug!(topic=%topic_name, "Processing message with multi-decoder pipeline");
                             
-                            // Create metadata for this message
-                            let metadata = EventMetadata {
-                                topic: msg.topic.clone(),
-                                partition: msg.partition,
-                                offset: msg.offset,
-                                timestamp: msg.timestamp,
-                                headers: msg.headers.clone(),
-                                key: msg.key.clone(),
-                            };
+                            // Create metadata for this message using new backend-agnostic structure
+                            let metadata = EventMetadata::new(
+                                msg.topic.clone(),  // source
+                                msg.timestamp,
+                                msg.headers.clone(),
+                                msg.key.as_ref().map(|k| String::from_utf8_lossy(k).to_string()), // key as String
+                                Some(Box::new(crate::resources::backend_metadata::KafkaMetadata {
+                                    topic: msg.topic.clone(),
+                                    partition: msg.partition,
+                                    offset: msg.offset,
+                                })),
+                            );
                             
                             // Attempt multi-decode using registered decoders
                             let decoded_events = decoder_registry.decode_all(&topic_name, &msg.payload);
@@ -248,8 +251,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                                     format!("No decoder succeeded. Tried {} decoders", decoder_registry.decoder_count(&topic_name)),
                                     msg.payload.clone(),
                                     format!("tried_{}_decoders", decoder_registry.decoder_count(&topic_name)),
-                                    Some(metadata.partition),
-                                    Some(metadata.offset),
+                                    Some(metadata.clone()),
                                 );
                                 
                                 // Store decode error for event dispatch 

@@ -27,8 +27,8 @@ pub use plugin::{EventBusPlugin, EventBusPlugins, PreconfiguredTopics};
 pub use readers::event_bus_reader::EventBusReader;
 pub use resources::{
     ConsumerMetrics, DecodedEventBuffer, DeliveryEvent, DrainMetricsEvent, DrainedTopicMetadata, EventBusConsumerConfig,
-    EventMetadata, ExternalEvent, IncomingMessage, MessageQueue, OutboundMessage, OutboundMessageQueue, ProcessedMessage,
-    TopicDecodedEvents, TypeErasedEvent,
+    EventMetadata, IncomingMessage, MessageQueue, OutboundMessage, OutboundMessageQueue, ProcessedMessage,
+    TopicDecodedEvents, TypeErasedEvent, KafkaMetadata, RedisMetadata, BackendMetadata, EventWrapper,
 };
 pub use writers::event_bus_writer::EventBusWriter;
 
@@ -48,8 +48,8 @@ pub mod prelude {
         app_ext::EventBusAppExt,
         BusEvent, ConsumerMetrics, DecodedEvent, DecodedEventBuffer, DecoderRegistry, DeliveryEvent, DrainMetricsEvent, DrainedTopicMetadata, EventBusBackend,
         EventBusBackendExt, EventBusConsumerConfig, EventBusError, EventBusErrorType, EventBusDecodeError, EventBusPlugin, EventBusPlugins,
-        EventBusReader, EventBusWriter, EventMetadata, ExternalBusEvent, ExternalEvent, IncomingMessage, MessageQueue,
-        OutboundMessage, OutboundMessageQueue, ProcessedMessage, TopicDecodedEvents, TypedDecoder, TypeErasedEvent,
+        EventBusReader, EventBusWriter, EventMetadata, ExternalBusEvent, IncomingMessage, MessageQueue,
+        OutboundMessage, OutboundMessageQueue, ProcessedMessage, TopicDecodedEvents, TypedDecoder, TypeErasedEvent, EventWrapper,
     };
 
     #[cfg(feature = "kafka")]

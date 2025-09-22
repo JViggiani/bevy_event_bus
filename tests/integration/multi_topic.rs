@@ -71,11 +71,11 @@ fn multi_topic_isolation() {
     reader.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>, mut col: ResMut<Collected>| {
-            for ev in r.read(&ta_r) {
-                col.0.push(ev.clone());
+            for wrapper in r.read(&ta_r) {
+                col.0.push(wrapper.event().clone());
             }
-            for ev in r.read(&tb_r) {
-                col.0.push(ev.clone());
+            for wrapper in r.read(&tb_r) {
+                col.0.push(wrapper.event().clone());
             }
         },
     );
