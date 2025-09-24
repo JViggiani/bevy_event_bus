@@ -2,7 +2,7 @@ use crate::common::setup::build_basic_app_simple;
 use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
 use bevy_event_bus::{ConsumerMetrics, DrainMetricsEvent};
-use bevy_event_bus::{DrainedTopicMetadata, EventBusConsumerConfig, EventBusReader, ProcessedMessage, EventMetadata, KafkaMetadata};
+use bevy_event_bus::{DrainedTopicMetadata, EventBusConsumerConfig, EventBusReader, ProcessedMessage, EventMetadata, KafkaMetadata, KafkaConsumerConfig};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, bevy_event_bus::ExternalBusEvent)]
@@ -47,7 +47,8 @@ fn unlimited_buffer_gathers() {
         .world_mut()
         .run_system_once(|mut r: EventBusReader<TestMsg>| {
             let mut collected = Vec::new();
-            for wrapper in r.read("t") {
+            let config = KafkaConsumerConfig::new("localhost:9092", "test_group", ["t"]);
+            for wrapper in r.read(&config) {
                 collected.push(wrapper.event().clone());
             }
             assert_eq!(collected.len(), 5);
@@ -85,7 +86,8 @@ fn frame_limit_respected() {
     let _ = app
         .world_mut()
         .run_system_once(|mut r: EventBusReader<TestMsg>| {
-            let count = r.read("cap").count();
+            let config = KafkaConsumerConfig::new("localhost:9092", "test_group", ["cap"]);
+            let count = r.read(&config).len();
             assert_eq!(count, 10);
         });
 }

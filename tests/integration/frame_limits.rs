@@ -4,6 +4,7 @@ use crate::common::setup::setup;
 use bevy::prelude::*;
 use bevy_event_bus::{
     EventBusConsumerConfig, EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt,
+    KafkaConsumerConfig, KafkaProducerConfig,
 };
 
 #[test]
@@ -28,7 +29,7 @@ fn frame_limit_spreads_drain() {
     writer.add_systems(Update, move |mut w: EventBusWriter<TestEvent>| {
         for i in 0..15 {
             let _ = w.write(
-                &tclone,
+                &KafkaProducerConfig::new("localhost:9092", [&tclone]),
                 TestEvent {
                     message: format!("v{i}"),
                     value: i,
@@ -49,7 +50,7 @@ fn frame_limit_spreads_drain() {
     reader.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>, mut c: ResMut<Collected>| {
-            for wrapper in r.read(&tr) {
+            for wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&tr])) {
                 c.0.push(wrapper.event().clone());
             }
         },

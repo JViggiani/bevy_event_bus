@@ -13,7 +13,7 @@
 
 use bevy::prelude::*;
 use bevy_event_bus::{EventBusPlugins, EventBusWriter, PreconfiguredTopics};
-use bevy_event_bus::{EventBusError, EventBusAppExt};
+use bevy_event_bus::{EventBusError, EventBusAppExt, KafkaProducerConfig};
 use serde::{Deserialize, Serialize};
 use crate::common::helpers::unique_topic;
 use crate::common::MockEventBusBackend;
@@ -94,7 +94,8 @@ fn test_delivery_error_handling() {
                 state.messages_sent += 1;
                 
                 // Fire-and-forget write - delivery failures will appear as error events
-                writer.write(&topic_clone, test_event);
+                let config = KafkaProducerConfig::new("localhost:9092", [topic_clone.clone()]);
+                writer.write(&config, test_event);
             }
             
             state.test_completed = true;
@@ -189,7 +190,7 @@ fn test_multiple_event_types_error_handling() {
                 player_id: 123,
                 action: "login".to_string(),
             };
-            player_writer.write(&player_topic_clone, player_event);
+            player_writer.write(&KafkaProducerConfig::new("localhost:9092", [player_topic_clone.clone()]), player_event);
             
             // Combat event  
             let combat_event = CombatEvent {
@@ -197,7 +198,7 @@ fn test_multiple_event_types_error_handling() {
                 target_id: 789,
                 damage: 100,
             };
-            combat_writer.write(&combat_topic_clone, combat_event);
+            combat_writer.write(&KafkaProducerConfig::new("localhost:9092", [combat_topic_clone.clone()]), combat_event);
             
             // Analytics event
             let analytics_event = AnalyticsEvent {
@@ -205,7 +206,7 @@ fn test_multiple_event_types_error_handling() {
                 user_id: 123,
                 timestamp: 1234567890,
             };
-            analytics_writer.write(&analytics_topic_clone, analytics_event);
+            analytics_writer.write(&KafkaProducerConfig::new("localhost:9092", [analytics_topic_clone.clone()]), analytics_event);
             
             state.test_completed = true;
         }
@@ -307,7 +308,7 @@ fn test_centralized_error_handling() {
                     message: format!("Working event {}", i),
                 };
                 state.events_sent += 1;
-                writer.write(&working_topic_clone, event);
+                writer.write(&KafkaProducerConfig::new("localhost:9092", [working_topic_clone.clone()]), event);
             }
             
             // Send to failing topic
@@ -317,7 +318,7 @@ fn test_centralized_error_handling() {
                     message: format!("Failing event {}", i),
                 };
                 state.events_sent += 1;
-                writer.write(&failing_topic_clone, event);
+                writer.write(&KafkaProducerConfig::new("localhost:9092", [failing_topic_clone.clone()]), event);
             }
             
             state.test_completed = true;
@@ -409,7 +410,7 @@ fn test_batch_operation_error_handling() {
                         id: batch * events_per_batch + event_in_batch,
                         message: format!("Batch {} Event {}", batch, event_in_batch),
                     };
-                    writer.write(&topic_clone, event);
+                    writer.write(&KafkaProducerConfig::new("localhost:9092", [topic_clone.clone()]), event);
                 }
             }
             
@@ -503,7 +504,7 @@ fn test_error_retry_mechanism() {
                     message: format!("Initial event {}", i),
                 };
                 state.initial_events_sent += 1;
-                writer.write(&topic_clone1, event);
+                writer.write(&KafkaProducerConfig::new("localhost:9092", [topic_clone1.clone()]), event);
             }
             state.initial_send_complete = true;
         }
@@ -535,7 +536,7 @@ fn test_error_retry_mechanism() {
                     };
                     
                     // Retry the event (will still fail in this test since mock backend is configured to fail)
-                    writer.write(&topic_clone2, retry_event);
+                    writer.write(&KafkaProducerConfig::new("localhost:9092", [topic_clone2.clone()]), retry_event);
                 }
             }
         }

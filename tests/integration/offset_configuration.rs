@@ -2,7 +2,7 @@ use crate::common::events::TestEvent;
 use crate::common::helpers::{unique_topic, update_until};
 use crate::common::setup::setup;
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, KafkaEventBusBackend, KafkaConfig, EventBusAppExt};
+use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, KafkaEventBusBackend, KafkaConnection, EventBusAppExt, KafkaConsumerConfig, KafkaProducerConfig};
 use std::collections::HashMap;
 
 /// Test that consumers with "earliest" offset receive historical events
@@ -34,7 +34,8 @@ fn offset_configuration_earliest_receives_historical_events() {
         producer_app.add_systems(Update, move |mut w: EventBusWriter<TestEvent>| {
             // Send 3 historical events
             for i in 0..3 {
-                let _ = w.write(&topic_clone, TestEvent {
+                let config = KafkaProducerConfig::new("localhost:9092", [&topic_clone]);
+                let _ = w.write(&config, TestEvent {
                     message: format!("historical_{}", i),
                     value: i,
                 });
@@ -44,12 +45,12 @@ fn offset_configuration_earliest_receives_historical_events() {
     }
     
     // Test: Consumer with "earliest" should see historical events
-    let mut config = KafkaConfig::default();
-    config.bootstrap_servers = bootstrap;
-    config.group_id = format!("earliest_test_{}", unique_topic("group"));
-    config.additional_config.insert("auto.offset.reset".to_string(), "earliest".to_string());
+    let mut connection = KafkaConnection::default();
+    connection.bootstrap_servers = bootstrap;
+    // TODO: This should be in KafkaConsumerConfig, but current architecture applies connection-level config to all consumers
+    connection.additional_config.insert("auto.offset.reset".to_string(), "earliest".to_string());
     
-    let backend_earliest = KafkaEventBusBackend::new(config);
+    let backend_earliest = KafkaEventBusBackend::new(connection);
     let mut earliest_app = App::new();
     earliest_app.add_plugins(EventBusPlugins(
         backend_earliest,
@@ -62,10 +63,12 @@ fn offset_configuration_earliest_receives_historical_events() {
     earliest_app.insert_resource(CollectedEarliest::default());
     
     let topic_read = topic.clone();
+    let consumer_group = format!("earliest_test_{}", unique_topic("group"));
     earliest_app.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>, mut c: ResMut<CollectedEarliest>| {
-            for wrapper in r.read(&topic_read) {
+            let config = KafkaConsumerConfig::new("localhost:9092", &consumer_group, [&topic_read]);
+            for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
             }
         },
@@ -122,7 +125,8 @@ fn offset_configuration_latest_ignores_historical_events() {
         producer_app.add_systems(Update, move |mut w: EventBusWriter<TestEvent>| {
             // Send 3 historical events that the latest consumer should NOT see
             for i in 0..3 {
-                let _ = w.write(&topic_clone, TestEvent {
+                let config = KafkaProducerConfig::new("localhost:9092", [&topic_clone]);
+                let _ = w.write(&config, TestEvent {
                     message: format!("historical_{}", i),
                     value: i,
                 });
@@ -132,12 +136,12 @@ fn offset_configuration_latest_ignores_historical_events() {
     }
     
     // Create consumer with "latest" offset - should NOT see historical events
-    let mut config = KafkaConfig::default();
-    config.bootstrap_servers = bootstrap.clone();
-    config.group_id = format!("latest_test_{}", unique_topic("group"));
-    config.additional_config.insert("auto.offset.reset".to_string(), "latest".to_string());
+    let mut connection = KafkaConnection::default();
+    connection.bootstrap_servers = bootstrap.clone();
+    // TODO: This should be in KafkaConsumerConfig, but current architecture applies connection-level config to all consumers
+    connection.additional_config.insert("auto.offset.reset".to_string(), "latest".to_string());
     
-    let backend_latest = KafkaEventBusBackend::new(config);
+    let backend_latest = KafkaEventBusBackend::new(connection);
     let mut latest_app = App::new();
     latest_app.add_plugins(EventBusPlugins(
         backend_latest,
@@ -150,10 +154,12 @@ fn offset_configuration_latest_ignores_historical_events() {
     latest_app.insert_resource(CollectedLatest::default());
     
     let topic_read = topic.clone();
+    let consumer_group = format!("latest_test_{}", unique_topic("group"));
     latest_app.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>, mut c: ResMut<CollectedLatest>| {
-            for wrapper in r.read(&topic_read) {
+            let config = KafkaConsumerConfig::new("localhost:9092", &consumer_group, [&topic_read]);
+            for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
             }
         },
@@ -163,7 +169,8 @@ fn offset_configuration_latest_ignores_historical_events() {
     let topic_send = topic.clone();
     latest_app.add_systems(Update, move |mut w: EventBusWriter<TestEvent>| {
         // Send new event after consumer is established
-        let _ = w.write(&topic_send, TestEvent {
+        let config = KafkaProducerConfig::new("localhost:9092", [&topic_send]);
+        let _ = w.write(&config, TestEvent {
             message: "new_event".to_string(),
             value: 999,
         });
@@ -221,7 +228,8 @@ fn default_offset_configuration_is_latest() {
         
         let topic_clone = topic.clone();
         producer_app.add_systems(Update, move |mut w: EventBusWriter<TestEvent>| {
-            let _ = w.write(&topic_clone, TestEvent {
+            let config = KafkaProducerConfig::new("localhost:9092", [&topic_clone]);
+            let _ = w.write(&config, TestEvent {
                 message: "should_not_see_this".to_string(),
                 value: 42,
             });
@@ -230,9 +238,8 @@ fn default_offset_configuration_is_latest() {
     }
     
     // Consumer with default config (no additional_config specified) - should use "latest" behavior
-    let config = KafkaConfig {
+    let config = KafkaConnection {
         bootstrap_servers: bootstrap,
-        group_id: format!("default_test_{}", unique_topic("group")),
         client_id: None,
         timeout_ms: 5000,
         additional_config: HashMap::new(), // No overrides - use defaults
@@ -254,7 +261,8 @@ fn default_offset_configuration_is_latest() {
     app.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>, mut c: ResMut<Collected>| {
-            for wrapper in r.read(&topic_read) {
+            let config = KafkaConsumerConfig::new("localhost:9092", "default_test_group", [&topic_read]);
+            for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
             }
         },

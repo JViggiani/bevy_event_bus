@@ -2,7 +2,7 @@ use crate::common::TestEvent;
 use crate::common::setup::setup;
 use crate::common::helpers::{unique_topic, update_until};
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt};
+use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt, KafkaConsumerConfig, KafkaProducerConfig};
 use tracing::{info, info_span};
 use tracing_subscriber::EnvFilter;
 
@@ -51,7 +51,8 @@ fn test_basic_kafka_event_bus() {
     writer_app.insert_resource(ToSend(event_to_send.clone(), topic.clone()));
 
     fn writer_system(mut w: EventBusWriter<TestEvent>, data: Res<ToSend>) {
-        let _ = w.write(&data.1, data.0.clone());
+        let config = KafkaProducerConfig::new("localhost:9092", [&data.1]);
+        let _ = w.write(&config, data.0.clone());
     }
     writer_app.add_systems(Update, writer_system);
     let writer_span = info_span!("writer_app.update");
@@ -84,7 +85,8 @@ fn test_basic_kafka_event_bus() {
         topic: Res<Topic>,
         mut collected: ResMut<Collected>,
     ) {
-        for wrapper in r.read(&topic.0) {
+        let config = KafkaConsumerConfig::new("localhost:9092", "test_group", [&topic.0]);
+        for wrapper in r.read(&config) {
             collected.0.push(wrapper.event().clone());
         }
     }

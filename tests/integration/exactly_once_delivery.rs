@@ -2,7 +2,7 @@ use crate::common::events::TestEvent;
 use crate::common::helpers::{unique_topic, update_until};
 use crate::common::setup::setup;
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt};
+use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt, KafkaConsumerConfig, KafkaProducerConfig};
 
 /// Test that events are delivered exactly once - no duplication
 #[test]
@@ -45,7 +45,7 @@ fn no_event_duplication_exactly_once_delivery() {
 
     fn writer_system(mut w: EventBusWriter<TestEvent>, data: Res<ToSend>) {
         for event in &data.0 {
-            let _ = w.write(&data.1, event.clone());
+            let _ = w.write(&KafkaProducerConfig::new("localhost:9092", [&data.1]), event.clone());
         }
     }
     writer.add_systems(Update, writer_system);
@@ -71,7 +71,7 @@ fn no_event_duplication_exactly_once_delivery() {
         topic: Res<Topic>,
         mut collected: ResMut<Collected>,
     ) {
-        for wrapper in r.read(&topic.0) {
+        for wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&topic.0])) {
             collected.0.push(wrapper.event().clone());
         }
     }

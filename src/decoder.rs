@@ -86,7 +86,7 @@ impl DecoderRegistry {
     /// Register a decoder for a specific topic
     pub fn register_decoder<T: BusEvent + Event>(&mut self, topic: &str, decoder: TypedDecoder<T>) {
         let decoder_name = decoder.name();
-        let decoders = self.topic_decoders.entry(topic.to_string()).or_insert_with(Vec::new);
+        let decoders = self.topic_decoders.entry(topic.to_string()).or_default();
         decoders.push(Box::new(decoder));
         tracing::debug!(
             topic = %topic, 

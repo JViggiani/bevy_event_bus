@@ -1,7 +1,7 @@
 use crate::common::TestEvent;
 use crate::common::mock_backend::MockEventBusBackend;
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt};
+use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt, KafkaConsumerConfig, KafkaProducerConfig};
 use std::collections::HashMap;
 use tracing::{info, info_span};
 use tracing_subscriber::EnvFilter;
@@ -54,7 +54,7 @@ fn test_internal_only_events() {
         if !*sent {
             *sent = true;
             for event in &events_to_send {
-                writer.write(&topic_clone, event.clone());
+                writer.write(&KafkaProducerConfig::new("localhost:9092", [&topic_clone]), event.clone());
             }
             info!("Sent {} events (both external mock and internal)", events_to_send.len());
         }
@@ -66,7 +66,7 @@ fn test_internal_only_events() {
         mut reader: EventBusReader<TestEvent>,
         mut received: ResMut<ReceivedEvents>
     | {
-        for event_wrapper in reader.read(&topic_clone) {
+        for event_wrapper in reader.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&topic_clone])) {
             // Only collect internal events for this test
             if event_wrapper.is_internal() {
                 received.0.push(event_wrapper.clone());
@@ -167,7 +167,7 @@ fn test_internal_events_with_headers() {
             headers.insert("source".to_string(), "internal-test".to_string());
             
             // Send event with headers (will create both mock external and internal events)
-            writer.write_with_headers(&topic_clone, test_event.clone(), headers);
+            writer.write_with_headers(&KafkaProducerConfig::new("localhost:9092", [&topic_clone]), test_event.clone(), headers);
             info!("Sent event with headers (internal portion will ignore headers)");
         }
     });
@@ -178,7 +178,7 @@ fn test_internal_events_with_headers() {
         mut reader: EventBusReader<TestEvent>,
         mut received: ResMut<ReceivedEvents>
     | {
-        for event_wrapper in reader.read(&topic_clone) {
+        for event_wrapper in reader.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&topic_clone])) {
             // Only collect internal events for this test
             if event_wrapper.is_internal() {
                 received.0.push(event_wrapper.clone());
@@ -187,7 +187,7 @@ fn test_internal_events_with_headers() {
     });
     
     // Run several update cycles to process events
-    for i in 0..10 {
+    for _i in 0..10 {
         app.update();
         let received = app.world().resource::<ReceivedEvents>();
         if !received.0.is_empty() {
@@ -257,7 +257,7 @@ fn test_internal_events_into_parts() {
     | {
         if !*sent {
             *sent = true;
-            writer.write(&topic_clone, test_event.clone());
+            writer.write(&KafkaProducerConfig::new("localhost:9092", [&topic_clone]), test_event.clone());
             info!("Sent event for into_parts test");
         }
     });
@@ -268,7 +268,7 @@ fn test_internal_events_into_parts() {
         mut reader: EventBusReader<TestEvent>,
         mut received: ResMut<ReceivedEvents>
     | {
-        for event_wrapper in reader.read(&topic_clone) {
+        for event_wrapper in reader.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&topic_clone])) {
             // Only collect internal events for this test
             if event_wrapper.is_internal() {
                 received.0.push(event_wrapper.clone());
@@ -277,7 +277,7 @@ fn test_internal_events_into_parts() {
     });
     
     // Run several update cycles to process events
-    for i in 0..10 {
+    for _i in 0..10 {
         app.update();
         let received = app.world().resource::<ReceivedEvents>();
         if !received.0.is_empty() {

@@ -38,18 +38,6 @@ impl BackendMetadata for KafkaMetadata {
     fn clone_box(&self) -> Box<dyn BackendMetadata> { Box::new(self.clone()) }
 }
 
-/// Redis-specific metadata (for future Redis backend)
-#[derive(Debug, Clone)]
-pub struct RedisMetadata {
-    pub stream_id: String,
-    pub consumer_group: String,
-}
-
-impl BackendMetadata for RedisMetadata {
-    fn as_any(&self) -> &dyn Any { self }
-    fn clone_box(&self) -> Box<dyn BackendMetadata> { Box::new(self.clone()) }
-}
-
 /// Extension methods for easy access to backend-specific metadata
 impl EventMetadata {
     /// Create new metadata with backend-specific data
@@ -66,10 +54,5 @@ impl EventMetadata {
     /// Get Kafka-specific metadata if available
     pub fn kafka_metadata(&self) -> Option<&KafkaMetadata> {
         self.backend_specific.as_ref()?.as_any().downcast_ref::<KafkaMetadata>()
-    }
-    
-    /// Get Redis-specific metadata if available
-    pub fn redis_metadata(&self) -> Option<&RedisMetadata> {
-        self.backend_specific.as_ref()?.as_any().downcast_ref::<RedisMetadata>()
     }
 }

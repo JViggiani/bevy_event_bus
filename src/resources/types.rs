@@ -94,38 +94,6 @@ impl<T: BusEvent> std::ops::Deref for EventWrapper<T> {
     }
 }
 
-/// Outbound message queued for delivery to external broker
-#[derive(Debug, Clone)]
-pub struct OutboundMessage {
-    pub topic: String,
-    pub payload: Vec<u8>,
-    /// Unique ID for tracking delivery success/failure
-    pub delivery_id: u64,
-}
-
-/// Events fired when messages are successfully delivered or fail
-#[derive(Event, Debug, Clone)]
-pub enum DeliveryEvent {
-    Success { delivery_id: u64, topic: String },
-    Failed { delivery_id: u64, topic: String, error: String },
-}
-
-/// Queue of outbound messages waiting to be sent
-#[derive(Resource, Debug)]
-pub struct OutboundMessageQueue {
-    pub messages: std::sync::Mutex<std::collections::VecDeque<OutboundMessage>>,
-    pub next_delivery_id: std::sync::atomic::AtomicU64,
-}
-
-impl Default for OutboundMessageQueue {
-    fn default() -> Self {
-        Self {
-            messages: std::sync::Mutex::new(std::collections::VecDeque::new()),
-            next_delivery_id: std::sync::atomic::AtomicU64::new(1),
-        }
-    }
-}
-
 /// Configuration controlling how many events are drained each frame
 #[derive(Resource, Debug, Clone)]
 #[derive(Default)]
@@ -173,7 +141,7 @@ pub struct ConsumerMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resources::backend_metadata::{KafkaMetadata, RedisMetadata};
+    use crate::resources::backend_metadata::KafkaMetadata;
     use std::time::Instant;
 
     #[test]
@@ -227,9 +195,10 @@ mod tests {
             Instant::now(),
             headers.clone(),
             Some("event_key_789".to_string()),
-            Some(Box::new(RedisMetadata {
-                stream_id: "stream-1-0".to_string(),
-                consumer_group: "workers".to_string(),
+            Some(Box::new(KafkaMetadata {
+                topic: "events_topic".to_string(),
+                partition: 1,
+                offset: 456,
             })),
         );
         
@@ -262,35 +231,6 @@ mod tests {
             assert_eq!(k_meta.topic, "kafka_topic");
             assert_eq!(k_meta.partition, 1);
             assert_eq!(k_meta.offset, 100);
-        }
-        
-        // Test Redis metadata with same structure
-        let redis_meta = RedisMetadata {
-            stream_id: "events-stream-1-500".to_string(),
-            consumer_group: "processing_workers".to_string(),
-        };
-        
-        let redis_metadata = EventMetadata::new(
-            "redis_stream".to_string(),
-            Instant::now(),
-            std::collections::HashMap::new(),
-            Some("stream_key".to_string()),
-            Some(Box::new(redis_meta)),
-        );
-        
-        // Kafka metadata should be None for Redis backend
-        assert!(redis_metadata.kafka_metadata().is_none());
-        
-        // Manual downcast to Redis metadata should work
-        if let Some(backend_meta) = &redis_metadata.backend_specific {
-            if let Some(r_meta) = backend_meta.as_any().downcast_ref::<RedisMetadata>() {
-                assert_eq!(r_meta.stream_id, "events-stream-1-500");
-                assert_eq!(r_meta.consumer_group, "processing_workers");
-            } else {
-                panic!("Expected Redis metadata");
-            }
-        } else {
-            panic!("Expected backend metadata");
         }
     }
 }

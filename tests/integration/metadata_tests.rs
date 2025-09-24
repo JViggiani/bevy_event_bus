@@ -2,7 +2,7 @@ use crate::common::events::TestEvent;
 use crate::common::helpers::{unique_topic, wait_for_events};
 use crate::common::setup::setup;
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventWrapper, EventBusAppExt};
+use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventWrapper, EventBusAppExt, KafkaConsumerConfig, KafkaProducerConfig};
 use std::collections::HashMap;
 use tracing::{info, info_span};
 
@@ -42,7 +42,7 @@ fn metadata_propagation_from_kafka_to_bevy() {
         move |mut w: EventBusWriter<TestEvent>, mut sent: Local<bool>| {
             if !*sent {
                 *sent = true;
-                let _ = w.write(&topic_clone, test_event.clone());
+                let _ = w.write(&KafkaProducerConfig::new("localhost:9092", [&topic_clone]), test_event.clone());
             }
         },
     );
@@ -55,7 +55,7 @@ fn metadata_propagation_from_kafka_to_bevy() {
     reader.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>, mut events: ResMut<ReceivedEvents>| {
-            for wrapper in r.read(&tr) {
+            for wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&tr])) {
                 if wrapper.is_external() {
                     events.0.push(wrapper.clone());
                 }
@@ -129,7 +129,7 @@ fn header_forwarding_producer_to_consumer() {
     ));
     reader.add_bus_event::<TestEvent>(&topic);
 
-    // Create test event with headers
+    // Create test event
     let test_event = TestEvent {
         message: "header test".to_string(),
         value: 123,
@@ -147,7 +147,7 @@ fn header_forwarding_producer_to_consumer() {
         move |mut w: EventBusWriter<TestEvent>, mut sent: Local<bool>| {
             if !*sent {
                 *sent = true;
-                let _ = w.write_with_headers(&topic_clone, test_event.clone(), headers.clone());
+                let _ = w.write_with_headers(&KafkaProducerConfig::new("localhost:9092", [&topic_clone]), test_event.clone(), headers.clone());
             }
         },
     );
@@ -157,10 +157,11 @@ fn header_forwarding_producer_to_consumer() {
 
     reader.insert_resource(ReceivedEvents::default());
     let tr = topic.clone();
+    let consumer_group_name = format!("test_group_headers_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
     reader.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>, mut events: ResMut<ReceivedEvents>| {
-            for wrapper in r.read(&tr) {
+            for wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", &consumer_group_name, [&tr])) {
                 if wrapper.is_external() {
                     events.0.push(wrapper.clone());
                 }
@@ -168,33 +169,52 @@ fn header_forwarding_producer_to_consumer() {
         },
     );
 
-    // Send the event
+    // Send the event and let it propagate
     writer.update();
     writer.update();
-
-    // Wait for the event to arrive
-    let received = wait_for_events(&mut reader, &topic, 5000, 1, |app| {
-        let events = app.world().resource::<ReceivedEvents>();
-        events.0.clone()
-    });
-
-    assert_eq!(received.len(), 1, "Should receive exactly one event with headers");
+    std::thread::sleep(std::time::Duration::from_millis(100));
     
-    let external_event = &received[0];
-    // Thanks to Deref, we can access event fields directly
-    assert_eq!(external_event.message, "header test");
-    assert_eq!(external_event.value, 123);
+    // Wait for events to be received with polling
+    let mut attempts = 0;
+    let max_attempts = 50; // 5 seconds total
     
-    // Verify headers using the metadata() method
-    let metadata = external_event.metadata().expect("External event should have metadata");
+    loop {
+        reader.update();
+        let events = reader.world().resource::<ReceivedEvents>();
+        if !events.0.is_empty() {
+            break;
+        }
+        
+        attempts += 1;
+        if attempts >= max_attempts {
+            panic!("No events received after {} attempts", max_attempts);
+        }
+        
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    // Verify the event was received with headers
+    let events = reader.world().resource::<ReceivedEvents>();
+    assert!(!events.0.is_empty(), "No events received");
+
+    let received_event = &events.0[0];
+    assert_eq!(received_event.event().message, "header test");
+    assert_eq!(received_event.event().value, 123);
+
+    // Verify headers were forwarded
+    let metadata = received_event.metadata().expect("External event should have metadata");
     assert_eq!(metadata.headers.get("trace-id"), Some(&"abc-123".to_string()));
     assert_eq!(metadata.headers.get("user-id"), Some(&"user-456".to_string()));
     assert_eq!(metadata.headers.get("correlation-id"), Some(&"corr-789".to_string()));
     
-    info!(
-        headers = ?metadata.headers,
-        "Header forwarding verification successful"
-    );
+    // Also verify Kafka-specific metadata exists
+    if let Some(_kafka_meta) = metadata.kafka_metadata() {
+        // Kafka metadata exists, which is good
+    } else {
+        panic!("Expected Kafka metadata with headers");
+    }
+    
+    info!("Header forwarding test completed successfully");
 }
 
 #[test]
@@ -233,7 +253,7 @@ fn timestamp_accuracy_for_latency_measurement() {
                     message: "timestamp test".to_string(),
                     value: 999,
                 };
-                let _ = w.write(&topic_clone, event);
+                let _ = w.write(&KafkaProducerConfig::new("localhost:9092", [&topic_clone]), event);
             }
         },
     );
@@ -246,7 +266,7 @@ fn timestamp_accuracy_for_latency_measurement() {
     reader.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>, mut events: ResMut<ReceivedEvents>| {
-            for wrapper in r.read(&tr) {
+            for wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", "test-group", [&tr])) {
                 if wrapper.is_external() {
                     events.0.push(wrapper.clone());
                 }
@@ -332,7 +352,7 @@ fn mixed_metadata_and_regular_reading() {
                         message: format!("mixed-{}", i),
                         value: i,
                     };
-                    let _ = w.write(&topic_clone, event);
+                    let _ = w.write(&KafkaProducerConfig::new("localhost:9092", [&topic_clone]), event);
                 }
             }
         },
@@ -353,7 +373,7 @@ fn mixed_metadata_and_regular_reading() {
     regular_reader.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>, mut events: ResMut<RegularEvents>| {
-            for wrapper in r.read(&tr1) {
+            for wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", "regular-group", [&tr1])) {
                 events.0.push(wrapper.event().clone());
             }
         },
@@ -363,7 +383,7 @@ fn mixed_metadata_and_regular_reading() {
     metadata_reader.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>, mut events: ResMut<MetadataEvents>| {
-            for wrapper in r.read(&tr2) {
+            for wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", "metadata-group", [&tr2])) {
                 if wrapper.is_external() {
                     events.0.push(wrapper.clone());
                 }

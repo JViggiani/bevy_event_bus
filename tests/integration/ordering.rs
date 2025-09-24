@@ -2,7 +2,7 @@ use crate::common::events::TestEvent;
 use crate::common::helpers::unique_topic;
 use crate::common::helpers::wait_for_events;
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt};
+use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt, KafkaConsumerConfig, KafkaProducerConfig};
 
 #[test]
 fn per_topic_order_preserved() {
@@ -33,7 +33,7 @@ fn per_topic_order_preserved() {
             }
             for i in 0..10 {
                 let _ = w.write(
-                    &tclone,
+                    &KafkaProducerConfig::new("localhost:9092", [&tclone]),
                     TestEvent {
                         message: format!("msg-{i}"),
                         value: i,
@@ -52,7 +52,7 @@ fn per_topic_order_preserved() {
     reader.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>, mut c: ResMut<Collected>| {
-            for wrapper in r.read(&tr) {
+            for wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&tr])) {
                 c.0.push(wrapper.event().clone());
             }
         },
@@ -105,14 +105,14 @@ fn cross_topic_interleave_each_ordered() {
             }
             for i in 0..5 {
                 let _ = w.write(
-                    &t1c,
+                    &KafkaProducerConfig::new("localhost:9092", [&t1c]),
                     TestEvent {
                         message: format!("A{i}"),
                         value: i,
                     },
                 );
                 let _ = w.write(
-                    &t2c,
+                    &KafkaProducerConfig::new("localhost:9092", [&t2c]),
                     TestEvent {
                         message: format!("B{i}"),
                         value: i,
@@ -137,10 +137,10 @@ fn cross_topic_interleave_each_ordered() {
         move |mut r: EventBusReader<TestEvent>,
               mut c1: ResMut<CollectedT1>,
               mut c2: ResMut<CollectedT2>| {
-            for wrapper in r.read(&ta) {
+            for wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&ta])) {
                 c1.0.push(wrapper.event().clone());
             }
-            for wrapper in r.read(&tb) {
+            for wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&tb])) {
                 c2.0.push(wrapper.event().clone());
             }
         },

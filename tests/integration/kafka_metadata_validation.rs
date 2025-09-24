@@ -2,7 +2,7 @@ use crate::common::events::TestEvent;
 use crate::common::helpers::{unique_topic, update_until, wait_for_events};
 use crate::common::setup::setup;
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt, EventWrapper};
+use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt, EventWrapper, KafkaConsumerConfig, KafkaProducerConfig};
 use tracing::{info, info_span};
 
 /// Test that validates Kafka metadata propagation with real broker interaction
@@ -52,7 +52,7 @@ fn kafka_metadata_end_to_end_validation() {
         topic: Res<Topic>,
         mut events: ResMut<ReceivedEventsWithMetadata>,
     ) {
-        for event_wrapper in r.read(&topic.0) {
+        for event_wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&topic.0])) {
             // Only collect external events with metadata
             if event_wrapper.is_external() {
                 events.0.push(event_wrapper.clone());
@@ -94,7 +94,7 @@ fn kafka_metadata_end_to_end_validation() {
     fn writer_system(mut w: EventBusWriter<TestEvent>, mut data: ResMut<TestData>) {
         if !data.sent {
             for test_event in &data.test_cases {
-                let _ = w.write(&data.topic, test_event.clone());
+                let _ = w.write(&KafkaProducerConfig::new("localhost:9092", [&data.topic]), test_event.clone());
             }
             data.sent = true;
             info!("Sent {} test events", data.test_cases.len());
@@ -237,14 +237,14 @@ fn kafka_metadata_topic_isolation() {
         mut events: ResMut<ReceivedEvents>,
     ) {
         // Read from topic A
-        for event_wrapper in r.read(&topics.topic_a) {
+        for event_wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&topics.topic_a])) {
             if event_wrapper.is_external() {
                 events.topic_a.push(event_wrapper.clone());
             }
         }
         
         // Read from topic B
-        for event_wrapper in r.read(&topics.topic_b) {
+        for event_wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&topics.topic_b])) {
             if event_wrapper.is_external() {
                 events.topic_b.push(event_wrapper.clone());
             }
@@ -278,8 +278,8 @@ fn kafka_metadata_topic_isolation() {
                 value: 2000,
             };
             
-            let _ = w.write(&data.topic_a, event_a);
-            let _ = w.write(&data.topic_b, event_b);
+            let _ = w.write(&KafkaProducerConfig::new("localhost:9092", [&data.topic_a]), event_a);
+            let _ = w.write(&KafkaProducerConfig::new("localhost:9092", [&data.topic_b]), event_b);
             data.sent = true;
             
             info!("Sent events to both topics");
@@ -374,7 +374,7 @@ fn kafka_metadata_consistency_under_load() {
         topic: Res<Topic>,
         mut events: ResMut<ReceivedEventsWithMetadata>,
     ) {
-        for event_wrapper in r.read(&topic.0) {
+        for event_wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&topic.0])) {
             if event_wrapper.is_external() {
                 events.0.push(event_wrapper.clone());
             }
@@ -406,7 +406,7 @@ fn kafka_metadata_consistency_under_load() {
                         message: format!("batch_{}_event_{}", batch, i),
                         value: (batch * BATCH_SIZE + i) as i32,
                     };
-                    let _ = w.write(&data.topic, event);
+                    let _ = w.write(&KafkaProducerConfig::new("localhost:9092", [&data.topic]), event);
                 }
             }
             data.sent = true;

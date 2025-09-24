@@ -6,7 +6,7 @@
 //! Run with: cargo test --test integration_tests performance_tests::test_message_throughput --release -- --ignored --nocapture
 
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, PreconfiguredTopics, EventBusAppExt};
+use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, PreconfiguredTopics, EventBusAppExt, KafkaConsumerConfig, KafkaProducerConfig};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use crate::common::setup::setup;
@@ -160,7 +160,7 @@ fn run_throughput_test(
             );
             
             // Fire-and-forget write - no Result to handle
-            writer.write(&state.test_topic, event);
+            writer.write(&KafkaProducerConfig::new("localhost:9092", [&state.test_topic]), event);
             state.messages_sent += 1;
         }
     }
@@ -175,7 +175,7 @@ fn run_throughput_test(
             println!("Started receiving messages...");
         }
         
-        for wrapper in reader.read(&state.test_topic) {
+        for wrapper in reader.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&state.test_topic])) {
             state.messages_received.push(wrapper.event().clone());
             
             // Check if we've received all messages

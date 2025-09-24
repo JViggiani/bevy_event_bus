@@ -5,9 +5,9 @@ pub mod event_bus_backend;
 pub mod kafka_backend;
 
 pub use backend_resource::EventBusBackendResource;
-pub use event_bus_backend::{EventBusBackend, EventBusBackendExt};
+pub use event_bus_backend::EventBusBackend;
 
 #[cfg(feature = "kafka")]
-pub use kafka_backend::{KafkaConfig, KafkaEventBusBackend};
+pub use kafka_backend::{KafkaConnection, KafkaEventBusBackend};
 
 // Producer flush helper removed; frame-level system now guarantees delivery.

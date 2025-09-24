@@ -2,7 +2,7 @@ use crate::common::events::{TestEvent, UserLoginEvent};
 use crate::common::helpers::{unique_topic, update_until};
 use crate::common::setup::setup;
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt};
+use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt, KafkaConsumerConfig, KafkaProducerConfig};
 
 #[test]
 fn single_topic_multiple_types_same_frame() {
@@ -35,7 +35,7 @@ fn single_topic_multiple_types_same_frame() {
     reader.add_systems(
         Update,
         move |mut r1: EventBusReader<TestEvent>, mut a: ResMut<CollectedA>| {
-            for wrapper in r1.read(&tr_a) {
+            for wrapper in r1.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&tr_a])) {
                 a.0.push(wrapper.event().clone());
             }
         },
@@ -44,7 +44,7 @@ fn single_topic_multiple_types_same_frame() {
     reader.add_systems(
         Update,
         move |mut r2: EventBusReader<UserLoginEvent>, mut b: ResMut<CollectedB>| {
-            for wrapper in r2.read(&tr_b) {
+            for wrapper in r2.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&tr_b])) {
                 b.0.push(wrapper.event().clone());
             }
         },
@@ -71,14 +71,14 @@ fn single_topic_multiple_types_same_frame() {
                 return;
             }
             let _ = w1.write(
-                &tclone,
+                &KafkaProducerConfig::new("localhost:9092", [&tclone]),
                 TestEvent {
                     message: "hello".into(),
                     value: 42,
                 },
             );
             let _ = w2.write(
-                &tclone,
+                &KafkaProducerConfig::new("localhost:9092", [&tclone]),
                 UserLoginEvent {
                     user_id: "u1".into(),
                     timestamp: 1,
@@ -134,7 +134,7 @@ fn single_topic_multiple_types_interleaved_frames() {
     reader.add_systems(
         Update,
         move |mut r1: EventBusReader<TestEvent>, mut a: ResMut<CollectedA>| {
-            for wrapper in r1.read(&tr_a2) {
+            for wrapper in r1.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&tr_a2])) {
                 a.0.push(wrapper.event().clone());
             }
         },
@@ -143,7 +143,7 @@ fn single_topic_multiple_types_interleaved_frames() {
     reader.add_systems(
         Update,
         move |mut r2: EventBusReader<UserLoginEvent>, mut b: ResMut<CollectedB>| {
-            for wrapper in r2.read(&tr_b2) {
+            for wrapper in r2.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&tr_b2])) {
                 b.0.push(wrapper.event().clone());
             }
         },
@@ -170,7 +170,7 @@ fn single_topic_multiple_types_interleaved_frames() {
               mut c: ResMut<Counter>| {
             if c.0 % 2 == 0 {
                 let _ = w1.write(
-                    &tclone,
+                    &KafkaProducerConfig::new("localhost:9092", [&tclone]),
                     TestEvent {
                         message: format!("m{}", c.0),
                         value: c.0 as i32,
@@ -178,7 +178,7 @@ fn single_topic_multiple_types_interleaved_frames() {
                 );
             } else {
                 let _ = w2.write(
-                    &tclone,
+                    &KafkaProducerConfig::new("localhost:9092", [&tclone]),
                     UserLoginEvent {
                         user_id: format!("u{}", c.0),
                         timestamp: c.0 as u64,

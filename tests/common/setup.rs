@@ -6,7 +6,7 @@
 //! 3. Exposes a simple `setup()` returning a configured `KafkaEventBusBackend`.
 //! For now the integration test assumes an external Kafka is available on localhost:9092.
 
-use bevy_event_bus::{KafkaConfig, KafkaEventBusBackend};
+use bevy_event_bus::{KafkaConnection, KafkaEventBusBackend};
 use once_cell::sync::Lazy;
 use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
 use rdkafka::client::DefaultClientContext;
@@ -290,9 +290,8 @@ pub fn setup_with_offset(offset: &str) -> (KafkaEventBusBackend, String) {
     // Set offset configuration
     additional_config.insert("auto.offset.reset".to_string(), offset.to_string());
     
-    let config = KafkaConfig {
+    let config = KafkaConnection {
         bootstrap_servers: bootstrap.clone(),
-        group_id: format!("bevy_event_bus_test_{}_{}", std::process::id(), unique),
         client_id: Some(format!("bevy_event_bus_test_client_{}", unique)),
         timeout_ms: 3000, // modest timeout
         additional_config,

@@ -2,7 +2,7 @@ use crate::common::events::TestEvent;
 use crate::common::helpers::{unique_topic, update_until};
 use crate::common::setup::setup;
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt};
+use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt, KafkaConsumerConfig, KafkaProducerConfig};
 
 #[test]
 fn multi_topic_isolation() {
@@ -47,14 +47,14 @@ fn multi_topic_isolation() {
     let tb = topic_b.clone();
     writer.add_systems(Update, move |mut w: EventBusWriter<TestEvent>| {
         let _ = w.write(
-            &ta,
+            &KafkaProducerConfig::new("localhost:9092", [&ta]),
             TestEvent {
                 message: "A1".into(),
                 value: 1,
             },
         );
         let _ = w.write(
-            &tb,
+            &KafkaProducerConfig::new("localhost:9092", [&tb]),
             TestEvent {
                 message: "B1".into(),
                 value: 2,
@@ -71,10 +71,10 @@ fn multi_topic_isolation() {
     reader.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>, mut col: ResMut<Collected>| {
-            for wrapper in r.read(&ta_r) {
+            for wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&ta_r])) {
                 col.0.push(wrapper.event().clone());
             }
-            for wrapper in r.read(&tb_r) {
+            for wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&tb_r])) {
                 col.0.push(wrapper.event().clone());
             }
         },
