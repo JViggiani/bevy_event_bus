@@ -67,9 +67,9 @@ use bevy_event_bus::prelude::*;
 
 fn main() {
     // Create a Kafka configuration
-    let kafka_config = KafkaConnection {
+    let kafka_config = KafkaConfig {
         bootstrap_servers: "localhost:9092".to_string(),
-        default_group_id: "bevy_game".to_string(),
+        group_id: "bevy_game".to_string(),
         ..Default::default()
     };
     
@@ -216,9 +216,9 @@ fn simple_event_sending(mut ev_writer: EventBusWriter<PlayerLevelUpEvent>) {
 use std::collections::HashMap;
 use bevy_event_bus::prelude::*;
 
-let config = KafkaConnection {
+let config = KafkaConfig {
     bootstrap_servers: "localhost:9092".to_string(),
-    default_group_id: "bevy_game".to_string(),
+    group_id: "bevy_game".to_string(),
     client_id: Some("game-client".to_string()),
     timeout_ms: 5000,
     additional_config: HashMap::new(),
@@ -279,157 +279,16 @@ They generate unique topic names per run to avoid offset collisions.
 use std::collections::HashMap;
 use bevy_event_bus::prelude::*;
 
-let config = KafkaConnection {
+let config = KafkaConfig {
     bootstrap_servers: "localhost:9092".to_string(),
-    default_group_id: "bevy_game".to_string(),
+    group_id: "bevy_game".to_string(),
     client_id: Some("game-client".to_string()),
     timeout_ms: 5000,
+    additional_config: HashMap::new(),
 };
 
 let kafka_backend = KafkaEventBusBackend::new(config);
 ```
-
-## Type-Safe Configuration (Phase 2)
-
-The event bus now supports type-safe configuration with compile-time backend inference and clean system signatures. This enables production-ready features while maintaining zero runtime cost.
-
-### Configuration-Based API
-
-Instead of specifying topics and backend-specific options in each system, you can define reusable configurations:
-
-```rust
-use bevy_event_bus::{KafkaConsumerConfig, KafkaProducerConfig, EventBusReader, EventBusWriter};
-
-// Define const configurations that can be shared across systems
-const GAME_EVENTS_CONSUMER: KafkaConsumerConfig = KafkaConsumerConfig::new("game-server")
-    .topics(&["player-events", "world-events"])
-    .auto_offset_reset("latest")
-    .enable_auto_commit(false)
-    .session_timeout_ms(6000);
-
-const GAME_EVENTS_PRODUCER: KafkaProducerConfig = KafkaProducerConfig::new()
-    .compression_type("gzip")
-    .acks("all")
-    .retries(3)
-    .batch_size(16384);
-
-// Clean system signatures without backend types
-fn process_player_events(
-    mut reader: EventBusReader<PlayerEvent>,
-    mut writer: EventBusWriter<GameStateEvent>,
-) {
-    // Read using configuration - automatically reads from all configured topics
-    let events = reader.read_with_config(&GAME_EVENTS_CONSUMER);
-    
-    for event_wrapper in events {
-        let player_event = event_wrapper.event();
-        
-        // Process the event...
-        let game_event = GameStateEvent {
-            message: format!("Player {} performed action", player_event.player_id),
-        };
-        
-        // Write using configuration
-        writer.write_with_config(&GAME_EVENTS_PRODUCER, game_event);
-    }
-}
-```
-
-### Backend-Specific Methods
-
-The configuration system enables backend-specific functionality at compile time:
-
-```rust
-// Kafka-specific features
-fn kafka_specific_system(
-    mut reader: EventBusReader<PlayerEvent>,
-    mut writer: EventBusWriter<GameStateEvent>,
-) {
-    let kafka_consumer = KafkaConsumerConfig::new("manual-commit-group")
-        .topics(&["critical-events"])
-        .enable_auto_commit(false);
-    
-    let kafka_producer = KafkaProducerConfig::new()
-        .acks("all")
-        .compression_type("gzip");
-    
-    // Read with manual commit control (Kafka-only feature)
-    let uncommitted_events = reader.read_uncommitted_with_config(&kafka_consumer);
-    
-    for uncommitted_event in uncommitted_events {
-        let player_event = uncommitted_event.event();
-        
-        // Process event...
-        
-        // Manually commit after successful processing
-        if let Err(e) = uncommitted_event.commit() {
-            eprintln!("Failed to commit offset: {}", e);
-        }
-    }
-    
-    // Write with partition key for ordering (Kafka-only feature)
-    let metadata = writer.write_with_key_and_config(
-        &kafka_producer,
-        "player-events",
-        PlayerEvent { player_id: 123 },
-        "player_123" // Partition key ensures ordering per player
-    );
-    
-    // Write with custom headers (Kafka-only feature)
-    let metadata = writer.write_with_headers_and_config(
-        &kafka_producer,
-        "audit-events",
-        AuditEvent { action: "login".to_string() },
-        &[("source", "game-server"), ("priority", "high")]
-    );
-    
-    // Flush producer to ensure delivery (Kafka-only feature)
-    if let Err(e) = writer.flush_with_config(&kafka_producer) {
-        eprintln!("Failed to flush producer: {}", e);
-    }
-    
-    // Check consumer lag (Kafka-only feature)
-    if let Ok(lag) = reader.get_consumer_lag_with_config(&kafka_consumer) {
-        if lag > 1000 {
-            println!("High consumer lag detected: {} messages", lag);
-        }
-    }
-}
-```
-
-### Configuration Examples
-
-#### Consumer Configuration
-```rust
-let consumer_config = KafkaConsumerConfig::new("my-service")
-    .topics(["events", "notifications"])
-    .auto_offset_reset("earliest")  // or "latest"
-    .enable_auto_commit(true)
-    .session_timeout_ms(30000)
-    .max_poll_records(500)
-    .additional_config("max.poll.interval.ms", "300000");
-```
-
-#### Producer Configuration
-```rust
-let producer_config = KafkaProducerConfig::new()
-    .compression_type("gzip")  // "none", "gzip", "snappy", "lz4", "zstd"
-    .acks("all")               // "0", "1", "all"
-    .retries(3)
-    .batch_size(16384)
-    .linger_ms(100)
-    .request_timeout_ms(30000)
-    .additional_config("enable.idempotence", "true");
-```
-
-### Benefits
-
-- **Type Safety**: Configuration types are checked at compile time
-- **Clean Systems**: No need to specify backend types in system parameters
-- **Zero Runtime Cost**: Type resolution happens at compile time
-- **Reusable Configs**: Define once, use across multiple systems
-- **Backend-Specific Features**: Access advanced functionality like manual commits, partition keys, headers
-- **const Support**: Configurations can be defined as constants for maximum efficiency
 
 ## Performance Testing
 

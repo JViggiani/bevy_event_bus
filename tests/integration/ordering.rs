@@ -1,28 +1,31 @@
 use crate::common::events::TestEvent;
-use crate::common::helpers::unique_topic;
-use crate::common::helpers::wait_for_events;
+use crate::common::helpers::{unique_string, wait_for_events, unique_consumer_group};
+use crate::common::setup::build_app;
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt, KafkaConsumerConfig, KafkaProducerConfig};
+use bevy_event_bus::{EventBusReader, EventBusWriter, EventBusAppExt, KafkaReadConfig, KafkaWriteConfig};
 
 #[test]
 fn per_topic_order_preserved() {
-    let (backend_w, _b1) = crate::common::setup::setup();
-    let (backend_r, _b2) = crate::common::setup::setup();
-    let topic = unique_topic("ordered");
+    let (backend_w, _b1) = crate::common::setup::setup(None);
+    let (_backend_r, b2) = crate::common::setup::setup(None);
+    let topic = unique_string("ordered");
     bevy_event_bus::runtime();
-    crate::common::setup::ensure_topic(&_b2, &topic, 1);
-    let mut writer = App::new();
-    let mut reader = App::new();
-    writer.add_plugins(EventBusPlugins(
-        backend_w,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
-    writer.add_bus_event::<TestEvent>(&topic);
-    reader.add_plugins(EventBusPlugins(
-        backend_r,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
-    reader.add_bus_event::<TestEvent>(&topic);
+    let topic_ready = crate::common::setup::ensure_topic_ready(&b2, &topic, 1, std::time::Duration::from_secs(5));
+    assert!(topic_ready, "Topic {} not ready within timeout", topic);
+    let mut writer = crate::common::setup::build_app(backend_w, None, |app| {
+        app.add_bus_event::<TestEvent>(&topic);
+    });
+    
+    // Create consumer configuration
+    let consumer_group = unique_string("test_group");
+    let config = KafkaReadConfig::new(&consumer_group).topics([&topic]);
+    
+    // Build reader app with consumer group created during setup
+    let (backend_r, _bootstrap_r) = crate::common::setup::setup(None);
+    let mut reader = build_app(backend_r, Some(&[config.clone()]), |app| {
+        app.add_bus_event::<TestEvent>(&topic);
+    });
+    
     let tclone = topic.clone();
     writer.add_systems(
         Update,
@@ -33,7 +36,7 @@ fn per_topic_order_preserved() {
             }
             for i in 0..10 {
                 let _ = w.write(
-                    &KafkaProducerConfig::new("localhost:9092", [&tclone]),
+                    &KafkaWriteConfig::new(&tclone),
                     TestEvent {
                         message: format!("msg-{i}"),
                         value: i,
@@ -48,11 +51,10 @@ fn per_topic_order_preserved() {
     #[derive(Resource, Default)]
     struct Collected(Vec<TestEvent>);
     reader.insert_resource(Collected::default());
-    let tr = topic.clone();
     reader.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>, mut c: ResMut<Collected>| {
-            for wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&tr])) {
+            for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
             }
         },
@@ -74,25 +76,28 @@ fn per_topic_order_preserved() {
 
 #[test]
 fn cross_topic_interleave_each_ordered() {
-    let (backend_w, _b1) = crate::common::setup::setup();
-    let (backend_r, _b2) = crate::common::setup::setup();
-    let t1 = unique_topic("t1");
-    let t2 = unique_topic("t2");
+    let (backend_w, _b1) = crate::common::setup::setup(None);
+    let (_backend_r, b2) = crate::common::setup::setup(None);
+    let t1 = unique_string("t1");
+    let t2 = unique_string("t2");
     bevy_event_bus::runtime();
-    crate::common::setup::ensure_topic(&_b2, &t1, 1);
-    crate::common::setup::ensure_topic(&_b2, &t2, 1);
-    let mut writer = App::new();
-    let mut reader = App::new();
-    writer.add_plugins(EventBusPlugins(
-        backend_w,
-        bevy_event_bus::PreconfiguredTopics::new([t1.clone(), t2.clone()]),
-    ));
-    writer.add_bus_event_topics::<TestEvent>(&[&t1, &t2]);
-    reader.add_plugins(EventBusPlugins(
-        backend_r,
-        bevy_event_bus::PreconfiguredTopics::new([t1.clone(), t2.clone()]),
-    ));
-    reader.add_bus_event_topics::<TestEvent>(&[&t1, &t2]);
+    let t1_ready = crate::common::setup::ensure_topic_ready(&b2, &t1, 1, std::time::Duration::from_secs(5));
+    let t2_ready = crate::common::setup::ensure_topic_ready(&b2, &t2, 1, std::time::Duration::from_secs(5));
+    assert!(t1_ready && t2_ready, "Topics not ready within timeout");
+    let mut writer = crate::common::setup::build_app(backend_w, None, |app| {
+        app.add_bus_event_topics::<TestEvent>(&[&t1, &t2]);
+    });
+    
+    // Create consumer configurations for both topics
+    let config1 = KafkaReadConfig::new(&unique_consumer_group("test_group_1")).topics([&t1]);
+    let config2 = KafkaReadConfig::new(&unique_consumer_group("test_group_2")).topics([&t2]);
+    
+    // Build reader app with consumer groups created during setup
+    let (backend_r, _bootstrap_r) = crate::common::setup::setup(None);
+    let mut reader = build_app(backend_r, Some(&[config1.clone(), config2.clone()]), |app| {
+        app.add_bus_event_topics::<TestEvent>(&[&t1, &t2]);
+    });
+    
     let t1c = t1.clone();
     let t2c = t2.clone();
     // Single send frame like earlier test
@@ -105,14 +110,14 @@ fn cross_topic_interleave_each_ordered() {
             }
             for i in 0..5 {
                 let _ = w.write(
-                    &KafkaProducerConfig::new("localhost:9092", [&t1c]),
+                    &KafkaWriteConfig::new(&t1c),
                     TestEvent {
                         message: format!("A{i}"),
                         value: i,
                     },
                 );
                 let _ = w.write(
-                    &KafkaProducerConfig::new("localhost:9092", [&t2c]),
+                    &KafkaWriteConfig::new(&t2c),
                     TestEvent {
                         message: format!("B{i}"),
                         value: i,
@@ -130,17 +135,17 @@ fn cross_topic_interleave_each_ordered() {
     struct CollectedT2(Vec<TestEvent>);
     reader.insert_resource(CollectedT1::default());
     reader.insert_resource(CollectedT2::default());
-    let ta = t1.clone();
-    let tb = t2.clone();
+    
+    // Simple system that just reads - no consumer group creation needed
     reader.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>,
               mut c1: ResMut<CollectedT1>,
               mut c2: ResMut<CollectedT2>| {
-            for wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&ta])) {
+            for wrapper in r.read(&config1) {
                 c1.0.push(wrapper.event().clone());
             }
-            for wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&tb])) {
+            for wrapper in r.read(&config2) {
                 c2.0.push(wrapper.event().clone());
             }
         },

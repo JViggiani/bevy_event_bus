@@ -1,29 +1,32 @@
 use crate::common::events::{TestEvent, UserLoginEvent};
-use crate::common::helpers::{unique_topic, update_until};
-use crate::common::setup::setup;
+use crate::common::helpers::{unique_topic, unique_consumer_group, update_until};
+use crate::common::setup::{setup, build_app};
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt, KafkaConsumerConfig, KafkaProducerConfig};
+use bevy_event_bus::{EventBusReader, EventBusWriter, EventBusAppExt, KafkaReadConfig, KafkaWriteConfig};
 
 #[test]
 fn single_topic_multiple_types_same_frame() {
-    let (backend_w, _b1) = setup();
-    let (backend_r, _b2) = setup();
+    let (backend_w, _b1) = setup(None);
+    let (_backend_r, _b2) = setup(None);
     let topic = unique_topic("mixed");
 
-    let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(
-        backend_w,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
-    writer.add_bus_event::<TestEvent>(&topic);
-    writer.add_bus_event::<UserLoginEvent>(&topic);
-    let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(
-        backend_r,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
-    reader.add_bus_event::<TestEvent>(&topic);
-    reader.add_bus_event::<UserLoginEvent>(&topic);
+    let mut writer = crate::common::setup::build_app(backend_w, None, |app| {
+        app.add_bus_event::<TestEvent>(&topic);
+        app.add_bus_event::<UserLoginEvent>(&topic);
+    });
+
+    // Create consumer configurations for both consumer groups
+    let consumer_group_a = unique_consumer_group("test_group_a");
+    let consumer_group_b = unique_consumer_group("test_group_b");
+    let config_a = KafkaReadConfig::new(&consumer_group_a).topics([&topic]);
+    let config_b = KafkaReadConfig::new(&consumer_group_b).topics([&topic]);
+    
+    // Build reader app with consumer groups created during setup
+    let (backend_r, _bootstrap_r) = crate::common::setup::setup(None);
+    let mut reader = build_app(backend_r, Some(&[config_a.clone(), config_b.clone()]), |app| {
+        app.add_bus_event::<TestEvent>(&topic);
+        app.add_bus_event::<UserLoginEvent>(&topic);
+    });
 
     #[derive(Resource, Default)]
     struct CollectedA(Vec<TestEvent>);
@@ -31,20 +34,19 @@ fn single_topic_multiple_types_same_frame() {
     struct CollectedB(Vec<UserLoginEvent>);
     reader.insert_resource(CollectedA::default());
     reader.insert_resource(CollectedB::default());
-    let tr_a = topic.clone();
+    
     reader.add_systems(
         Update,
         move |mut r1: EventBusReader<TestEvent>, mut a: ResMut<CollectedA>| {
-            for wrapper in r1.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&tr_a])) {
+            for wrapper in r1.read(&config_a) {
                 a.0.push(wrapper.event().clone());
             }
         },
     );
-    let tr_b = topic.clone();
     reader.add_systems(
         Update,
         move |mut r2: EventBusReader<UserLoginEvent>, mut b: ResMut<CollectedB>| {
-            for wrapper in r2.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&tr_b])) {
+            for wrapper in r2.read(&config_b) {
                 b.0.push(wrapper.event().clone());
             }
         },
@@ -71,14 +73,14 @@ fn single_topic_multiple_types_same_frame() {
                 return;
             }
             let _ = w1.write(
-                &KafkaProducerConfig::new("localhost:9092", [&tclone]),
+                &KafkaWriteConfig::new(&tclone),
                 TestEvent {
                     message: "hello".into(),
                     value: 42,
                 },
             );
             let _ = w2.write(
-                &KafkaProducerConfig::new("localhost:9092", [&tclone]),
+                &KafkaWriteConfig::new(&tclone),
                 UserLoginEvent {
                     user_id: "u1".into(),
                     timestamp: 1,
@@ -105,24 +107,27 @@ fn single_topic_multiple_types_same_frame() {
 
 #[test]
 fn single_topic_multiple_types_interleaved_frames() {
-    let (backend_w, _b1) = setup();
-    let (backend_r, _b2) = setup();
+    let (backend_w, _b1) = setup(None);
+    let (_backend_r, _b2) = setup(None);
     let topic = unique_topic("mixed2");
 
-    let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(
-        backend_w,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
-    writer.add_bus_event::<TestEvent>(&topic);
-    writer.add_bus_event::<UserLoginEvent>(&topic);
-    let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(
-        backend_r,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
-    reader.add_bus_event::<TestEvent>(&topic);
-    reader.add_bus_event::<UserLoginEvent>(&topic);
+    let mut writer = crate::common::setup::build_app(backend_w, None, |app| {
+        app.add_bus_event::<TestEvent>(&topic);
+        app.add_bus_event::<UserLoginEvent>(&topic);
+    });
+
+    // Create consumer configurations for both consumer groups  
+    let consumer_group_a2 = unique_consumer_group("test_group_a2");
+    let consumer_group_b2 = unique_consumer_group("test_group_b2");
+    let config_a = KafkaReadConfig::new(&consumer_group_a2).topics([&topic]);
+    let config_b = KafkaReadConfig::new(&consumer_group_b2).topics([&topic]);
+    
+    // Build reader app with consumer groups created during setup
+    let (backend_r, _bootstrap_r) = crate::common::setup::setup(None);
+    let mut reader = build_app(backend_r, Some(&[config_a.clone(), config_b.clone()]), |app| {
+        app.add_bus_event::<TestEvent>(&topic);
+        app.add_bus_event::<UserLoginEvent>(&topic);
+    });
 
     #[derive(Resource, Default)]
     struct CollectedA(Vec<TestEvent>);
@@ -130,20 +135,20 @@ fn single_topic_multiple_types_interleaved_frames() {
     struct CollectedB(Vec<UserLoginEvent>);
     reader.insert_resource(CollectedA::default());
     reader.insert_resource(CollectedB::default());
-    let tr_a2 = topic.clone();
+    
+    // Simple systems that just read - no consumer group creation needed
     reader.add_systems(
         Update,
         move |mut r1: EventBusReader<TestEvent>, mut a: ResMut<CollectedA>| {
-            for wrapper in r1.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&tr_a2])) {
+            for wrapper in r1.read(&config_a) {
                 a.0.push(wrapper.event().clone());
             }
         },
     );
-    let tr_b2 = topic.clone();
     reader.add_systems(
         Update,
         move |mut r2: EventBusReader<UserLoginEvent>, mut b: ResMut<CollectedB>| {
-            for wrapper in r2.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&tr_b2])) {
+            for wrapper in r2.read(&config_b) {
                 b.0.push(wrapper.event().clone());
             }
         },
@@ -170,7 +175,7 @@ fn single_topic_multiple_types_interleaved_frames() {
               mut c: ResMut<Counter>| {
             if c.0 % 2 == 0 {
                 let _ = w1.write(
-                    &KafkaProducerConfig::new("localhost:9092", [&tclone]),
+                    &KafkaWriteConfig::new(&tclone),
                     TestEvent {
                         message: format!("m{}", c.0),
                         value: c.0 as i32,
@@ -178,10 +183,10 @@ fn single_topic_multiple_types_interleaved_frames() {
                 );
             } else {
                 let _ = w2.write(
-                    &KafkaProducerConfig::new("localhost:9092", [&tclone]),
+                    &KafkaWriteConfig::new(&tclone),
                     UserLoginEvent {
                         user_id: format!("u{}", c.0),
-                        timestamp: c.0 as u64,
+                        timestamp: c.0 as i64,
                     },
                 );
             }

@@ -18,7 +18,6 @@ use std::time::{Duration, Instant};
 use tracing::{debug, info, info_span, warn};
 
 const DEFAULT_IMAGE: &str = "bitnami/kafka:latest";
-const CONTAINER_NAME: &str = "bevy_event_bus_test_kafka";
 
 /// Holds lifecycle data for the ephemeral Kafka container used in tests
 #[derive(Default, Debug, Clone)]
@@ -26,10 +25,46 @@ struct ContainerState {
     id: Option<String>,
     bootstrap: Option<String>,
     launched: bool,
+    container_name: String,
+    kafka_port: u16,
+    controller_port: u16,
+}
+
+impl ContainerState {
+    fn new() -> Self {
+        let pid = std::process::id();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let container_name = format!("bevy_event_bus_test_kafka_{}_{}", pid, nanos);
+        
+        // Find available ports
+        let kafka_port = find_free_port(9092);
+        let controller_port = find_free_port(9093);
+        
+        Self {
+            id: None,
+            bootstrap: None,
+            launched: false,
+            container_name,
+            kafka_port,
+            controller_port,
+        }
+    }
+}
+
+fn find_free_port(start_port: u16) -> u16 {
+    for port in start_port..(start_port + 1000) {
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
+    panic!("Could not find free port starting from {}", start_port);
 }
 
 static CONTAINER_STATE: Lazy<Mutex<ContainerState>> =
-    Lazy::new(|| Mutex::new(ContainerState::default()));
+    Lazy::new(|| Mutex::new(ContainerState::new()));
 
 fn docker_available() -> bool {
     Command::new("docker")
@@ -62,7 +97,7 @@ fn ensure_container() -> Option<String> {
         .args([
             "ps",
             "--filter",
-            &format!("name={}", CONTAINER_NAME),
+            &format!("name={}", state.container_name),
             "--format",
             "{{.ID}}",
         ])
@@ -73,7 +108,8 @@ fn ensure_container() -> Option<String> {
             let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
             info!(existing_id = %id, took_ms = detect_start.elapsed().as_millis(), "Found existing Kafka container");
             state.id = Some(id);
-            state.bootstrap = Some("localhost:9092".into());
+            let bootstrap = format!("localhost:{}", state.kafka_port);
+            state.bootstrap = Some(bootstrap.clone());
             state.launched = true; // treat as launched for lifetime mgmt (won't remove if not --rm?)
             return state.bootstrap.clone();
         }
@@ -90,6 +126,10 @@ fn ensure_container() -> Option<String> {
 
     let run_span = info_span!("kafka_container.run");
     let run_start = Instant::now();
+    let kafka_port_mapping = format!("{}:9092", state.kafka_port);
+    let controller_port_mapping = format!("{}:9093", state.controller_port);
+    let advertised_listeners = format!("KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://localhost:{}", state.kafka_port);
+    let controller_voters = format!("KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@localhost:{}", state.controller_port);
     let status = {
         let _rg = run_span.enter();
         Command::new("docker")
@@ -98,11 +138,11 @@ fn ensure_container() -> Option<String> {
                 "-d",
                 "--rm",
                 "--name",
-                CONTAINER_NAME,
+                &state.container_name,
                 "-p",
-                "9092:9092",
+                &kafka_port_mapping,
                 "-p",
-                "9093:9093",
+                &controller_port_mapping,
                 "-e",
                 "KAFKA_ENABLE_KRAFT=yes",
                 "-e",
@@ -114,11 +154,11 @@ fn ensure_container() -> Option<String> {
                 "-e",
                 "KAFKA_CFG_PROCESS_ROLES=broker,controller",
                 "-e",
-                "KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@localhost:9093",
+                &controller_voters,
                 "-e",
                 "KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093",
                 "-e",
-                "KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092",
+                &advertised_listeners,
                 "-e",
                 "KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT",
                 "-e",
@@ -141,9 +181,10 @@ fn ensure_container() -> Option<String> {
     match status {
         Some(out) if out.status.success() => {
             let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            info!(container_id = %id, took_ms = run_start.elapsed().as_millis(), "Started Kafka container");
+            info!(container_id = %id, port = %state.kafka_port, took_ms = run_start.elapsed().as_millis(), "Started Kafka container");
             state.id = Some(id);
-            state.bootstrap = Some("localhost:9092".into());
+            let bootstrap = format!("localhost:{}", state.kafka_port);
+            state.bootstrap = Some(bootstrap.clone());
             state.launched = true;
             state.bootstrap.clone()
         }
@@ -159,8 +200,8 @@ fn wait_ready(bootstrap: &str) -> bool {
     let span = info_span!("kafka_container.wait_ready", bootstrap = bootstrap);
     let _g = span.enter();
     let start = Instant::now();
-    // Reduce timeout from 40s -> 8s for faster feedback
-    let timeout = Duration::from_secs(8);
+    // Allow reasonable time for Kafka container to start up
+    let timeout = Duration::from_secs(15);
     let mut attempts = 0u32;
     while start.elapsed() < timeout {
         attempts += 1;
@@ -212,7 +253,7 @@ static METADATA_READY: Lazy<std::sync::atomic::AtomicBool> =
 fn wait_metadata(bootstrap: &str, max_wait: Duration) -> (bool, u128) {
     use rdkafka::config::ClientConfig;
     let span = info_span!("kafka_container.wait_metadata", bootstrap = bootstrap);
-    let _g = span.enter();
+    let _guard = span.enter();
     let start = Instant::now();
     let mut attempt: u32 = 0;
     
@@ -247,11 +288,12 @@ fn wait_metadata(bootstrap: &str, max_wait: Duration) -> (bool, u128) {
     (false, start.elapsed().as_millis())
 }
 
-pub fn setup() -> (KafkaEventBusBackend, String) {
-    setup_with_offset("earliest")
-}
-
-pub fn setup_with_offset(offset: &str) -> (KafkaEventBusBackend, String) {
+/// Setup a Kafka backend with optional configuration.
+/// 
+/// # Arguments
+/// * `offset` - Consumer offset reset behavior ("earliest" or "latest"), defaults to "earliest"
+pub fn setup(offset: Option<&str>) -> (KafkaEventBusBackend, String) {
+    let offset = offset.unwrap_or("earliest");
     let container_bootstrap = ensure_container();
     let bootstrap = container_bootstrap.unwrap_or_else(|| {
         std::env::var("KAFKA_BOOTSTRAP_SERVERS").unwrap_or_else(|_| "localhost:9092".into())
@@ -293,6 +335,7 @@ pub fn setup_with_offset(offset: &str) -> (KafkaEventBusBackend, String) {
     let config = KafkaConnection {
         bootstrap_servers: bootstrap.clone(),
         client_id: Some(format!("bevy_event_bus_test_client_{}", unique)),
+        security_protocol: bevy_event_bus::config::SecurityProtocol::Plaintext,
         timeout_ms: 3000, // modest timeout
         additional_config,
     };
@@ -305,24 +348,7 @@ pub fn setup_with_offset(offset: &str) -> (KafkaEventBusBackend, String) {
 /// Same as `setup` but allows providing a unique suffix for the consumer group id so that
 /// multiple backends in the same test process do not share a group (ensuring each receives all messages).
 
-/// Ensure a topic exists (idempotent) using Kafka Admin API. Best-effort; ignores 'topic already exists' errors.
-pub fn ensure_topic(bootstrap: &str, topic: &str, partitions: i32) {
-    let mut cfg = rdkafka::config::ClientConfig::new();
-    cfg.set("bootstrap.servers", bootstrap);
-    if let Ok(admin) = cfg.create::<AdminClient<DefaultClientContext>>() {
-        let new_topic = NewTopic::new(topic, partitions, TopicReplication::Fixed(1));
-        let opts = AdminOptions::new();
-        let fut = admin.create_topics([&new_topic], &opts);
-        if let Err(e) = bevy_event_bus::block_on(fut) {
-            let msg = e.to_string();
-            if !msg.contains("TopicAlreadyExists") {
-                tracing::warn!(topic=%topic, err=%msg, "ensure_topic create failed");
-            }
-        }
-    } else {
-        tracing::warn!(topic=%topic, "ensure_topic could not build admin client");
-    }
-}
+
 
 /// Create a topic and wait for it to be fully ready for read/write operations.
 /// Combines topic creation with readiness verification in a single call.
@@ -338,7 +364,46 @@ pub fn ensure_topic_ready(bootstrap: &str, topic: &str, partitions: i32, timeout
     let mut attempts = 0u32;
     
     // First ensure topic exists using Admin API
-    ensure_topic(bootstrap, topic, partitions);
+    {
+        let mut cfg = rdkafka::config::ClientConfig::new();
+        cfg.set("bootstrap.servers", bootstrap);
+        cfg.set("request.timeout.ms", "30000");  // 30 second timeout
+        if let Ok(admin) = cfg.create::<AdminClient<DefaultClientContext>>() {
+            info!(topic=%topic, "Creating topic with Admin API");
+            let new_topic = NewTopic::new(topic, partitions, TopicReplication::Fixed(1));
+            let mut opts = AdminOptions::new();
+            opts = opts.operation_timeout(Some(std::time::Duration::from_secs(30)));
+            let fut = admin.create_topics([&new_topic], &opts);
+            match bevy_event_bus::block_on(fut) {
+                Ok(results) => {
+                    info!(topic=%topic, "Admin API create_topics completed with results: {}", results.len());
+                    for result in results {
+                        match result {
+                            Ok(topic_name) => info!(topic=%topic_name, "Topic created successfully"),
+                            Err((topic_name, error_code)) => {
+                                let err_msg = format!("{:?}", error_code);
+                                if !err_msg.contains("TopicAlreadyExists") {
+                                    warn!(topic=%topic_name, err=%err_msg, "Topic creation failed");
+                                } else {
+                                    info!(topic=%topic_name, "Topic already exists (expected)");
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    let msg = format!("{:?}", e);
+                    if !msg.contains("TopicAlreadyExists") {
+                        warn!(topic=%topic, err=%msg, "Admin API create_topics failed");
+                    } else {
+                        info!(topic=%topic, "Topic already exists (expected)");
+                    }
+                }
+            }
+        } else {
+            warn!(topic=%topic, "ensure_topic could not build admin client");
+        }
+    }
     
     while start.elapsed() < timeout {
         attempts += 1;
@@ -361,19 +426,42 @@ pub fn ensure_topic_ready(bootstrap: &str, topic: &str, partitions: i32, timeout
             // Check if producer can fetch metadata for this specific topic
             match producer.client().fetch_metadata(Some(topic), Duration::from_millis(1000)) {
                 Ok(metadata) => {
+                    debug!(attempt = attempts, topics = metadata.topics().len(), "Metadata fetch successful");
                     // Check if topic exists in metadata with at least one partition
                     if let Some(topic_metadata) = metadata.topics().iter().find(|t| t.name() == topic) {
+                        debug!(
+                            attempt = attempts, 
+                            topic = %topic, 
+                            partitions = topic_metadata.partitions().len(),
+                            error = ?topic_metadata.error(),
+                            "Found topic in metadata"
+                        );
                         if !topic_metadata.partitions().is_empty() && topic_metadata.error().is_none() {
                             // Topic exists with partitions, now test consumer can subscribe
-                            if consumer.subscribe(&[topic]).is_ok() {
-                                info!(
-                                    attempts,
-                                    elapsed_ms = start.elapsed().as_millis(),
-                                    "Topic created and ready for read/write operations"
-                                );
-                                return true;
+                            match consumer.subscribe(&[topic]) {
+                                Ok(_) => {
+                                    info!(
+                                        attempts,
+                                        elapsed_ms = start.elapsed().as_millis(),
+                                        "Topic created and ready for read/write operations"
+                                    );
+                                    return true;
+                                }
+                                Err(e) => {
+                                    debug!(attempt = attempts, err = %e, "Consumer subscribe failed");
+                                }
                             }
+                        } else {
+                            debug!(
+                                attempt = attempts,
+                                topic = %topic,
+                                partitions = topic_metadata.partitions().len(),
+                                error = ?topic_metadata.error(),
+                                "Topic not ready (no partitions or has error)"
+                            );
                         }
+                    } else {
+                        debug!(attempt = attempts, topic = %topic, available_topics = ?metadata.topics().iter().map(|t| t.name()).collect::<Vec<_>>(), "Topic not found in metadata");
                     }
                 }
                 Err(e) => {
@@ -395,24 +483,49 @@ pub fn ensure_topic_ready(bootstrap: &str, topic: &str, partitions: i32, timeout
     false
 }
 
-/// Build a baseline Bevy `App` with the event bus plugins wired to a fresh Kafka backend from `setup()`.
-/// An optional customization closure can further configure the `App` (e.g., inserting resources, systems).
-/// This centralizes construction so tests share identical initialization semantics.
-pub fn build_basic_app<F>(customize: F) -> bevy::prelude::App
+/// Universal Bevy App builder for all test scenarios.
+/// 
+/// # Arguments
+/// * `backend` - The event bus backend to use for this app
+/// * `consumer_configs` - Optional consumer group configurations to create during setup
+/// * `customize` - Closure to customize the app after basic setup
+/// 
+/// # Examples
+/// ```rust
+/// let (backend, _) = setup(None);
+/// 
+/// // Simple app with no consumer groups
+/// let app = build_app(backend, None, |_| {});
+/// 
+/// // App with single consumer group
+/// let (backend, _) = setup(None);
+/// let config = KafkaReadConfig::new("group").topics(["topic"]);
+/// let app = build_app(backend, Some(&[config]), |app| {
+///     app.add_bus_event::<MyEvent>("topic");
+/// });
+/// ```
+pub fn build_app<F>(
+    mut backend: KafkaEventBusBackend,
+    consumer_configs: Option<&[bevy_event_bus::KafkaReadConfig]>,
+    customize: F,
+) -> bevy::prelude::App
 where
     F: FnOnce(&mut bevy::prelude::App),
 {
-    let (backend, _bootstrap) = setup();
+    // Create consumer groups if specified
+    if let Some(configs) = consumer_configs {
+        let runtime = bevy_event_bus::runtime();
+        for config in configs {
+            if let Err(e) = runtime.block_on(backend.create_consumer_group(config)) {
+                panic!("Failed to create consumer group '{}' during setup: {}", config.consumer_group(), e);
+            }
+        }
+    }
+    
     let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy_event_bus::EventBusPlugins(
-        backend,
-        bevy_event_bus::PreconfiguredTopics::new(["default_topic"]),
-    ));
+    app.add_plugins(bevy_event_bus::EventBusPlugins(backend));
     customize(&mut app);
     app
 }
 
-/// Convenience overload when no customization is needed.
-pub fn build_basic_app_simple() -> bevy::prelude::App {
-    build_basic_app(|_| {})
-}
+

@@ -1,17 +1,19 @@
 use crate::common::events::TestEvent;
-use crate::common::helpers::{unique_topic, update_until};
+use crate::common::helpers::{unique_string, update_until, wait_for_events, unique_consumer_group};
 use crate::common::setup::setup;
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, KafkaEventBusBackend, KafkaConnection, EventBusAppExt, KafkaConsumerConfig, KafkaProducerConfig};
-use std::collections::HashMap;
+use bevy_event_bus::{EventBusReader, EventBusWriter, EventBusAppExt, KafkaReadConfig, KafkaWriteConfig};
 
 /// Test that consumers with "earliest" offset receive historical events
 #[test] 
 fn offset_configuration_earliest_receives_historical_events() {
-    let topic = unique_topic("offset_test_earliest");
+    #[derive(Resource, Default)]
+    struct CollectedEarliest(Vec<TestEvent>);
+    
+    let topic = unique_string("offset_test_earliest");
     
     // Create topic and ensure it's ready before proceeding
-    let (_backend_setup, bootstrap) = setup();
+    let (_backend_setup, bootstrap) = setup(None);
     let topic_ready = crate::common::setup::ensure_topic_ready(
         &bootstrap, 
         &topic, 
@@ -22,20 +24,17 @@ fn offset_configuration_earliest_receives_historical_events() {
     
     // First, send some events to the topic using a temporary producer
     {
-        let (backend_producer, _bootstrap) = setup();
-        let mut producer_app = App::new();
-        producer_app.add_plugins(EventBusPlugins(
-            backend_producer,
-            bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-        ));
-    producer_app.add_bus_event::<TestEvent>(&topic);
+        let (backend_producer, _bootstrap) = setup(None);
+        let mut producer_app = crate::common::setup::build_app(backend_producer, None, |app| {
+            app.add_bus_event::<TestEvent>(&topic);
+        });
         
-        let topic_clone = topic.clone();
+        let write_config = KafkaWriteConfig::new(&topic);
+        
         producer_app.add_systems(Update, move |mut w: EventBusWriter<TestEvent>| {
             // Send 3 historical events
             for i in 0..3 {
-                let config = KafkaProducerConfig::new("localhost:9092", [&topic_clone]);
-                let _ = w.write(&config, TestEvent {
+                let _ = w.write(&write_config, TestEvent {
                     message: format!("historical_{}", i),
                     value: i,
                 });
@@ -45,32 +44,27 @@ fn offset_configuration_earliest_receives_historical_events() {
     }
     
     // Test: Consumer with "earliest" should see historical events
-    let mut connection = KafkaConnection::default();
-    connection.bootstrap_servers = bootstrap;
-    // TODO: This should be in KafkaConsumerConfig, but current architecture applies connection-level config to all consumers
-    connection.additional_config.insert("auto.offset.reset".to_string(), "earliest".to_string());
+    let consumer_group = format!("earliest_test_{}", unique_string("group"));
     
-    let backend_earliest = KafkaEventBusBackend::new(connection);
-    let mut earliest_app = App::new();
-    earliest_app.add_plugins(EventBusPlugins(
-        backend_earliest,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
-    earliest_app.add_bus_event::<TestEvent>(&topic);
+    let read_config = KafkaReadConfig::new(&consumer_group).topics([&topic]);
     
-    #[derive(Resource, Default)]
-    struct CollectedEarliest(Vec<TestEvent>);
-    earliest_app.insert_resource(CollectedEarliest::default());
-    
-    let topic_read = topic.clone();
-    let consumer_group = format!("earliest_test_{}", unique_topic("group"));
-    earliest_app.add_systems(
-        Update,
-        move |mut r: EventBusReader<TestEvent>, mut c: ResMut<CollectedEarliest>| {
-            let config = KafkaConsumerConfig::new("localhost:9092", &consumer_group, [&topic_read]);
-            for wrapper in r.read(&config) {
-                c.0.push(wrapper.event().clone());
-            }
+    let (backend_reader, _bootstrap_reader) = setup(Some("earliest"));
+    let mut earliest_app = crate::common::setup::build_app(
+        backend_reader,
+        Some(&[read_config.clone()]), 
+        |app| {
+            app.add_bus_event::<TestEvent>(&topic);
+            
+            app.insert_resource(CollectedEarliest::default());
+            
+            app.add_systems(
+                Update,
+                move |mut r: EventBusReader<TestEvent>, mut c: ResMut<CollectedEarliest>| {
+                    for wrapper in r.read(&read_config) {
+                        c.0.push(wrapper.event().clone());
+                    }
+                },
+            );
         },
     );
     
@@ -99,10 +93,13 @@ fn offset_configuration_earliest_receives_historical_events() {
 /// Test that consumers with "latest" offset ignore historical events
 #[test]
 fn offset_configuration_latest_ignores_historical_events() {
-    let topic = unique_topic("offset_test_latest");
+    #[derive(Resource, Default)]
+    struct CollectedLatest(Vec<TestEvent>);
+    
+    let topic = unique_string("offset_test_latest");
     
     // Create topic and ensure it's ready before proceeding
-    let (_backend_setup, bootstrap) = setup();
+    let (_backend_setup, bootstrap) = setup(None);
     let topic_ready = crate::common::setup::ensure_topic_ready(
         &bootstrap, 
         &topic, 
@@ -113,20 +110,16 @@ fn offset_configuration_latest_ignores_historical_events() {
     
     // Send historical events first
     {
-        let (backend_producer, _bootstrap) = setup();
-        let mut producer_app = App::new();
-        producer_app.add_plugins(EventBusPlugins(
-            backend_producer,
-            bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-        ));
-    producer_app.add_bus_event::<TestEvent>(&topic);
+        let (backend_producer, _bootstrap) = setup(None);
+        let mut producer_app = crate::common::setup::build_app(backend_producer, None, |app| {
+            app.add_bus_event::<TestEvent>(&topic);
+        });
         
-        let topic_clone = topic.clone();
+        let write_config = KafkaWriteConfig::new(&topic);
         producer_app.add_systems(Update, move |mut w: EventBusWriter<TestEvent>| {
             // Send 3 historical events that the latest consumer should NOT see
             for i in 0..3 {
-                let config = KafkaProducerConfig::new("localhost:9092", [&topic_clone]);
-                let _ = w.write(&config, TestEvent {
+                let _ = w.write(&write_config, TestEvent {
                     message: format!("historical_{}", i),
                     value: i,
                 });
@@ -136,45 +129,38 @@ fn offset_configuration_latest_ignores_historical_events() {
     }
     
     // Create consumer with "latest" offset - should NOT see historical events
-    let mut connection = KafkaConnection::default();
-    connection.bootstrap_servers = bootstrap.clone();
-    // TODO: This should be in KafkaConsumerConfig, but current architecture applies connection-level config to all consumers
-    connection.additional_config.insert("auto.offset.reset".to_string(), "latest".to_string());
+    let consumer_group = format!("latest_test_{}", unique_string("group"));
+    let read_config = KafkaReadConfig::new(&consumer_group).topics([&topic]);
     
-    let backend_latest = KafkaEventBusBackend::new(connection);
-    let mut latest_app = App::new();
-    latest_app.add_plugins(EventBusPlugins(
-        backend_latest,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
-    latest_app.add_bus_event::<TestEvent>(&topic);
-    
-    #[derive(Resource, Default)]
-    struct CollectedLatest(Vec<TestEvent>);
-    latest_app.insert_resource(CollectedLatest::default());
-    
-    let topic_read = topic.clone();
-    let consumer_group = format!("latest_test_{}", unique_topic("group"));
-    latest_app.add_systems(
-        Update,
-        move |mut r: EventBusReader<TestEvent>, mut c: ResMut<CollectedLatest>| {
-            let config = KafkaConsumerConfig::new("localhost:9092", &consumer_group, [&topic_read]);
-            for wrapper in r.read(&config) {
-                c.0.push(wrapper.event().clone());
-            }
+    let (backend_reader, _bootstrap_reader) = setup(Some("latest"));
+    let mut latest_app = crate::common::setup::build_app(
+        backend_reader,
+        Some(&[read_config.clone()]), 
+        |app| {
+            app.add_bus_event::<TestEvent>(&topic);
+            
+            app.insert_resource(CollectedLatest::default());
+            
+            app.add_systems(
+                Update,
+                move |mut r: EventBusReader<TestEvent>, mut c: ResMut<CollectedLatest>| {
+                    for wrapper in r.read(&read_config) {
+                        c.0.push(wrapper.event().clone());
+                    }
+                },
+            );
+            
+            // Now add a writer to send new events AFTER consumer is established
+            let write_config = KafkaWriteConfig::new(&topic);
+            app.add_systems(Update, move |mut w: EventBusWriter<TestEvent>| {
+                // Send new event after consumer is established
+                let _ = w.write(&write_config, TestEvent {
+                    message: "new_event".to_string(),
+                    value: 999,
+                });
+            });
         },
     );
-    
-    // Now add a writer to the same app to send new events AFTER consumer is established
-    let topic_send = topic.clone();
-    latest_app.add_systems(Update, move |mut w: EventBusWriter<TestEvent>| {
-        // Send new event after consumer is established
-        let config = KafkaProducerConfig::new("localhost:9092", [&topic_send]);
-        let _ = w.write(&config, TestEvent {
-            message: "new_event".to_string(),
-            value: 999,
-        });
-    });
     
     // Wait until we receive the new event (but not historical ones)
     let (ok, _frames) = update_until(&mut latest_app, 5000, |app| {
@@ -204,10 +190,13 @@ fn offset_configuration_latest_ignores_historical_events() {
 /// Test default behavior (should be "latest")
 #[test]
 fn default_offset_configuration_is_latest() {
-    let topic = unique_topic("default_offset");
+    #[derive(Resource, Default)]
+    struct Collected(Vec<TestEvent>);
+    
+    let topic = unique_string("default_offset");
     
     // Create topic and ensure it's ready before proceeding
-    let (_backend_setup, bootstrap) = setup();
+    let (_backend_setup, bootstrap) = setup(None);
     let topic_ready = crate::common::setup::ensure_topic_ready(
         &bootstrap, 
         &topic, 
@@ -218,18 +207,14 @@ fn default_offset_configuration_is_latest() {
     
     // Send historical events first
     {
-        let (backend_producer, _bootstrap) = setup();
-        let mut producer_app = App::new();
-        producer_app.add_plugins(EventBusPlugins(
-            backend_producer,
-            bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-        ));
-    producer_app.add_bus_event::<TestEvent>(&topic);
+        let (backend_producer, _bootstrap) = setup(None);
+        let mut producer_app = crate::common::setup::build_app(backend_producer, None, |app| {
+            app.add_bus_event::<TestEvent>(&topic);
+        });
         
-        let topic_clone = topic.clone();
+        let write_config = KafkaWriteConfig::new(&topic);
         producer_app.add_systems(Update, move |mut w: EventBusWriter<TestEvent>| {
-            let config = KafkaProducerConfig::new("localhost:9092", [&topic_clone]);
-            let _ = w.write(&config, TestEvent {
+            let _ = w.write(&write_config, TestEvent {
                 message: "should_not_see_this".to_string(),
                 value: 42,
             });
@@ -237,34 +222,26 @@ fn default_offset_configuration_is_latest() {
         producer_app.update();
     }
     
-    // Consumer with default config (no additional_config specified) - should use "latest" behavior
-    let config = KafkaConnection {
-        bootstrap_servers: bootstrap,
-        client_id: None,
-        timeout_ms: 5000,
-        additional_config: HashMap::new(), // No overrides - use defaults
-    };
+    // Consumer with default config - should use "latest" behavior by default
+    let read_config = KafkaReadConfig::new(&unique_consumer_group("default_test_group")).topics([&topic]);
     
-    let backend = KafkaEventBusBackend::new(config);
-    let mut app = App::new();
-    app.add_plugins(EventBusPlugins(
-        backend,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
-    app.add_bus_event::<TestEvent>(&topic);
-    
-    #[derive(Resource, Default)]
-    struct Collected(Vec<TestEvent>);
-    app.insert_resource(Collected::default());
-    
-    let topic_read = topic.clone();
-    app.add_systems(
-        Update,
-        move |mut r: EventBusReader<TestEvent>, mut c: ResMut<Collected>| {
-            let config = KafkaConsumerConfig::new("localhost:9092", "default_test_group", [&topic_read]);
-            for wrapper in r.read(&config) {
-                c.0.push(wrapper.event().clone());
-            }
+    let (backend_reader, _bootstrap_reader) = setup(None);
+    let mut app = crate::common::setup::build_app(
+        backend_reader,
+        Some(&[read_config.clone()]), 
+        |app| {
+            app.add_bus_event::<TestEvent>(&topic);
+            
+            app.insert_resource(Collected::default());
+            
+            app.add_systems(
+                Update,
+                move |mut r: EventBusReader<TestEvent>, mut c: ResMut<Collected>| {
+                    for wrapper in r.read(&read_config) {
+                        c.0.push(wrapper.event().clone());
+                    }
+                },
+            );
         },
     );
     

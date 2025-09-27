@@ -1,8 +1,8 @@
 use crate::common::events::TestEvent;
-use crate::common::helpers::{unique_topic, wait_for_events};
-use crate::common::setup::setup;
+use crate::common::helpers::{unique_topic, unique_consumer_group, update_until, wait_for_events};
+use crate::common::setup::{setup, build_app};
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventWrapper, EventBusAppExt, KafkaConsumerConfig, KafkaProducerConfig};
+use bevy_event_bus::{EventBusReader, EventBusWriter, EventWrapper, EventBusAppExt, KafkaReadConfig, KafkaWriteConfig};
 use std::collections::HashMap;
 use tracing::{info, info_span};
 
@@ -10,24 +10,22 @@ use tracing::{info, info_span};
 fn metadata_propagation_from_kafka_to_bevy() {
     let _span = info_span!("metadata_propagation_test").entered();
     
-    let (backend_w, _b1) = setup();
-    let (backend_r, _b2) = setup();
+    let (backend_w, _b1) = setup(None);
     let topic = unique_topic("metadata");
     
-    let mut writer = App::new();
-    let mut reader = App::new();
+    let mut writer = crate::common::setup::build_app(backend_w, None, |app| {
+        app.add_bus_event::<TestEvent>(&topic);
+    });
     
-    writer.add_plugins(EventBusPlugins(
-        backend_w,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
-    writer.add_bus_event::<TestEvent>(&topic);
+    // Create consumer configuration
+    let consumer_group = unique_consumer_group("test_group");
+    let config = KafkaReadConfig::new(&consumer_group).topics([&topic]);
     
-    reader.add_plugins(EventBusPlugins(
-        backend_r,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
-    reader.add_bus_event::<TestEvent>(&topic);
+    // Build reader app with consumer group created during setup
+    let (backend_r, _bootstrap_r) = setup(None);
+    let mut reader = build_app(backend_r, Some(&[config.clone()]), |app| {
+        app.add_bus_event::<TestEvent>(&topic);
+    });
 
     // Create test event
     let test_event = TestEvent {
@@ -42,20 +40,27 @@ fn metadata_propagation_from_kafka_to_bevy() {
         move |mut w: EventBusWriter<TestEvent>, mut sent: Local<bool>| {
             if !*sent {
                 *sent = true;
-                let _ = w.write(&KafkaProducerConfig::new("localhost:9092", [&topic_clone]), test_event.clone());
+                let _ = w.write(&KafkaWriteConfig::new(&topic_clone), test_event.clone());
             }
         },
     );
 
     #[derive(Resource, Default)]
     struct ReceivedEvents(Vec<EventWrapper<TestEvent>>);
+    
+    #[derive(Resource, Clone)]
+    struct MetadataTestConfig(KafkaReadConfig);
 
     reader.insert_resource(ReceivedEvents::default());
-    let tr = topic.clone();
+    reader.insert_resource(MetadataTestConfig(config.clone()));
+    
+    // Simple system that just reads - no consumer group creation needed
     reader.add_systems(
         Update,
-        move |mut r: EventBusReader<TestEvent>, mut events: ResMut<ReceivedEvents>| {
-            for wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&tr])) {
+        move |mut r: EventBusReader<TestEvent>, 
+              mut events: ResMut<ReceivedEvents>,
+              config: Res<MetadataTestConfig>| {
+            for wrapper in r.read(&config.0) {
                 if wrapper.is_external() {
                     events.0.push(wrapper.clone());
                 }
@@ -83,7 +88,7 @@ fn metadata_propagation_from_kafka_to_bevy() {
     // Verify metadata using the metadata() method
     let metadata = external_event.metadata().expect("External event should have metadata");
     assert_eq!(metadata.source, topic);
-    assert!(metadata.timestamp > std::time::Instant::now() - std::time::Duration::from_secs(10));
+    assert!(metadata.received_timestamp > std::time::Instant::now() - std::time::Duration::from_secs(10));
     
     // Get Kafka-specific metadata
     if let Some(backend_meta) = &metadata.backend_specific {
@@ -110,24 +115,22 @@ fn metadata_propagation_from_kafka_to_bevy() {
 fn header_forwarding_producer_to_consumer() {
     let _span = info_span!("header_forwarding_test").entered();
     
-    let (backend_w, _b1) = setup();
-    let (backend_r, _b2) = setup();
+    let (backend_w, _b1) = setup(None);
     let topic = unique_topic("headers");
     
-    let mut writer = App::new();
-    let mut reader = App::new();
+    let mut writer = crate::common::setup::build_app(backend_w, None, |app| {
+        app.add_bus_event::<TestEvent>(&topic);
+    });
     
-    writer.add_plugins(EventBusPlugins(
-        backend_w,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
-    writer.add_bus_event::<TestEvent>(&topic);
+    // Create unique consumer group name and configuration
+    let consumer_group_name = format!("test_group_headers_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+    let config = KafkaReadConfig::new(&consumer_group_name).topics([&topic]);
     
-    reader.add_plugins(EventBusPlugins(
-        backend_r,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
-    reader.add_bus_event::<TestEvent>(&topic);
+    // Build reader app with consumer group created during setup
+    let (backend_r, _bootstrap_r) = setup(None);
+    let mut reader = build_app(backend_r, Some(&[config.clone()]), |app| {
+        app.add_bus_event::<TestEvent>(&topic);
+    });
 
     // Create test event
     let test_event = TestEvent {
@@ -147,21 +150,29 @@ fn header_forwarding_producer_to_consumer() {
         move |mut w: EventBusWriter<TestEvent>, mut sent: Local<bool>| {
             if !*sent {
                 *sent = true;
-                let _ = w.write_with_headers(&KafkaProducerConfig::new("localhost:9092", [&topic_clone]), test_event.clone(), headers.clone());
+                let config_with_headers = KafkaWriteConfig::new(&topic_clone)
+                    .with_headers(headers.clone());
+                w.write(&config_with_headers, test_event.clone());
             }
         },
     );
 
     #[derive(Resource, Default)]
     struct ReceivedEvents(Vec<EventWrapper<TestEvent>>);
+    
+    #[derive(Resource, Clone)]
+    struct HeaderTestConfig(KafkaReadConfig);
 
     reader.insert_resource(ReceivedEvents::default());
-    let tr = topic.clone();
-    let consumer_group_name = format!("test_group_headers_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+    reader.insert_resource(HeaderTestConfig(config.clone()));
+    
+    // Simple system that just reads - no consumer group creation needed
     reader.add_systems(
         Update,
-        move |mut r: EventBusReader<TestEvent>, mut events: ResMut<ReceivedEvents>| {
-            for wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", &consumer_group_name, [&tr])) {
+        move |mut r: EventBusReader<TestEvent>, 
+              mut events: ResMut<ReceivedEvents>,
+              config: Res<HeaderTestConfig>| {
+            for wrapper in r.read(&config.0) {
                 if wrapper.is_external() {
                     events.0.push(wrapper.clone());
                 }
@@ -172,25 +183,19 @@ fn header_forwarding_producer_to_consumer() {
     // Send the event and let it propagate
     writer.update();
     writer.update();
-    std::thread::sleep(std::time::Duration::from_millis(100));
     
-    // Wait for events to be received with polling
-    let mut attempts = 0;
-    let max_attempts = 50; // 5 seconds total
+    // Wait for events to be received using condition-based waiting
+    let (success, _frames) = update_until(
+        &mut reader,
+        5000, // 5 second timeout
+        |app| {
+            let events = app.world().resource::<ReceivedEvents>();
+            !events.0.is_empty()
+        },
+    );
     
-    loop {
-        reader.update();
-        let events = reader.world().resource::<ReceivedEvents>();
-        if !events.0.is_empty() {
-            break;
-        }
-        
-        attempts += 1;
-        if attempts >= max_attempts {
-            panic!("No events received after {} attempts", max_attempts);
-        }
-        
-        std::thread::sleep(std::time::Duration::from_millis(100));
+    if !success {
+        panic!("No events received within timeout");
     }
 
     // Verify the event was received with headers
@@ -221,24 +226,21 @@ fn header_forwarding_producer_to_consumer() {
 fn timestamp_accuracy_for_latency_measurement() {
     let _span = info_span!("timestamp_accuracy_test").entered();
     
-    let (backend_w, _b1) = setup();
-    let (backend_r, _b2) = setup();
+    let (backend_w, _b1) = setup(None);
     let topic = unique_topic("timestamp");
     
-    let mut writer = App::new();
-    let mut reader = App::new();
+    let mut writer = crate::common::setup::build_app(backend_w, None, |app| {
+        app.add_bus_event::<TestEvent>(&topic);
+    });
     
-    writer.add_plugins(EventBusPlugins(
-        backend_w,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
-    writer.add_bus_event::<TestEvent>(&topic);
+    // Create consumer configuration
+    let config = KafkaReadConfig::new("test-group").topics([&topic]);
     
-    reader.add_plugins(EventBusPlugins(
-        backend_r,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
-    reader.add_bus_event::<TestEvent>(&topic);
+    // Build reader app with consumer group created during setup
+    let (backend_r, _bootstrap_r) = setup(None);
+    let mut reader = build_app(backend_r, Some(&[config.clone()]), |app| {
+        app.add_bus_event::<TestEvent>(&topic);
+    });
 
     let send_time = std::time::Instant::now();
     
@@ -253,20 +255,27 @@ fn timestamp_accuracy_for_latency_measurement() {
                     message: "timestamp test".to_string(),
                     value: 999,
                 };
-                let _ = w.write(&KafkaProducerConfig::new("localhost:9092", [&topic_clone]), event);
+                let _ = w.write(&KafkaWriteConfig::new(&topic_clone), event);
             }
         },
     );
 
     #[derive(Resource, Default)]
     struct ReceivedEvents(Vec<EventWrapper<TestEvent>>);
+    
+    #[derive(Resource, Clone)]
+    struct TimestampTestConfig(KafkaReadConfig);
 
     reader.insert_resource(ReceivedEvents::default());
-    let tr = topic.clone();
+    reader.insert_resource(TimestampTestConfig(config.clone()));
+    
+    // Simple system that just reads - no consumer group creation needed
     reader.add_systems(
         Update,
-        move |mut r: EventBusReader<TestEvent>, mut events: ResMut<ReceivedEvents>| {
-            for wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", "test-group", [&tr])) {
+        move |mut r: EventBusReader<TestEvent>, 
+              mut events: ResMut<ReceivedEvents>,
+              config: Res<TimestampTestConfig>| {
+            for wrapper in r.read(&config.0) {
                 if wrapper.is_external() {
                     events.0.push(wrapper.clone());
                 }
@@ -293,13 +302,13 @@ fn timestamp_accuracy_for_latency_measurement() {
     let metadata = external_event.metadata().expect("External event should have metadata");
     
     // Verify timestamp is reasonable (between send time and receive time)
-    assert!(metadata.timestamp >= send_time, 
+    assert!(metadata.received_timestamp >= send_time, 
             "Event timestamp should be after send time");
-    assert!(metadata.timestamp <= receive_time, 
+    assert!(metadata.received_timestamp <= receive_time, 
             "Event timestamp should be before receive time");
     
     // Calculate and verify latency is reasonable (should be less than 1 second for local test)
-    let latency = receive_time.saturating_duration_since(metadata.timestamp);
+    let latency = receive_time.saturating_duration_since(metadata.received_timestamp);
     assert!(latency < std::time::Duration::from_secs(1), 
             "Latency should be less than 1 second, got: {:?}", latency);
     
@@ -313,32 +322,27 @@ fn timestamp_accuracy_for_latency_measurement() {
 fn mixed_metadata_and_regular_reading() {
     let _span = info_span!("mixed_reading_test").entered();
     
-    let (backend_w, _b1) = setup();
-    let (backend_r1, _b2) = setup();
-    let (backend_r2, _b3) = setup();
+    let (backend_w, _b1) = setup(None);
     let topic = unique_topic("mixed");
     
-    let mut writer = App::new();
-    let mut regular_reader = App::new();
-    let mut metadata_reader = App::new();
+    let mut writer = crate::common::setup::build_app(backend_w, None, |app| {
+        app.add_bus_event::<TestEvent>(&topic);
+    });
     
-    writer.add_plugins(EventBusPlugins(
-        backend_w,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
-    writer.add_bus_event::<TestEvent>(&topic);
+    // Create consumer configurations
+    let regular_config = KafkaReadConfig::new("regular-group").topics([&topic]);
+    let metadata_config = KafkaReadConfig::new("metadata-group").topics([&topic]);
     
-    regular_reader.add_plugins(EventBusPlugins(
-        backend_r1,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
-    regular_reader.add_bus_event::<TestEvent>(&topic);
+    // Build reader apps with consumer groups created during setup
+    let (backend_r1, _bootstrap_r1) = setup(None);
+    let mut regular_reader = build_app(backend_r1, Some(&[regular_config.clone()]), |app| {
+        app.add_bus_event::<TestEvent>(&topic);
+    });
     
-    metadata_reader.add_plugins(EventBusPlugins(
-        backend_r2,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
-    metadata_reader.add_bus_event::<TestEvent>(&topic);
+    let (backend_r2, _bootstrap_r2) = setup(None);
+    let mut metadata_reader = build_app(backend_r2, Some(&[metadata_config.clone()]), |app| {
+        app.add_bus_event::<TestEvent>(&topic);
+    });
 
     // Send events
     let topic_clone = topic.clone();
@@ -352,7 +356,7 @@ fn mixed_metadata_and_regular_reading() {
                         message: format!("mixed-{}", i),
                         value: i,
                     };
-                    let _ = w.write(&KafkaProducerConfig::new("localhost:9092", [&topic_clone]), event);
+                    let _ = w.write(&KafkaWriteConfig::new(&topic_clone), event);
                 }
             }
         },
@@ -366,24 +370,33 @@ fn mixed_metadata_and_regular_reading() {
     regular_reader.insert_resource(RegularEvents::default());
     metadata_reader.insert_resource(MetadataEvents::default());
     
-    let tr1 = topic.clone();
-    let tr2 = topic.clone();
+    #[derive(Resource, Clone)]
+    struct RegularConfig(KafkaReadConfig);
+    regular_reader.insert_resource(RegularConfig(regular_config.clone()));
     
-    // Regular reader using read()
+    // Regular reader using read() - simple system with no consumer group creation
     regular_reader.add_systems(
         Update,
-        move |mut r: EventBusReader<TestEvent>, mut events: ResMut<RegularEvents>| {
-            for wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", "regular-group", [&tr1])) {
+        move |mut r: EventBusReader<TestEvent>, 
+              mut events: ResMut<RegularEvents>,
+              config: Res<RegularConfig>| {
+            for wrapper in r.read(&config.0) {
                 events.0.push(wrapper.event().clone());
             }
         },
     );
     
-    // Metadata reader using read() with External filtering
+    #[derive(Resource, Clone)]
+    struct MetadataConfig(KafkaReadConfig);
+    metadata_reader.insert_resource(MetadataConfig(metadata_config.clone()));
+    
+    // Metadata reader using read() with External filtering - simple system with no consumer group creation
     metadata_reader.add_systems(
         Update,
-        move |mut r: EventBusReader<TestEvent>, mut events: ResMut<MetadataEvents>| {
-            for wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", "metadata-group", [&tr2])) {
+        move |mut r: EventBusReader<TestEvent>, 
+              mut events: ResMut<MetadataEvents>,
+              config: Res<MetadataConfig>| {
+            for wrapper in r.read(&config.0) {
                 if wrapper.is_external() {
                     events.0.push(wrapper.clone());
                 }

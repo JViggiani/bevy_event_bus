@@ -1,34 +1,19 @@
 use crate::common::events::TestEvent;
-use crate::common::helpers::{unique_topic, update_until};
-use crate::common::setup::setup;
+use crate::common::helpers::{unique_topic, unique_consumer_group, update_until};
+use crate::common::setup::{setup, build_app};
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt, KafkaConsumerConfig, KafkaProducerConfig};
+use bevy_event_bus::{EventBusReader, EventBusWriter, EventBusAppExt, KafkaReadConfig, KafkaWriteConfig};
 
 /// Test that events are delivered exactly once - no duplication
 #[test]
 fn no_event_duplication_exactly_once_delivery() {
-    // Create separate backends for writer and reader to simulate separate machines
-    let (backend_writer, _bootstrap_writer) = setup();
-    let (backend_reader, _bootstrap_reader) = setup();
-    
     let topic = unique_topic("exactly_once");
     
-    // Create topic and wait for it to be fully ready
-    let topic_ready = crate::common::setup::ensure_topic_ready(
-        &_bootstrap_reader, 
-        &topic, 
-        1, // partitions
-        std::time::Duration::from_secs(5)
-    );
-    assert!(topic_ready, "Topic {} not ready within timeout", topic);
-    
-    // Writer app
-    let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(
-        backend_writer,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
-    writer.add_bus_event::<TestEvent>(&topic);
+    // Writer app with separate backend
+    let (backend_writer, _bootstrap_writer) = setup(None);
+    let mut writer = crate::common::setup::build_app(backend_writer, None, |app| {
+        app.add_bus_event::<TestEvent>(&topic);
+    });
 
     // Send exactly 10 unique events (as a resource to avoid closure issues)
     #[derive(Resource, Clone)]
@@ -45,37 +30,31 @@ fn no_event_duplication_exactly_once_delivery() {
 
     fn writer_system(mut w: EventBusWriter<TestEvent>, data: Res<ToSend>) {
         for event in &data.0 {
-            let _ = w.write(&KafkaProducerConfig::new("localhost:9092", [&data.1]), event.clone());
+            let _ = w.write(&KafkaWriteConfig::new(&data.1), event.clone());
         }
     }
     writer.add_systems(Update, writer_system);
 
-    // Reader app with separate backend 
-    let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(
-        backend_reader,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
-    reader.add_bus_event::<TestEvent>(&topic);
+    // Reader app with pre-created consumer group
+    let consumer_group = unique_consumer_group("test_group");
+    let config = KafkaReadConfig::new(&consumer_group).topics([&topic]);
+    let (backend, _bootstrap) = crate::common::setup::setup(None);
+    let mut reader = build_app(backend, Some(&[config.clone()]), |app| {
+        app.add_bus_event::<TestEvent>(&topic);
+        app.insert_resource(Collected::default());
+    });
 
     #[derive(Resource, Default)]
     struct Collected(Vec<TestEvent>);
-    reader.insert_resource(Collected::default());
     
-    #[derive(Resource, Clone)]
-    struct Topic(String);
-    reader.insert_resource(Topic(topic.clone()));
-    
-    fn reader_system(
-        mut r: EventBusReader<TestEvent>,
-        topic: Res<Topic>,
-        mut collected: ResMut<Collected>,
-    ) {
-        for wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&topic.0])) {
+    // Capture the same config for use in the system
+    let config_for_system = config.clone();
+    reader.add_systems(Update, move |mut r: EventBusReader<TestEvent>, mut collected: ResMut<Collected>| {
+        // Use the SAME config that was passed to setup, not recreated
+        for wrapper in r.read(&config_for_system) {
             collected.0.push(wrapper.event().clone());
         }
-    }
-    reader.add_systems(Update, reader_system);
+    });
 
     // Start writer to send events
     writer.update();

@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use std::collections::HashMap;
 use std::fmt::Debug;
 use crate::BusEvent;
 
@@ -16,150 +15,61 @@ pub trait EventBusBackend: Send + Sync + 'static + Debug {
     /// Connect to the backend. Returns true if successful.
     async fn connect(&mut self) -> bool;
     
-    /// Disconnect from the backend. Returns true if successful.
-    async fn disconnect(&mut self) -> bool;
-    
-    /// Non-blocking send that queues the event for delivery.
+    /// Non-blocking send that queues the event for delivery using producer configuration.
     /// Returns true if the event was queued successfully, false if it failed.
-    fn try_send_serialized(&self, event_json: &[u8], topic: &str) -> bool;
+    fn try_send_serialized(&self, event_json: &[u8], config: &dyn std::any::Any) -> bool;
     
-    /// Non-blocking send with headers that queues the event for delivery.
-    /// Returns true if the event was queued successfully, false if it failed.
-    fn try_send_serialized_with_headers(&self, event_json: &[u8], topic: &str, headers: &HashMap<String, String>) -> bool;
+    /// Poll and deserialize messages using configuration - polls with 0ms timeout
+    /// Returns messages immediately without background systems or queues
+    /// Config specifies topics, consumer group, and other settings.
+    /// Populates the provided vector with deserialized messages.
+    /// IMPORTANT: Consumer groups must be created explicitly before calling this method.
+    /// Returns Ok(()) on success or Err(String) on error.
+    async fn poll_messages(&self, config: &crate::config::kafka::KafkaReadConfig, messages: &mut Vec<Vec<u8>>) -> Result<(), String>;
     
-    /// Receive serialized messages from a topic.
-    /// Returns empty vec if no messages or on error.
-    async fn receive_serialized(&self, topic: &str) -> Vec<Vec<u8>>;
-    
-    /// Subscribe to a topic. Returns true if successful.
-    async fn subscribe(&mut self, topic: &str) -> bool;
-    
-    /// Unsubscribe from a topic. Returns true if successful.
-    async fn unsubscribe(&mut self, topic: &str) -> bool;
-    
-    /// Send with partition key for message ordering (Kafka-specific, optional for others)
-    fn try_send_serialized_with_partition_key(&self, event_json: &[u8], topic: &str, key: &str) -> bool {
-        // Default implementation falls back to regular send
-        let _ = key; // Suppress unused parameter warning
-        self.try_send_serialized(event_json, topic)
-    }
-    
-    /// Send with both partition key and headers
-    fn try_send_serialized_with_key_and_headers(
-        &self, 
-        event_json: &[u8], 
-        topic: &str, 
-        key: &str, 
-        headers: &HashMap<String, String>
-    ) -> bool {
-        // Default implementation falls back to headers only
-        let _ = key; // Suppress unused parameter warning
-        self.try_send_serialized_with_headers(event_json, topic, headers)
-    }
-    
-    /// Create a consumer group with specific configuration
-    async fn create_consumer_group(&mut self, topics: &[String], group_id: &str) -> Result<(), String> {
-        let _ = (topics, group_id); // Suppress unused parameter warnings
-        Ok(()) // Default no-op for backends that don't support multiple consumer groups
-    }
-    
-    /// Consume from specific consumer group
-    async fn receive_serialized_with_group(&self, topic: &str, group_id: &str) -> Vec<Vec<u8>> {
-        let _ = group_id; // Suppress unused parameter warning
-        // Default implementation falls back to regular receive
-        self.receive_serialized(topic).await
-    }
-    
-    /// Enable manual offset commits for reliable processing
-    async fn enable_manual_commits(&mut self, group_id: &str) -> Result<(), String> {
-        let _ = group_id; // Suppress unused parameter warning
-        Ok(()) // Default no-op for backends that don't support manual commits
-    }
-    
-    /// Manually commit a specific message offset
-    async fn commit_offset(&self, topic: &str, partition: i32, offset: i64) -> Result<(), String> {
-        let _ = (topic, partition, offset); // Suppress unused parameter warnings
-        Ok(()) // Default no-op
-    }
-    
-    /// Get consumer lag for monitoring
-    async fn get_consumer_lag(&self, topic: &str, group_id: &str) -> Result<i64, String> {
-        let _ = (topic, group_id); // Suppress unused parameter warnings
-        Ok(0) // Default no lag
-    }
-    
-    /// Flush all pending messages (producer-side)
-    async fn flush(&self) -> Result<(), String> {
-        Ok(()) // Default no-op
-    }
+    /// Flush all pending messages (synchronous delivery)
+    /// 
+    /// This is a BLOCKING operation that should only be called during shutdown
+    /// or other situations where blocking is acceptable. Never call this from
+    /// the Bevy update loop or any performance-critical path.
+    /// 
+    /// # Arguments
+    /// * `timeout` - Maximum time to wait for all messages to be delivered
+    /// 
+    /// # Returns
+    /// * `true` if all messages were successfully flushed
+    /// * `false` if timeout occurred or other error happened
+    fn flush(&self, timeout: std::time::Duration) -> bool;
 }
 
 /// Helper methods for working with EventBusBackend trait objects
 impl dyn EventBusBackend {
-    /// Non-blocking send that queues the event for delivery.
+    /// Non-blocking send that queues the event for delivery using producer configuration.
     /// Returns true if the event was serialized and queued successfully.
-    pub fn try_send<T: BusEvent>(&self, event: &T, topic: &str) -> bool {
-        match serde_json::to_vec(event) {
-            Ok(serialized) => self.try_send_serialized(&serialized, topic),
-            Err(_) => false, // Serialization failed
-        }
-    }
-    
-    /// Non-blocking send with headers that queues the event for delivery.
-    /// Returns true if the event was serialized and queued successfully.
-    pub fn try_send_with_headers<T: BusEvent>(&self, event: &T, topic: &str, headers: &HashMap<String, String>) -> bool {
-        match serde_json::to_vec(event) {
-            Ok(serialized) => self.try_send_serialized_with_headers(&serialized, topic, headers),
-            Err(_) => false, // Serialization failed
-        }
-    }
-    
-    /// Send with partition key for message ordering
-    pub fn try_send_with_partition_key<T: BusEvent>(&self, event: &T, topic: &str, key: &str) -> bool {
-        match serde_json::to_vec(event) {
-            Ok(serialized) => self.try_send_serialized_with_partition_key(&serialized, topic, key),
-            Err(_) => false, // Serialization failed
-        }
-    }
-    
-    /// Send with both partition key and headers
-    pub fn try_send_with_key_and_headers<T: BusEvent>(
+    pub fn try_send<T: BusEvent, C: crate::config::EventBusConfig + 'static>(
         &self, 
         event: &T, 
-        topic: &str, 
-        key: &str, 
-        headers: &HashMap<String, String>
+        config: &C
     ) -> bool {
         match serde_json::to_vec(event) {
-            Ok(serialized) => self.try_send_serialized_with_key_and_headers(&serialized, topic, key, headers),
+            Ok(serialized) => self.try_send_serialized(&serialized, config as &dyn std::any::Any),
             Err(_) => false, // Serialization failed
         }
     }
-    
-    /// Receive and deserialize messages from a topic.
-    /// Returns empty vec if no messages or on error.
-    pub async fn receive<T: BusEvent>(&self, topic: &str) -> Vec<T> {
-        let serialized_messages = self.receive_serialized(topic).await;
-        let mut result = Vec::with_capacity(serialized_messages.len());
-        for message in serialized_messages {
-            if let Ok(deserialized) = serde_json::from_slice(&message) {
-                result.push(deserialized);
+
+    /// Helper method for receiving events with automatic deserialization
+    /// This combines poll_messages and deserialization into a single convenient method
+    pub async fn receive<T: BusEvent>(&self, config: &crate::config::kafka::KafkaReadConfig, messages: &mut Vec<T>) -> Result<(), String> {
+        let mut raw_messages = Vec::new();
+        self.poll_messages(config, &mut raw_messages).await?;
+        
+        for raw_payload in raw_messages {
+            match serde_json::from_slice::<T>(&raw_payload) {
+                Ok(event) => messages.push(event),
+                Err(e) => tracing::warn!("Failed to deserialize event: {}", e),
             }
-            // Silently skip messages that fail to deserialize
         }
-        result
-    }
-    
-    /// Receive and deserialize messages from a topic with specific consumer group
-    pub async fn receive_with_group<T: BusEvent>(&self, topic: &str, group_id: &str) -> Vec<T> {
-        let serialized_messages = self.receive_serialized_with_group(topic, group_id).await;
-        let mut result = Vec::with_capacity(serialized_messages.len());
-        for message in serialized_messages {
-            if let Ok(deserialized) = serde_json::from_slice(&message) {
-                result.push(deserialized);
-            }
-            // Silently skip messages that fail to deserialize
-        }
-        result
+        
+        Ok(())
     }
 }

@@ -1,18 +1,20 @@
-use crate::common::setup::build_basic_app_simple;
+use crate::common::setup::{build_app};
+use crate::common::helpers::unique_consumer_group;
 use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
 use bevy_event_bus::{ConsumerMetrics, DrainMetricsEvent};
-use bevy_event_bus::{DrainedTopicMetadata, EventBusConsumerConfig, EventBusReader, ProcessedMessage, EventMetadata, KafkaMetadata, KafkaConsumerConfig};
+use bevy_event_bus::{DrainedTopicMetadata, EventBusConsumerConfig, EventBusReader, ProcessedMessage, EventMetadata, KafkaMetadata, KafkaReadConfig};
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, bevy_event_bus::ExternalBusEvent)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, bevy_event_bus::ExternalBusEvent, Default)]
 struct TestMsg {
     v: u32,
 }
 
 #[test]
 fn drain_empty_ok() {
-    let mut app = build_basic_app_simple();
+    let (backend, _bootstrap) = crate::common::setup::setup(None);
+    let mut app = build_app(backend, None, |_| {});
     app.update(); // run drain once
     let buffers = app.world().resource::<DrainedTopicMetadata>();
     assert!(buffers.topics.is_empty() || buffers.topics.values().all(|v| v.is_empty()));
@@ -20,7 +22,11 @@ fn drain_empty_ok() {
 
 #[test]
 fn unlimited_buffer_gathers() {
-    let mut app = build_basic_app_simple();
+    // Create app with pre-created consumer group
+    let config = KafkaReadConfig::new(&unique_consumer_group("test_group")).topics(["t"]);
+    let (backend, _bootstrap) = crate::common::setup::setup(None);
+    let mut app = build_app(backend, Some(&[config.clone()]), |_app| {});
+    
     // Simulate manually inserting drained payloads (bypass Kafka for unit-style test)
     {
         let mut buffers = app.world_mut().resource_mut::<DrainedTopicMetadata>();
@@ -30,38 +36,69 @@ fn unlimited_buffer_gathers() {
             let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
             let metadata = EventMetadata {
                 source: topic.clone(),
-                timestamp: std::time::Instant::now(),
+                received_timestamp: std::time::Instant::now(),
                 headers: std::collections::HashMap::new(),
                 key: None,
                 backend_specific: Some(Box::new(KafkaMetadata {
                     topic: topic.clone(),
                     partition: 0,
                     offset: i as i64,
+                    kafka_timestamp: Some(1234567890 + i as i64),
                 })),
             };
             entry.push(ProcessedMessage { payload, metadata });
         }
     }
-    // Reader should deserialize all
-    let _ = app
-        .world_mut()
-        .run_system_once(|mut r: EventBusReader<TestMsg>| {
-            let mut collected = Vec::new();
-            let config = KafkaConsumerConfig::new("localhost:9092", "test_group", ["t"]);
-            for wrapper in r.read(&config) {
-                collected.push(wrapper.event().clone());
-            }
-            assert_eq!(collected.len(), 5);
-        });
+    
+    #[derive(Resource, Default)]
+    struct Collected(Vec<TestMsg>);
+    app.insert_resource(Collected::default());
+    
+    // Capture config for use in the system
+    let config_for_system = config.clone();
+    
+    // System that reads from pre-created consumer group
+    let reader_system = move |
+        mut r: EventBusReader<TestMsg>,
+        mut collected: ResMut<Collected>,
+        buffers: Res<bevy_event_bus::DrainedTopicMetadata>,
+    | {
+        println!("reader_system called");
+        println!("Available buffers: {:?}", buffers.topics.keys().collect::<Vec<_>>());
+        if let Some(entry) = buffers.topics.get("t") {
+            println!("Buffer 't' has {} entries", entry.len());
+        }
+        
+        // Use the same config that was passed to setup
+        // Consumer group already created during setup
+        
+        let mut count = 0;
+        for wrapper in r.read(&config_for_system) {
+            collected.0.push(wrapper.event().clone());
+            count += 1;
+        }
+        println!("Read {} events", count);
+    };
+    
+    app.add_systems(Update, reader_system);
+    app.update(); // Run one frame
+    
+    let collected = app.world().resource::<Collected>();
+    assert_eq!(collected.0.len(), 5);
 }
 
 #[test]
 fn frame_limit_respected() {
-    let mut app = build_basic_app_simple();
-    app.insert_resource(EventBusConsumerConfig {
-        max_events_per_frame: Some(3),
-        max_drain_millis: None,
+    // Create app with pre-created consumer group
+    let config = KafkaReadConfig::new(&unique_consumer_group("test_group")).topics(["cap"]);
+    let (backend, _bootstrap) = crate::common::setup::setup(None);
+    let mut app = build_app(backend, Some(&[config.clone()]), |app| {
+        app.insert_resource(EventBusConsumerConfig {
+            max_events_per_frame: Some(3),
+            max_drain_millis: None,
+        });
     });
+    
     // Preload channel by faking buffers (simulate drain would only take first 3)
     {
         let mut buffers = app.world_mut().resource_mut::<DrainedTopicMetadata>();
@@ -70,13 +107,14 @@ fn frame_limit_respected() {
             let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
             let metadata = EventMetadata {
                 source: "cap".to_string(),
-                timestamp: std::time::Instant::now(),
+                received_timestamp: std::time::Instant::now(),
                 headers: std::collections::HashMap::new(),
                 key: None,
                 backend_specific: Some(Box::new(KafkaMetadata {
                     topic: "cap".to_string(),
                     partition: 0,
                     offset: i as i64,
+                    kafka_timestamp: Some(1234567890 + i as i64),
                 })),
             };
             entry.push(ProcessedMessage { payload, metadata });
@@ -85,8 +123,10 @@ fn frame_limit_respected() {
     // Reader only sees existing buffer; limit logic applies only during drain; since we injected directly this test is less meaningful but placeholder.
     let _ = app
         .world_mut()
-        .run_system_once(|mut r: EventBusReader<TestMsg>| {
-            let config = KafkaConsumerConfig::new("localhost:9092", "test_group", ["cap"]);
+        .run_system_once(move |mut r: EventBusReader<TestMsg>| {
+            // Use the same config that was passed to setup - no need to recreate
+            // Consumer group already created during setup
+            
             let count = r.read(&config).len();
             assert_eq!(count, 10);
         });
@@ -94,7 +134,8 @@ fn frame_limit_respected() {
 
 #[test]
 fn drain_metrics_emitted_and_updated() {
-    let mut app = build_basic_app_simple();
+    let (backend, _bootstrap) = crate::common::setup::setup(None);
+    let mut app = build_app(backend, None, |_| {});
     // Ensure event type registered
     // Preload channel indirectly: insert some drained payloads, then run one update to emit metrics
     {
@@ -104,13 +145,14 @@ fn drain_metrics_emitted_and_updated() {
             let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
             let metadata = EventMetadata {
                 source: "m".to_string(),
-                timestamp: std::time::Instant::now(),
+                received_timestamp: std::time::Instant::now(),
                 headers: std::collections::HashMap::new(),
                 key: None,
                 backend_specific: Some(Box::new(KafkaMetadata {
                     topic: "m".to_string(),
                     partition: 0,
                     offset: i as i64,
+                    kafka_timestamp: Some(1234567890 + i as i64),
                 })),
             };
             entry.push(ProcessedMessage { payload, metadata });

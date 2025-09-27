@@ -12,8 +12,8 @@
 //! - Error retry mechanisms
 
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusWriter, PreconfiguredTopics};
-use bevy_event_bus::{EventBusError, EventBusAppExt, KafkaProducerConfig};
+use bevy_event_bus::{EventBusPlugins, EventBusWriter};
+use bevy_event_bus::{EventBusError, EventBusAppExt, KafkaWriteConfig};
 use serde::{Deserialize, Serialize};
 use crate::common::helpers::unique_topic;
 use crate::common::MockEventBusBackend;
@@ -62,10 +62,7 @@ fn test_delivery_error_handling() {
     mock_backend.simulate_delivery_failure_for_topic(&topic);
     
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins(
-        mock_backend,
-        PreconfiguredTopics::new([topic.clone()]),
-    ));
+    app.add_plugins(EventBusPlugins(mock_backend));
     
     // Add bus event (automatically registers error events)
     app.add_bus_event::<TestErrorEvent>(&topic);
@@ -94,7 +91,7 @@ fn test_delivery_error_handling() {
                 state.messages_sent += 1;
                 
                 // Fire-and-forget write - delivery failures will appear as error events
-                let config = KafkaProducerConfig::new("localhost:9092", [topic_clone.clone()]);
+                let config = KafkaWriteConfig::new(&topic_clone);
                 writer.write(&config, test_event);
             }
             
@@ -157,10 +154,7 @@ fn test_multiple_event_types_error_handling() {
     mock_backend.simulate_delivery_failure_for_topic(&analytics_topic);
     
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins(
-        mock_backend,
-        PreconfiguredTopics::new([player_topic.clone(), combat_topic.clone(), analytics_topic.clone()]),
-    ));
+    app.add_plugins(EventBusPlugins(mock_backend));
     
     // Add all event types (automatically registers error events for each)
     app.add_bus_event::<PlayerEvent>(&player_topic);
@@ -190,7 +184,7 @@ fn test_multiple_event_types_error_handling() {
                 player_id: 123,
                 action: "login".to_string(),
             };
-            player_writer.write(&KafkaProducerConfig::new("localhost:9092", [player_topic_clone.clone()]), player_event);
+            player_writer.write(&KafkaWriteConfig::new(&player_topic_clone), player_event);
             
             // Combat event  
             let combat_event = CombatEvent {
@@ -198,7 +192,7 @@ fn test_multiple_event_types_error_handling() {
                 target_id: 789,
                 damage: 100,
             };
-            combat_writer.write(&KafkaProducerConfig::new("localhost:9092", [combat_topic_clone.clone()]), combat_event);
+            combat_writer.write(&KafkaWriteConfig::new(&combat_topic_clone), combat_event);
             
             // Analytics event
             let analytics_event = AnalyticsEvent {
@@ -206,7 +200,7 @@ fn test_multiple_event_types_error_handling() {
                 user_id: 123,
                 timestamp: 1234567890,
             };
-            analytics_writer.write(&KafkaProducerConfig::new("localhost:9092", [analytics_topic_clone.clone()]), analytics_event);
+            analytics_writer.write(&KafkaWriteConfig::new(&analytics_topic_clone), analytics_event);
             
             state.test_completed = true;
         }
@@ -276,10 +270,7 @@ fn test_centralized_error_handling() {
     // working_topic is not configured to fail, so it should succeed
     
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins(
-        mock_backend,
-        PreconfiguredTopics::new([working_topic.clone(), failing_topic.clone()]),
-    ));
+    app.add_plugins(EventBusPlugins(mock_backend));
     
     // Add bus events for both topics
     app.add_bus_event::<TestEvent>(&working_topic);
@@ -308,7 +299,7 @@ fn test_centralized_error_handling() {
                     message: format!("Working event {}", i),
                 };
                 state.events_sent += 1;
-                writer.write(&KafkaProducerConfig::new("localhost:9092", [working_topic_clone.clone()]), event);
+                writer.write(&KafkaWriteConfig::new(&working_topic_clone), event);
             }
             
             // Send to failing topic
@@ -318,7 +309,7 @@ fn test_centralized_error_handling() {
                     message: format!("Failing event {}", i),
                 };
                 state.events_sent += 1;
-                writer.write(&KafkaProducerConfig::new("localhost:9092", [failing_topic_clone.clone()]), event);
+                writer.write(&KafkaWriteConfig::new(&failing_topic_clone), event);
             }
             
             state.test_completed = true;
@@ -373,10 +364,7 @@ fn test_batch_operation_error_handling() {
     mock_backend.simulate_delivery_failure_for_topic(&topic);
     
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins(
-        mock_backend,
-        PreconfiguredTopics::new([topic.clone()]),
-    ));
+    app.add_plugins(EventBusPlugins(mock_backend));
     
     app.add_bus_event::<TestEvent>(&topic);
     
@@ -410,7 +398,7 @@ fn test_batch_operation_error_handling() {
                         id: batch * events_per_batch + event_in_batch,
                         message: format!("Batch {} Event {}", batch, event_in_batch),
                     };
-                    writer.write(&KafkaProducerConfig::new("localhost:9092", [topic_clone.clone()]), event);
+                    writer.write(&KafkaWriteConfig::new(&topic_clone), event);
                 }
             }
             
@@ -469,10 +457,7 @@ fn test_error_retry_mechanism() {
     mock_backend.simulate_delivery_failure_for_topic(&topic);
     
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins(
-        mock_backend,
-        PreconfiguredTopics::new([topic.clone()]),
-    ));
+    app.add_plugins(EventBusPlugins(mock_backend));
     
     app.add_bus_event::<TestEvent>(&topic);
     
@@ -504,7 +489,7 @@ fn test_error_retry_mechanism() {
                     message: format!("Initial event {}", i),
                 };
                 state.initial_events_sent += 1;
-                writer.write(&KafkaProducerConfig::new("localhost:9092", [topic_clone1.clone()]), event);
+                writer.write(&KafkaWriteConfig::new(&topic_clone1), event);
             }
             state.initial_send_complete = true;
         }
@@ -536,7 +521,7 @@ fn test_error_retry_mechanism() {
                     };
                     
                     // Retry the event (will still fail in this test since mock backend is configured to fail)
-                    writer.write(&KafkaProducerConfig::new("localhost:9092", [topic_clone2.clone()]), retry_event);
+                    writer.write(&KafkaWriteConfig::new(&topic_clone2), retry_event);
                 }
             }
         }

@@ -15,6 +15,7 @@ pub struct IncomingMessage {
     pub payload: Vec<u8>,
     pub timestamp: Instant,
     pub headers: HashMap<String, String>,
+    pub consumer_group: Option<String>, // Which background consumer group received this (if any)
 }
 
 impl EventMetadata {
@@ -174,6 +175,7 @@ mod tests {
             topic: "test_topic".to_string(),
             partition: 0,
             offset: 42,
+            kafka_timestamp: Some(1234567890),
         };
         metadata.backend_specific = Some(Box::new(kafka_metadata));
         
@@ -199,6 +201,7 @@ mod tests {
                 topic: "events_topic".to_string(),
                 partition: 1,
                 offset: 456,
+                kafka_timestamp: Some(9876543210),
             })),
         );
         
@@ -215,6 +218,7 @@ mod tests {
             topic: "kafka_topic".to_string(),
             partition: 1,
             offset: 100,
+            kafka_timestamp: Some(1122334455),
         };
         
         let metadata = EventMetadata::new(

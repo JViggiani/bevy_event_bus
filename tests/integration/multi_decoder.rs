@@ -11,7 +11,7 @@
 
 use bevy::prelude::*;
 use bevy_event_bus::prelude::*;
-use bevy_event_bus::{PreconfiguredTopics, EventBusAppExt};
+use bevy_event_bus::EventBusAppExt;
 use serde::{Deserialize, Serialize};
 
 use crate::common::setup::setup;
@@ -51,12 +51,8 @@ fn test_multi_decoder() {
     let topic_analytics = unique_topic("analytics_events");
     
     // Set up a single app that demonstrates comprehensive many-to-many relationships
-    let (backend, _) = setup();
-    let mut app = App::new();
-    app.add_plugins(EventBusPlugins(
-        backend,
-        PreconfiguredTopics::new([topic_game.clone(), topic_combat.clone(), topic_analytics.clone()]),
-    ));
+    let (backend, _) = setup(None);
+    let mut app = crate::common::setup::build_app(backend, None, |_| {});
     
     // Configure comprehensive many-to-many relationships using the new API
     

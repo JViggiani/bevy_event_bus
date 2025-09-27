@@ -38,7 +38,7 @@ impl Plugin for EventBusPlugin {
 }
 
 /// Plugin bundle that configures everything needed for the event bus
-pub struct EventBusPlugins<B: EventBusBackend>(pub B, pub PreconfiguredTopics);
+pub struct EventBusPlugins<B: EventBusBackend>(pub B);
 
 // -----------------------------------------------------------------------------
 // Backend lifecycle events
@@ -81,10 +81,12 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
         // Create and add the backend as a resource
         let boxed = self.0.clone_box();
         app.insert_resource(EventBusBackendResource::from_box(boxed));
-        app.insert_resource(self.1.clone());
         app.insert_resource(EventBusErrorQueue::default());
-        // Pre-create topics and subscribe BEFORE connecting so background consumer starts with full assignment.
-        if let Some(pre) = app.world().get_resource::<PreconfiguredTopics>().cloned() {
+        
+        // No topic pre-creation needed with direct polling architecture
+        let topics_to_create: Vec<String> = Vec::new();
+        
+        if !topics_to_create.is_empty() {
             if let Some(backend_res) = app
                 .world()
                 .get_resource::<EventBusBackendResource>()
@@ -102,8 +104,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                     cfg.set("bootstrap.servers", kafka.bootstrap_servers());
                     if let Ok(admin) = cfg.create::<AdminClient<DefaultClientContext>>() {
                         let opts = AdminOptions::new();
-                        let topics: Vec<NewTopic> = pre
-                            .0
+                        let topics: Vec<NewTopic> = topics_to_create
                             .iter()
                             .map(|t| NewTopic::new(t, 1, TopicReplication::Fixed(1)))
                             .collect();
@@ -117,11 +118,8 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                         }
                     }
                 }
-                for topic in pre.0.iter() {
-                    if !block_on(guard.subscribe(topic)) {
-                        tracing::warn!(topic = %topic, "Failed to pre-subscribe to topic");
-                    }
-                }
+                // Note: Subscription is now handled explicitly via consumer configurations
+                // rather than through default consumer groups
             }
         }
         // Now connect (spawns background task with existing subscriptions) and capture receiver.
@@ -132,31 +130,6 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
         {
             let mut guard = backend_res.write();
             let _ = block_on(guard.connect());
-            
-            if let Some(kafka) = guard
-                .as_any_mut()
-                .downcast_mut::<crate::backends::kafka_backend::KafkaEventBusBackend>(
-            ) {
-                if let Some(rx) = kafka.take_receiver() {
-                    app.world_mut()
-                        .insert_resource(MessageQueue { receiver: rx });
-                }
-                
-                // Inject lifecycle sender into kafka backend by wrapping its background task via a helper channel
-                // (Since backend code owns spawning, we detect readiness here: receiver presence == ready)
-                let (tx, rx_life) = crossbeam_channel::unbounded::<LifecycleMessage>();
-                // Send Ready event now with current subscriptions
-                let subs = kafka.current_subscriptions();
-                let _ = tx.send(LifecycleMessage::Ready {
-                    backend: "kafka".into(),
-                    topics: subs,
-                });
-                app.world_mut()
-                    .insert_resource(BackendLifecycleChannel(rx_life));
-                app.world_mut()
-                    .insert_resource(BackendStatus { ready: false });
-                // We cannot directly hook errors here; leave placeholder (Down events emitted by future backend error hook TBD)
-            }
         }
 
         // Initialize background consumer related resources if not present
@@ -171,7 +144,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
 
         // Drain system with multi-decoder pipeline
         fn drain_system(
-            mut commands: Commands,
+            _commands: Commands,
             backend: Option<Res<EventBusBackendResource>>,
             mut metadata_buffers: ResMut<DrainedTopicMetadata>,
             mut decoded_buffer: ResMut<DecodedEventBuffer>,
@@ -226,6 +199,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                                     topic: msg.topic.clone(),
                                     partition: msg.partition,
                                     offset: msg.offset,
+                                    kafka_timestamp: None, // TODO: Add timestamp to IncomingMessage if needed
                                 })),
                             );
                             
@@ -305,19 +279,10 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                 metrics.remaining_channel_after_drain = queue.receiver.len();
                 metrics.queue_len_end = metrics.remaining_channel_after_drain;
                 metrics.total_drained += metrics.drained_last_frame;
-            } else if let Some(backend_res) = backend {
-                let mut guard = backend_res.write();
-                if let Some(kafka) = guard
-                    .as_any_mut()
-                    .downcast_mut::<crate::backends::kafka_backend::KafkaEventBusBackend>(
-                ) {
-                    let dropped = kafka.dropped_count();
-                    metrics.dropped_messages = dropped;
-                    if let Some(rx) = kafka.take_receiver() {
-                        // Insert queue so next frame we can drain
-                        commands.insert_resource(MessageQueue { receiver: rx });
-                    }
-                }
+            } else if let Some(_backend_res) = backend {
+                // For direct polling architecture, dropped messages are not tracked at backend level
+                // Individual read operations may log/report failures directly
+                metrics.dropped_messages = 0;
             }
             
             // Count idle frame if nothing drained

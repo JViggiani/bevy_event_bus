@@ -37,9 +37,9 @@ pub use writers::event_bus_writer::EventBusWriter;
 
 // Re-export backends
 #[cfg(feature = "kafka")]
-pub use backends::kafka_backend::{KafkaConnection, KafkaEventBusBackend};
+pub use backends::kafka_backend::KafkaEventBusBackend;
 #[cfg(feature = "kafka")]
-pub use config::kafka::{KafkaConsumerConfig, KafkaProducerConfig, KafkaEventMetadata, UncommittedEvent};
+pub use config::kafka::{KafkaConnection, KafkaReadConfig, KafkaWriteConfig, KafkaEventMetadata, UncommittedEvent};
 
 // Re-export the derive macro
 pub use bevy_event_bus_derive::ExternalBusEvent;
@@ -62,7 +62,7 @@ pub mod prelude {
     #[cfg(feature = "kafka")]
     pub use crate::{
         KafkaConnection, KafkaEventBusBackend,
-        config::kafka::{KafkaConsumerConfig, KafkaProducerConfig, KafkaEventMetadata, UncommittedEvent},
+        config::kafka::{KafkaReadConfig, KafkaWriteConfig, KafkaEventMetadata, UncommittedEvent},
     };
 }
 

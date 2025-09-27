@@ -1,29 +1,34 @@
 use crate::common::events::TestEvent;
-use crate::common::helpers::unique_topic;
-use crate::common::setup::setup;
+use crate::common::helpers::{unique_topic, unique_consumer_group};
+use crate::common::setup::build_app;
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, KafkaConsumerConfig};
+use bevy_event_bus::{EventBusReader, KafkaReadConfig};
 
 // Test that repeatedly reading an empty topic does not hang or block frames.
 #[test]
 fn idle_empty_topic_poll_does_not_block() {
-    let (backend, _) = setup();
     let topic = unique_topic("idle"); // preconfigure but never send
-    let mut app = App::new();
-    app.add_plugins(EventBusPlugins(
-        backend,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
+    
+    // Create consumer configuration
+    let consumer_group = unique_consumer_group("test_group");
+    let config = KafkaReadConfig::new(&consumer_group).topics([&topic]);
+    
+    // Build app with consumer group created during setup
+    let (backend, _bootstrap) = crate::common::setup::setup(None);
+    let mut app = build_app(backend, Some(&[config.clone()]), |app| {
+        app.add_event::<TestEvent>(); // ensure event type registered though we won't send
+    });
+    
     #[derive(Resource, Default)]
     struct Ticks(u32);
     app.insert_resource(Ticks::default());
-    app.add_event::<TestEvent>(); // ensure event type registered though we won't send
-    let topic_read = topic.clone();
+    
+    // Simple system that just reads - no consumer group creation needed
     app.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>, mut ticks: ResMut<Ticks>| {
             // Try reading every frame; should be instant (reader fallback/drained path fast)
-            for _ in r.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&topic_read])) { /* none expected */ }
+            for _ in r.read(&config) { /* none expected */ }
             ticks.0 += 1;
         },
     );

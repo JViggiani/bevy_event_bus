@@ -1,8 +1,9 @@
 use crate::common::TestEvent;
-use crate::common::setup::setup;
-use crate::common::helpers::{unique_topic, update_until};
+use crate::common::setup::{setup, build_app};
+use crate::common::helpers::{unique_topic, unique_consumer_group, update_until};
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt, KafkaConsumerConfig, KafkaProducerConfig};
+use bevy_event_bus::{EventBusReader, EventBusWriter, EventBusAppExt, KafkaReadConfig, KafkaWriteConfig};
+use bevy_event_bus::config::OffsetReset;
 use tracing::{info, info_span};
 use tracing_subscriber::EnvFilter;
 
@@ -25,21 +26,16 @@ fn test_basic_kafka_event_bus() {
         "Setup complete"
     );
 
-    // Broker is assured ready by setup(); proceed.
+    // Broker is assured ready by setup(None); proceed.
 
-    // Create separate backends for writer and reader to simulate separate machines
-    let (backend_writer, _bootstrap_writer) = setup();
-    let (backend_reader, _bootstrap_reader) = setup();
+    // Create backend for writer - reader uses separate backend via build_app_with_consumer_group
+    let (backend_writer, _bootstrap_writer) = setup(None);
 
     // Writer app
-    let mut writer_app = App::new();
-    writer_app.add_plugins(EventBusPlugins(
-        backend_writer,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
-    
-    // Register bus event to enable EventBusWriter error handling
-    writer_app.add_bus_event::<TestEvent>(&topic);
+    let mut writer_app = crate::common::setup::build_app(backend_writer, None, |app| {
+        // Register bus event to enable EventBusWriter error handling
+        app.add_bus_event::<TestEvent>(&topic);
+    });
 
     #[derive(Resource, Clone)]
     struct ToSend(TestEvent, String);
@@ -51,8 +47,9 @@ fn test_basic_kafka_event_bus() {
     writer_app.insert_resource(ToSend(event_to_send.clone(), topic.clone()));
 
     fn writer_system(mut w: EventBusWriter<TestEvent>, data: Res<ToSend>) {
-        let config = KafkaProducerConfig::new("localhost:9092", [&data.1]);
+        let config = KafkaWriteConfig::new(&data.1);
         let _ = w.write(&config, data.0.clone());
+        let _ = w.flush(&config, std::time::Duration::from_secs(5)); // Ensure message is actually sent to Kafka
     }
     writer_app.add_systems(Update, writer_system);
     let writer_span = info_span!("writer_app.update");
@@ -63,34 +60,27 @@ fn test_basic_kafka_event_bus() {
 
     // Instead of fixed sleep loop we'll actively poll the reader app
 
-    // Reader app (separate consumer group with separate backend)
-    let mut reader_app = App::new();
-    reader_app.add_plugins(EventBusPlugins(
-        backend_reader,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
-    
-    // Register bus event for reading
-    reader_app.add_bus_event::<TestEvent>(&topic);
-
     #[derive(Resource, Default)]
     struct Collected(Vec<TestEvent>);
-    reader_app.insert_resource(Collected::default());
-    #[derive(Resource, Clone)]
-    struct Topic(String);
-    reader_app.insert_resource(Topic(topic.clone()));
 
-    fn reader_system(
-        mut r: EventBusReader<TestEvent>,
-        topic: Res<Topic>,
-        mut collected: ResMut<Collected>,
-    ) {
-        let config = KafkaConsumerConfig::new("localhost:9092", "test_group", [&topic.0]);
-        for wrapper in r.read(&config) {
-            collected.0.push(wrapper.event().clone());
-        }
-    }
-    reader_app.add_systems(Update, reader_system);
+    // Reader app with pre-created consumer group
+    let consumer_group = unique_consumer_group("test_group");
+    let config = KafkaReadConfig::new(&consumer_group)
+        .topics([&topic])
+        .offset_reset(OffsetReset::Earliest);
+    
+    let (backend_reader, _bootstrap_reader) = setup(None);
+    let mut reader_app = build_app(backend_reader, Some(&[config.clone()]), |app| {
+        app.add_bus_event::<TestEvent>(&topic);
+        app.insert_resource(Collected::default());
+        
+        app.add_systems(Update, move |mut r: EventBusReader<TestEvent>, mut collected: ResMut<Collected>| {
+            // Use the SAME config that was passed to setup, not recreated
+            for wrapper in r.read(&config) {
+                collected.0.push(wrapper.event().clone());
+            }
+        });
+    });
 
     // Poll frames until first message or timeout
     let recv_span = info_span!("reader.poll");

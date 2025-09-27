@@ -1,7 +1,8 @@
 use crate::common::TestEvent;
 use crate::common::mock_backend::MockEventBusBackend;
+use crate::common::helpers::unique_consumer_group;
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt, KafkaConsumerConfig, KafkaProducerConfig};
+use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt, KafkaReadConfig, KafkaWriteConfig};
 use std::collections::HashMap;
 use tracing::{info, info_span};
 use tracing_subscriber::EnvFilter;
@@ -23,10 +24,7 @@ fn test_internal_only_events() {
     let mut app = App::new();
     
     // Add event bus plugins with mock backend
-    app.add_plugins(EventBusPlugins(
-        MockEventBusBackend::new(), // Mock backend - external events will be mocked
-        bevy_event_bus::PreconfiguredTopics::new(Vec::<String>::new()), // No preconfigured topics needed
-    ));
+    app.add_plugins(EventBusPlugins(MockEventBusBackend::new())); // Mock backend - external events will be mocked
     
     // Register our test event
     let topic = "internal_test_topic";
@@ -54,7 +52,7 @@ fn test_internal_only_events() {
         if !*sent {
             *sent = true;
             for event in &events_to_send {
-                writer.write(&KafkaProducerConfig::new("localhost:9092", [&topic_clone]), event.clone());
+                writer.write(&KafkaWriteConfig::new(&topic_clone), event.clone());
             }
             info!("Sent {} events (both external mock and internal)", events_to_send.len());
         }
@@ -66,7 +64,7 @@ fn test_internal_only_events() {
         mut reader: EventBusReader<TestEvent>,
         mut received: ResMut<ReceivedEvents>
     | {
-        for event_wrapper in reader.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&topic_clone])) {
+        for event_wrapper in reader.read(&KafkaReadConfig::new("test_group").topics([&topic_clone])) {
             // Only collect internal events for this test
             if event_wrapper.is_internal() {
                 received.0.push(event_wrapper.clone());
@@ -133,10 +131,7 @@ fn test_internal_events_with_headers() {
     let mut app = App::new();
     
     // Add event bus plugins with mock backend
-    app.add_plugins(EventBusPlugins(
-        MockEventBusBackend::new(), // Mock backend - external events will be mocked
-        bevy_event_bus::PreconfiguredTopics::new(Vec::<String>::new()), // No preconfigured topics needed
-    ));
+    app.add_plugins(EventBusPlugins(MockEventBusBackend::new())); // Mock backend - external events will be mocked
     
     // Register our test event
     let topic = "internal_headers_test_topic";
@@ -167,7 +162,9 @@ fn test_internal_events_with_headers() {
             headers.insert("source".to_string(), "internal-test".to_string());
             
             // Send event with headers (will create both mock external and internal events)
-            writer.write_with_headers(&KafkaProducerConfig::new("localhost:9092", [&topic_clone]), test_event.clone(), headers);
+            let config_with_headers = KafkaWriteConfig::new(&topic_clone)
+                .with_headers(headers);
+            writer.write(&config_with_headers, test_event.clone());
             info!("Sent event with headers (internal portion will ignore headers)");
         }
     });
@@ -178,7 +175,7 @@ fn test_internal_events_with_headers() {
         mut reader: EventBusReader<TestEvent>,
         mut received: ResMut<ReceivedEvents>
     | {
-        for event_wrapper in reader.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&topic_clone])) {
+        for event_wrapper in reader.read(&KafkaReadConfig::new(&unique_consumer_group("test_group")).topics([&topic_clone])) {
             // Only collect internal events for this test
             if event_wrapper.is_internal() {
                 received.0.push(event_wrapper.clone());
@@ -230,10 +227,7 @@ fn test_internal_events_into_parts() {
     let mut app = App::new();
     
     // Add event bus plugins with mock backend
-    app.add_plugins(EventBusPlugins(
-        MockEventBusBackend::new(), // Mock backend - external events will be mocked
-        bevy_event_bus::PreconfiguredTopics::new(Vec::<String>::new()), // No preconfigured topics needed
-    ));
+    app.add_plugins(EventBusPlugins(MockEventBusBackend::new())); // Mock backend - external events will be mocked
     
     // Register our test event
     let topic = "internal_parts_test_topic";
@@ -257,7 +251,7 @@ fn test_internal_events_into_parts() {
     | {
         if !*sent {
             *sent = true;
-            writer.write(&KafkaProducerConfig::new("localhost:9092", [&topic_clone]), test_event.clone());
+            writer.write(&KafkaWriteConfig::new(&topic_clone), test_event.clone());
             info!("Sent event for into_parts test");
         }
     });
@@ -268,7 +262,7 @@ fn test_internal_events_into_parts() {
         mut reader: EventBusReader<TestEvent>,
         mut received: ResMut<ReceivedEvents>
     | {
-        for event_wrapper in reader.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&topic_clone])) {
+        for event_wrapper in reader.read(&KafkaReadConfig::new(&unique_consumer_group("test_group")).topics([&topic_clone])) {
             // Only collect internal events for this test
             if event_wrapper.is_internal() {
                 received.0.push(event_wrapper.clone());

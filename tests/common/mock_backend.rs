@@ -1,6 +1,7 @@
 use bevy_event_bus::EventBusBackend;
+use bevy_event_bus::config::kafka::{KafkaReadConfig, KafkaWriteConfig};
 use async_trait::async_trait;
-use std::collections::HashMap;
+
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
 
@@ -49,35 +50,24 @@ impl EventBusBackend for MockEventBusBackend {
         true
     }
     
-    async fn disconnect(&mut self) -> bool {
-        true
-    }
-    
-    fn try_send_serialized(&self, _event_json: &[u8], topic: &str) -> bool {
-        // Check if we should simulate a failure for this topic
-        if self.should_fail(topic) {
-            return false; // Simulate failure
+    fn try_send_serialized(&self, _event_json: &[u8], config: &dyn std::any::Any) -> bool {
+        // Try to downcast config to extract topic for failure simulation
+        if let Some(kafka_config) = config.downcast_ref::<KafkaWriteConfig>() {
+            // Check if the topic in this config should fail
+            if self.should_fail(&kafka_config.topic) {
+                return false; // Simulate failure
+            }
         }
-        
-        // Return true to simulate successful queueing
-        true
+        true // Success by default
     }
     
-    fn try_send_serialized_with_headers(&self, event_json: &[u8], topic: &str, _headers: &HashMap<String, String>) -> bool {
-        // Delegate to the main send method
-        self.try_send_serialized(event_json, topic)
-    }
-    
-    async fn receive_serialized(&self, _topic: &str) -> Vec<Vec<u8>> {
+    async fn poll_messages(&self, _config: &KafkaReadConfig, _messages: &mut Vec<Vec<u8>>) -> Result<(), String> {
         // Mock backend doesn't actually store/receive messages for this test
-        Vec::new()
+        Ok(())
     }
     
-    async fn subscribe(&mut self, _topic: &str) -> bool {
-        true
-    }
-    
-    async fn unsubscribe(&mut self, _topic: &str) -> bool {
+    fn flush(&self, _timeout: std::time::Duration) -> bool {
+        // Mock backend always succeeds flush
         true
     }
 }

@@ -1,11 +1,11 @@
 use crate::common::events::TestEvent;
-use crate::common::helpers::{unique_topic, update_until};
+use crate::common::helpers::{unique_topic, update_until, wait_for_events};
 use crate::common::setup::setup;
 use bevy::prelude::*;
 use bevy_event_bus::{
-    EventBusPlugins, EventBusReader, EventBusWriter, KafkaEventBusBackend, 
-    KafkaConnection, EventBusAppExt, KafkaConsumerConfig, KafkaProducerConfig
+    EventBusReader, EventBusWriter, EventBusAppExt, KafkaReadConfig, KafkaWriteConfig, EventWrapper
 };
+
 use std::collections::HashMap;
 
 #[derive(Resource, Default)]
@@ -17,23 +17,19 @@ fn configuration_with_readers_writers_works() {
     let topic = unique_topic("config_test");
     
     // Create separate backends for writer and reader to simulate separate machines
-    let (backend_writer, _bootstrap_writer) = setup();
-    let (backend_reader, _bootstrap_reader) = setup();
+    let (backend_writer, _bootstrap_writer) = setup(None);
 
     // Producer app
     let mut producer_app = {
-        let mut app = App::new();
-        app.add_plugins(EventBusPlugins(
-            backend_writer,
-            bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-        ));
-        app.add_bus_event::<TestEvent>(&topic);
+        let mut app = crate::common::setup::build_app(backend_writer, None, |app| {
+            app.add_bus_event::<TestEvent>(&topic);
+        });
         
         // Producer system using configuration
         let topic_clone = topic.clone();
         let producer_system = move |mut writer: EventBusWriter<TestEvent>| {
             // Write using configuration - producers specify topics
-            let config = KafkaProducerConfig::new("localhost:9092", [&topic_clone]).compression_type("none");
+            let config = KafkaWriteConfig::new(&topic_clone);
             writer.write(&config, TestEvent {
                 message: "config_test".to_string(),
                 value: 42,
@@ -44,40 +40,30 @@ fn configuration_with_readers_writers_works() {
         app
     };
 
-    // Consumer app
-    let mut consumer_app = {
-        let mut app = App::new();
-        app.add_plugins(EventBusPlugins(
-            backend_reader,
-            bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-        ));
+    // Consumer app using build_app with pre-created consumer group
+    let consumer_group = format!("test_group_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+    let config = KafkaReadConfig::new(&consumer_group).topics([&topic]);
+    
+    let (backend_reader, _bootstrap_reader) = setup(None);
+    let mut consumer_app = crate::common::setup::build_app(backend_reader, Some(&[config.clone()]), |app| {
         app.add_bus_event::<TestEvent>(&topic);
+        app.insert_resource(Collected::default());
         
-        // Consumer system using configuration
-        let topic_clone = topic.clone();
-        let consumer_group = format!("test_group_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
-        let consumer_system = move |mut reader: EventBusReader<TestEvent>, mut collected: ResMut<Collected>| {
-            // Read using configuration
-            let config = KafkaConsumerConfig::new("localhost:9092", &consumer_group, [&topic_clone]);
+        // Consumer system using the same config that was passed to setup
+        app.add_systems(Update, move |mut reader: EventBusReader<TestEvent>, mut collected: ResMut<Collected>| {
             let events = reader.read(&config);
             for wrapper in events {
                 collected.0.push(wrapper.event().clone());
             }
-        };
-        
-        app.insert_resource(Collected::default());
-        app.add_systems(Update, consumer_system);
-        app
-    };
+        });
+    });
 
-    // Run producer first
-    for _ in 0..10 {
-        producer_app.update();
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    
-    // Give extra time for messages to be sent to Kafka
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // Run producer until messages are processed (or timeout)
+    let (_success, _frames) = update_until(
+        &mut producer_app,
+        1000, // 1 second should be enough for message sending
+        |_app| true, // Always true since we just want to run some frames
+    );
 
     // Then run consumer and verify
     let (success, _frames) = update_until(
@@ -99,116 +85,135 @@ fn configuration_with_readers_writers_works() {
     assert_eq!(event.value, 42);
 }
 
-/// Test that Kafka-specific methods work with configurations
+/// Test that Kafka-specific methods work with configurations, including metadata functionality
 #[test]
-fn kafka_specific_methods_work() {
+fn test_kafka_write_methods() {
     let topic = unique_topic("kafka_methods");
-    let (_backend, bootstrap) = setup();
+    
+    // Create separate apps for writer and reader like other tests
+    let (backend_writer, _) = setup(None);
+    let mut writer_app = crate::common::setup::build_app(backend_writer, None, |app| {
+        app.add_bus_event::<TestEvent>(&topic);
+    });
 
-    let config = KafkaConnection {
-        bootstrap_servers: bootstrap,
-        client_id: None,
-        timeout_ms: 5000,
-        additional_config: HashMap::new(),
-    };
+    // Create consumer configuration with unique consumer group
+    let consumer_group = format!("test_kafka_methods_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+    let consumer_config = KafkaReadConfig::new(&consumer_group).topics([&topic]);
+    
+    let (backend_reader, _) = setup(None);
+    let mut reader_app = crate::common::setup::build_app(backend_reader, Some(&[consumer_config.clone()]), |app| {
+        app.add_bus_event::<TestEvent>(&topic);
+    });
 
-    let backend = KafkaEventBusBackend::new(config);
-    let mut app = App::new();
-    app.add_plugins(EventBusPlugins(
-        backend,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
-    app.add_bus_event::<TestEvent>(&topic);
-
-    let kafka_producer_config = KafkaProducerConfig::new("localhost:9092", Vec::<String>::new())
-        .compression_type("none")
-        .acks("all");
-
-    let kafka_consumer_config = KafkaConsumerConfig::new("localhost:9092", "test_kafka_methods", [&topic]);
+    // Test writing with headers and key (metadata functionality)
+    let mut headers = HashMap::new();
+    headers.insert("method-test".to_string(), "write_methods".to_string());
+    headers.insert("test-type".to_string(), "configuration".to_string());
+    
+    let producer_config = KafkaWriteConfig::new(&topic)
+        .with_headers(headers.clone())
+        .with_partition_key("test-key-123");
 
     #[derive(Resource)]
     struct TestConfigs {
-        producer: KafkaProducerConfig,
-        consumer: KafkaConsumerConfig,
+        producer: KafkaWriteConfig,
+        consumer: KafkaReadConfig,
     }
 
-    app.insert_resource(TestConfigs {
-        producer: kafka_producer_config,
-        consumer: kafka_consumer_config,
+    writer_app.insert_resource(TestConfigs {
+        producer: producer_config,
+        consumer: consumer_config.clone(),
     });
 
-    // Writer system that uses Kafka-specific write methods
-    fn test_kafka_write_methods(
-        mut writer: EventBusWriter<TestEvent>,
-        configs: Res<TestConfigs>,
-    ) {
-        // Test Kafka-specific write methods
-        let _metadata = writer.write_with_key(
-            &configs.producer,
-            TestEvent { message: "key_test".to_string(), value: 1 },
-            "partition_key"
-        );
+    #[derive(Resource, Default)]
+    struct ReceivedEvents(Vec<EventWrapper<TestEvent>>);
+    
+    reader_app.insert_resource(ReceivedEvents::default());
+    reader_app.insert_resource(TestConfigs {
+        producer: KafkaWriteConfig::new(&topic), // Not used in reader
+        consumer: consumer_config,
+    });
 
-        let _metadata = writer.write_with_headers(
-            &configs.producer,
-            TestEvent { message: "headers_test".to_string(), value: 2 },
-            [("header1".to_string(), "value1".to_string()), ("header2".to_string(), "value2".to_string())].into()
-        );
+    // Writer system that sends event with metadata
+    writer_app.add_systems(Update, move |mut writer: EventBusWriter<TestEvent>, configs: Res<TestConfigs>, mut sent: Local<bool>| {
+        if !*sent {
+            *sent = true;
+            
+            // Test writing with metadata (headers + key)
+            writer.write(&configs.producer, TestEvent { 
+                message: "metadata_test".to_string(), 
+                value: 42 
+            });
+            
+            // Test flush functionality  
+            let _flush_result = writer.flush(&configs.producer, std::time::Duration::from_secs(1));
+        }
+    });
 
-        let _flush_result = writer.flush(&configs.producer);
+    // Reader system that captures events with metadata
+    reader_app.add_systems(Update, move |mut reader: EventBusReader<TestEvent>, configs: Res<TestConfigs>, mut events: ResMut<ReceivedEvents>| {
+        for wrapper in reader.read(&configs.consumer) {
+            if wrapper.is_external() {
+                events.0.push(wrapper.clone());
+            }
+        }
+    });
+
+    // Send the event
+    writer_app.update();
+    writer_app.update();
+
+    // Wait for the event to be received with metadata
+    let received = wait_for_events(&mut reader_app, &topic, 5000, 1, |app| {
+        let events = app.world().resource::<ReceivedEvents>();
+        events.0.clone()
+    });
+
+    assert!(!received.is_empty(), "Should receive at least one event");
+    
+    let event_wrapper = &received[0];
+    
+    // Verify the event data
+    assert_eq!(event_wrapper.event().message, "metadata_test");
+    assert_eq!(event_wrapper.event().value, 42);
+    
+    // Verify metadata was properly forwarded
+    let metadata = event_wrapper.metadata().expect("Event should have metadata");
+    
+    // Check headers
+    assert_eq!(metadata.headers.get("method-test"), Some(&"write_methods".to_string()));
+    assert_eq!(metadata.headers.get("test-type"), Some(&"configuration".to_string()));
+    
+    // Check key
+    assert_eq!(metadata.key, Some("test-key-123".to_string()));
+    
+    // Verify Kafka-specific metadata
+    if let Some(kafka_meta) = metadata.kafka_metadata() {
+        assert_eq!(kafka_meta.topic, topic);
+        assert!(kafka_meta.partition >= 0);
+        assert!(kafka_meta.offset >= 0);
+        assert!(kafka_meta.kafka_timestamp.is_some(), "Should have Kafka timestamp");
+    } else {
+        panic!("Expected Kafka metadata");
     }
-
-    // Reader system that uses Kafka-specific read methods
-    fn test_kafka_read_methods(
-        mut reader: EventBusReader<TestEvent>,
-        configs: Res<TestConfigs>,
-    ) {
-        // Test Kafka-specific read methods
-        let _uncommitted_events = reader.read_uncommitted(&configs.consumer);
-        let _lag = reader.get_consumer_lag(&configs.consumer);
-    }
-
-    app.add_systems(Update, (test_kafka_write_methods, test_kafka_read_methods));
-
-    // Run a few updates to execute the test system
-    for _ in 0..5 {
-        app.update();
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-
-    // If we get here without panicking, the Kafka-specific methods work
 }
 
 /// Test that the builder pattern works correctly for configurations
 #[test]
 fn builder_pattern_works() {
     // Test that we can build consumer config
-    let consumer_config = KafkaConsumerConfig::new("localhost:9092", "test_group", ["topic1", "topic2"])
-        .auto_offset_reset("earliest")
-        .enable_auto_commit(false)
-        .session_timeout_ms(6000);
+    let consumer_config = KafkaReadConfig::new("test_group").topics(["topic1", "topic2"]);
 
     // Test that trait methods work using explicit syntax
     use bevy_event_bus::EventBusConfig;
     assert!(!EventBusConfig::topics(&consumer_config).is_empty());
-    assert!(consumer_config.get_consumer_group() == "test_group");
-    
-    // Test that specific config getters work
-    assert!(!consumer_config.is_auto_commit_enabled());
-    assert_eq!(consumer_config.get_session_timeout_ms(), 6000);
+    assert_eq!(consumer_config.consumer_group(), "test_group");
 
-    // Test that we can build producer config
-    let producer_config = KafkaProducerConfig::new("localhost:9092", Vec::<String>::new())
-        .compression_type("gzip")
-        .acks("all")
-        .retries(3)
-        .batch_size(16384);
+    // Test that we can build producer config  
+    let producer_config = KafkaWriteConfig::new("topic1");
 
-    // Test that producer getters work
-    assert_eq!(producer_config.get_compression_type(), "gzip");
-    assert_eq!(producer_config.get_acks(), "all");
-    assert_eq!(producer_config.get_retries(), 3);
-    assert_eq!(producer_config.get_batch_size(), 16384);
+    // Test that topic access works
+    assert_eq!(producer_config.topic(), "topic1");
 }
 
 /// Test that clean system signatures work without explicit backend types
@@ -221,8 +226,8 @@ fn clean_system_signatures() {
         mut writer: EventBusWriter<TestEvent>,
     ) {
         // Configuration can be injected from resource or built inline
-        let config = KafkaProducerConfig::new("localhost:9092", Vec::<String>::new()).compression_type("none");
-        writer.write(&config, TestEvent {
+        let config = KafkaWriteConfig::new("test_topic");
+        let _ = writer.write(&config, TestEvent {
             message: "clean".to_string(),
             value: 123,
         });
@@ -232,8 +237,10 @@ fn clean_system_signatures() {
         mut reader: EventBusReader<TestEvent>,
     ) {
         // Using inline configuration
-        let config = KafkaConsumerConfig::new("localhost:9092", "clean_group", ["clean_test"]);
-        let _events = reader.read(&config);
+        let config = KafkaReadConfig::new("clean_group").topics(["test_topic"]);
+        for _wrapper in reader.read(&config) {
+            // Process events
+        }
     }
 
     // If this compiles, then clean signatures work

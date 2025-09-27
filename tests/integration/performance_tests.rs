@@ -6,11 +6,12 @@
 //! Run with: cargo test --test integration_tests performance_tests::test_message_throughput --release -- --ignored --nocapture
 
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, PreconfiguredTopics, EventBusAppExt, KafkaConsumerConfig, KafkaProducerConfig};
+use bevy_event_bus::{EventBusReader, EventBusWriter, EventBusAppExt, KafkaReadConfig, KafkaWriteConfig, ExternalBusEvent};
+use crate::common::helpers::unique_consumer_group;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
-use crate::common::setup::setup;
-use crate::common::helpers::unique_topic;
+use crate::common::setup::build_app;
+use crate::common::helpers::{unique_string, update_until};
 use std::{
     fs::OpenOptions,
     io::{Read, Write},
@@ -18,7 +19,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-#[derive(Event, Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[derive(ExternalBusEvent, Deserialize, Serialize, Debug, Clone, PartialEq, Default)]
 struct PerformanceTestEvent {
     id: u64,
     timestamp: u64,
@@ -49,59 +50,56 @@ impl PerformanceTestEvent {
 #[ignore]
 #[test]
 fn test_message_throughput() {
-    let (backend, _container) = setup();
-    let topic = unique_topic("perf_test");
+    let topic = unique_string("perf_test");
     
     // Configuration for the performance test
     let message_count = 10_000;
     let payload_size = 100; // bytes per message
     
-    run_throughput_test("test_message_throughput", backend, topic, message_count, payload_size);
+    run_throughput_test("test_message_throughput", topic, message_count, payload_size);
 }
 
 /// Test with larger payload sizes
 #[ignore]
 #[test]
 fn test_large_message_throughput() {
-    let (backend, _container) = setup();
-    let topic = unique_topic("perf_large_test");
+    let topic = unique_string("perf_large_test");
     
     // Test with larger messages
     let message_count = 1_000;
     let payload_size = 10_000; // 10KB per message
     
-    run_throughput_test("test_large_message_throughput", backend, topic, message_count, payload_size);
+    run_throughput_test("test_large_message_throughput", topic, message_count, payload_size);
 }
 
 /// Test with high volume of small messages
 #[ignore]
 #[test]
 fn test_high_volume_small_messages() {
-    let (backend, _container) = setup();
-    let topic = unique_topic("perf_small_test");
+    let topic = unique_string("perf_small_test");
     
     // Test with many small messages
     let message_count = 50_000;
     let payload_size = 20; // 20 bytes per message
     
-    run_throughput_test("test_high_volume_small_messages", backend, topic, message_count, payload_size);
+    run_throughput_test("test_high_volume_small_messages", topic, message_count, payload_size);
 }
 
 /// Run a throughput test with the specified parameters
 fn run_throughput_test(
     test_name: &str,
-    backend: impl bevy_event_bus::backends::EventBusBackend + 'static,
     topic: String,
     message_count: u64,
     payload_size: usize,
 ) {
+    // Create consumer configuration
+    let config = KafkaReadConfig::new(&unique_consumer_group("test_group")).topics([&topic]);
     
-    let mut app = App::new();
-    app.add_plugins(EventBusPlugins(
-        backend,
-        PreconfiguredTopics::new([topic.clone()]),
-    ));
-    app.add_bus_event::<PerformanceTestEvent>(&topic);
+    // Use build_app with consumer group created during setup
+    let (backend, _bootstrap) = crate::common::setup::setup(None);
+    let mut app = build_app(backend, Some(&[config.clone()]), |app| {
+        app.add_bus_event::<PerformanceTestEvent>(&topic);
+    });
     
     #[derive(Resource)]
     struct PerformanceTestState {
@@ -160,22 +158,28 @@ fn run_throughput_test(
             );
             
             // Fire-and-forget write - no Result to handle
-            writer.write(&KafkaProducerConfig::new("localhost:9092", [&state.test_topic]), event);
+            writer.write(&KafkaWriteConfig::new(&state.test_topic), event);
             state.messages_sent += 1;
         }
     }
     
+    #[derive(Resource, Clone)]
+    struct PerfTestConfig(KafkaReadConfig);
+    
+    app.insert_resource(PerfTestConfig(config.clone()));
+
     // Receiving system
     fn receiver_system(
         mut state: ResMut<PerformanceTestState>,
         mut reader: EventBusReader<PerformanceTestEvent>,
+        config: Res<PerfTestConfig>,
     ) {
         if state.receive_start_time.is_none() && !state.messages_received.is_empty() {
             state.receive_start_time = Some(Instant::now());
             println!("Started receiving messages...");
         }
         
-        for wrapper in reader.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&state.test_topic])) {
+        for wrapper in reader.read(&config.0) {
             state.messages_received.push(wrapper.event().clone());
             
             // Check if we've received all messages
@@ -190,22 +194,17 @@ fn run_throughput_test(
     app.add_systems(Update, (sender_system, receiver_system).chain());
     
     // Run the test
-    let test_start = Instant::now();
+    let (success, _frames) = update_until(
+        &mut app,
+        300_000, // 5 minutes timeout in ms
+        |app| {
+            let state = app.world().resource::<PerformanceTestState>();
+            state.send_end_time.is_some() && state.receive_end_time.is_some()
+        },
+    );
     
-    // Keep running until we've sent and received all messages
-    while {
-        let state = app.world().resource::<PerformanceTestState>();
-        state.send_end_time.is_none() || state.receive_end_time.is_none()
-    } {
-        app.update();
-        
-        // Timeout after 5 minutes
-        if test_start.elapsed().as_secs() > 300 {
-            panic!("Performance test timed out after 5 minutes");
-        }
-        
-        // Brief pause to prevent busy waiting
-        std::thread::sleep(std::time::Duration::from_millis(1));
+    if !success {
+        panic!("Performance test timed out after 5 minutes");
     }
     
     // Calculate and display results

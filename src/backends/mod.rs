@@ -8,6 +8,8 @@ pub use backend_resource::EventBusBackendResource;
 pub use event_bus_backend::EventBusBackend;
 
 #[cfg(feature = "kafka")]
-pub use kafka_backend::{KafkaConnection, KafkaEventBusBackend};
+pub use kafka_backend::KafkaEventBusBackend;
+#[cfg(feature = "kafka")]
+pub use crate::config::kafka::KafkaConnection;
 
 // Producer flush helper removed; frame-level system now guarantees delivery.

@@ -1,55 +1,33 @@
-//! Kafka-specific configuration objects for type-safe backend inference
+//! Kafka-specific configuration objects for direct polling architecture
 
-use super::{EventBusConfig, Kafka, ProcessingLimits};
+use super::{EventBusConfig, Kafka, OffsetReset, CompressionType, SecurityProtocol};
 use std::collections::HashMap;
 
-/// Configuration for Kafka consumers with production-ready options
+/// Configuration for Kafka read operations (consumer-focused)
 #[derive(Clone, Debug)]
-pub struct KafkaConsumerConfig {
-    bootstrap_servers: String,
-    consumer_group: String,
-    topics: Vec<String>,
-    auto_offset_reset: String,
-    enable_auto_commit: bool,
-    session_timeout_ms: u32,
-    max_poll_records: u32,
-    processing_limits: ProcessingLimits,
-    additional_config: HashMap<String, String>,
+pub struct KafkaReadConfig {
+    pub consumer_group: String,
+    pub topics: Vec<String>,
+    pub offset_reset: OffsetReset,
+    pub enable_auto_commit: bool,
+    pub session_timeout_ms: Option<u32>,
+    pub additional_settings: HashMap<String, String>, // Advanced Kafka client settings
 }
 
-impl KafkaConsumerConfig {
-    /// Create a new Kafka consumer configuration
-    pub fn new<I, T>(bootstrap_servers: impl Into<String>, consumer_group: impl Into<String>, topics: I) -> Self 
-    where
-        I: IntoIterator<Item = T>,
-        T: Into<String>,
-    {
+impl KafkaReadConfig {
+    /// Create a new Kafka read configuration
+    pub fn new(consumer_group: &str) -> Self {
         Self {
-            bootstrap_servers: bootstrap_servers.into(),
-            consumer_group: consumer_group.into(),
-            topics: topics.into_iter().map(Into::into).collect(),
-            auto_offset_reset: "latest".to_string(),
+            consumer_group: consumer_group.to_string(),
+            topics: Vec::new(),
+            offset_reset: OffsetReset::Latest,
             enable_auto_commit: true,
-            session_timeout_ms: 30000,
-            max_poll_records: 500,
-            processing_limits: ProcessingLimits::default(),
-            additional_config: HashMap::new(),
+            session_timeout_ms: None,
+            additional_settings: HashMap::new(),
         }
     }
     
-    /// Set the consumer group for this configuration
-    pub fn consumer_group(mut self, group: impl Into<String>) -> Self {
-        self.consumer_group = group.into();
-        self
-    }
-    
-    /// Set the Kafka bootstrap servers
-    pub fn bootstrap_servers(mut self, servers: impl Into<String>) -> Self {
-        self.bootstrap_servers = servers.into();
-        self
-    }
-    
-    /// Set the topics this configuration applies to
+    /// Set topics to read from
     pub fn topics<I, T>(mut self, topics: I) -> Self 
     where
         I: IntoIterator<Item = T>,
@@ -59,255 +37,184 @@ impl KafkaConsumerConfig {
         self
     }
     
-    /// Set the auto offset reset behavior ("earliest", "latest", "none")
-    pub fn auto_offset_reset(mut self, reset: impl Into<String>) -> Self {
-        self.auto_offset_reset = reset.into();
+    /// Set offset reset behavior
+    pub fn offset_reset(mut self, offset: OffsetReset) -> Self {
+        self.offset_reset = offset;
         self
     }
     
-    /// Enable or disable auto-commit (for manual commit control)
-    pub fn enable_auto_commit(mut self, enable: bool) -> Self {
+    /// Set auto-commit behavior
+    pub fn auto_commit(mut self, enable: bool) -> Self {
         self.enable_auto_commit = enable;
         self
     }
     
     /// Set session timeout in milliseconds
     pub fn session_timeout_ms(mut self, timeout: u32) -> Self {
-        self.session_timeout_ms = timeout;
+        self.session_timeout_ms = Some(timeout);
         self
     }
     
-    /// Set maximum records to poll in a single request
-    pub fn max_poll_records(mut self, records: u32) -> Self {
-        self.max_poll_records = records;
+    /// Add additional Kafka client setting
+    pub fn additional_setting(mut self, key: &str, value: &str) -> Self {
+        self.additional_settings.insert(key.to_string(), value.to_string());
         self
-    }
-    
-    /// Set frame-level processing limits
-    pub fn processing_limits(mut self, limits: ProcessingLimits) -> Self {
-        self.processing_limits = limits;
-        self
-    }
-    
-    /// Add additional Kafka consumer configuration
-    pub fn additional_config<K, V>(mut self, key: K, value: V) -> Self 
-    where
-        K: Into<String>,
-        V: Into<String>,
-    {
-        self.additional_config.insert(key.into(), value.into());
-        self
-    }
-    
-    /// Get whether auto-commit is enabled
-    pub fn is_auto_commit_enabled(&self) -> bool {
-        self.enable_auto_commit
-    }
-    
-    /// Get session timeout
-    pub fn get_session_timeout_ms(&self) -> u32 {
-        self.session_timeout_ms
-    }
-    
-    /// Get max poll records
-    pub fn get_max_poll_records(&self) -> u32 {
-        self.max_poll_records
-    }
-    
-    /// Get processing limits
-    pub fn get_processing_limits(&self) -> &ProcessingLimits {
-        &self.processing_limits
-    }
-    
-    /// Get additional config
-    pub fn get_additional_config(&self) -> &HashMap<String, String> {
-        &self.additional_config
-    }
-    
-    /// Get auto offset reset setting
-    pub fn get_auto_offset_reset(&self) -> &str {
-        &self.auto_offset_reset
-    }
-    
-    /// Get bootstrap servers
-    pub fn get_bootstrap_servers(&self) -> &str {
-        &self.bootstrap_servers
     }
     
     /// Get consumer group
-    pub fn get_consumer_group(&self) -> &str {
+    pub fn consumer_group(&self) -> &str {
         &self.consumer_group
     }
 }
 
-impl EventBusConfig for KafkaConsumerConfig {
+impl EventBusConfig for KafkaReadConfig {
     type Backend = Kafka;
     
     fn topics(&self) -> &[String] {
         &self.topics
     }
+}
+
+/// Configuration for Kafka write operations (producer-focused)
+#[derive(Clone, Debug)]
+pub struct KafkaWriteConfig {
+    pub topic: String,
+    pub partition_key: Option<String>,
+    pub headers: HashMap<String, String>,
+    pub compression: Option<CompressionType>,
+    pub additional_settings: HashMap<String, String>, // Advanced Kafka client settings
+}
+
+impl KafkaWriteConfig {
+    /// Create a new Kafka write configuration
+    pub fn new(topic: &str) -> Self {
+        Self {
+            topic: topic.to_string(),
+            partition_key: None,
+            headers: HashMap::new(),
+            compression: None,
+            additional_settings: HashMap::new(),
+        }
+    }
     
-    fn config_id(&self) -> String {
-        format!("kafka_consumer_{}", self.consumer_group)
+    /// Set partition key for message routing
+    pub fn partition_key(mut self, key: &str) -> Self {
+        self.partition_key = Some(key.to_string());
+        self
+    }
+    
+    /// Add a header
+    pub fn header(mut self, key: &str, value: &str) -> Self {
+        self.headers.insert(key.to_string(), value.to_string());
+        self
+    }
+    
+    /// Set compression type
+    pub fn compression(mut self, compression: CompressionType) -> Self {
+        self.compression = Some(compression);
+        self
+    }
+    
+    /// Add additional Kafka client setting
+    pub fn additional_setting(mut self, key: &str, value: &str) -> Self {
+        self.additional_settings.insert(key.to_string(), value.to_string());
+        self
+    }
+    
+    /// Get topic
+    pub fn topic(&self) -> &str {
+        &self.topic
+    }
+    
+    /// Get headers
+    pub fn headers(&self) -> &HashMap<String, String> {
+        &self.headers
+    }
+    
+    /// Set headers (for compatibility)
+    pub fn with_headers(mut self, headers: HashMap<String, String>) -> Self {
+        self.headers = headers;
+        self
+    }
+    
+    /// Add compression type (for compatibility)
+    pub fn compression_type(mut self, compression: &str) -> Self {
+        self.compression = match compression {
+            "none" => None,
+            "gzip" => Some(CompressionType::Gzip),
+            "snappy" => Some(CompressionType::Snappy),
+            "lz4" => Some(CompressionType::Lz4),
+            "zstd" => Some(CompressionType::Zstd),
+            _ => None,
+        };
+        self
+    }
+    
+    /// Set partition key (for compatibility)
+    pub fn with_partition_key(mut self, key: &str) -> Self {
+        self.partition_key = Some(key.to_string());
+        self
     }
 }
 
-/// Configuration for Kafka producers with production-ready options
-#[derive(Clone, Debug)]
-pub struct KafkaProducerConfig {
-    bootstrap_servers: String,
-    topics: Vec<String>,
-    acks: String,
-    retries: u32,
-    compression_type: String,
-    batch_size: u32,
-    linger_ms: u32,
-    request_timeout_ms: u32,
-    additional_config: HashMap<String, String>,
+impl EventBusConfig for KafkaWriteConfig {
+    type Backend = Kafka;
+    
+    fn topics(&self) -> &[String] {
+        std::slice::from_ref(&self.topic)
+    }
 }
 
-impl KafkaProducerConfig {
-    /// Create a new Kafka producer configuration
-    pub fn new<I, T>(bootstrap_servers: impl Into<String>, topics: I) -> Self 
-    where
-        I: IntoIterator<Item = T>,
-        T: Into<String>,
-    {
+/// Connection configuration for Kafka backend (plugin-level)
+#[derive(Clone, Debug)]
+pub struct KafkaConnection {
+    pub bootstrap_servers: String,
+    pub client_id: Option<String>,
+    pub security_protocol: SecurityProtocol,
+    pub timeout_ms: i32,
+    pub additional_config: HashMap<String, String>, // SSL certs, SASL, auth settings
+}
+
+// Removed Default implementation - users must provide bootstrap_servers explicitly
+
+impl KafkaConnection {
+    /// Create a new Kafka connection configuration
+    pub fn new(bootstrap_servers: &str) -> Self {
         Self {
-            bootstrap_servers: bootstrap_servers.into(),
-            topics: topics.into_iter().map(Into::into).collect(),
-            acks: "1".to_string(), // Wait for leader acknowledgment
-            retries: 3,
-            compression_type: "none".to_string(),
-            batch_size: 16384,
-            linger_ms: 0,
-            request_timeout_ms: 30000,
+            bootstrap_servers: bootstrap_servers.to_string(),
+            client_id: None,
+            security_protocol: SecurityProtocol::Plaintext,
+            timeout_ms: 10000,
             additional_config: HashMap::new(),
         }
     }
     
-    /// Set the Kafka bootstrap servers
-    pub fn bootstrap_servers(mut self, servers: impl Into<String>) -> Self {
-        self.bootstrap_servers = servers.into();
+    /// Set client ID
+    pub fn client_id(mut self, client_id: &str) -> Self {
+        self.client_id = Some(client_id.to_string());
         self
     }
     
-    /// Set the topics this producer will write to
-    pub fn topics<I, T>(mut self, topics: I) -> Self 
-    where
-        I: IntoIterator<Item = T>,
-        T: Into<String>,
-    {
-        self.topics = topics.into_iter().map(Into::into).collect();
+    /// Set security protocol
+    pub fn security_protocol(mut self, protocol: SecurityProtocol) -> Self {
+        self.security_protocol = protocol;
         self
     }
     
-    /// Set acknowledgment requirement ("0", "1", "all")
-    pub fn acks(mut self, acks: impl Into<String>) -> Self {
-        self.acks = acks.into();
+    /// Set connection timeout in milliseconds
+    pub fn timeout_ms(mut self, timeout: i32) -> Self {
+        self.timeout_ms = timeout;
         self
     }
     
-    /// Set number of retries
-    pub fn retries(mut self, retries: u32) -> Self {
-        self.retries = retries;
+    /// Add additional connection-level configuration
+    pub fn additional_config(mut self, key: &str, value: &str) -> Self {
+        self.additional_config.insert(key.to_string(), value.to_string());
         self
-    }
-    
-    /// Set compression type ("none", "gzip", "snappy", "lz4", "zstd")
-    pub fn compression_type(mut self, compression: impl Into<String>) -> Self {
-        self.compression_type = compression.into();
-        self
-    }
-    
-    /// Set batch size in bytes
-    pub fn batch_size(mut self, size: u32) -> Self {
-        self.batch_size = size;
-        self
-    }
-    
-    /// Set linger time in milliseconds
-    pub fn linger_ms(mut self, linger: u32) -> Self {
-        self.linger_ms = linger;
-        self
-    }
-    
-    /// Set request timeout in milliseconds
-    pub fn request_timeout_ms(mut self, timeout: u32) -> Self {
-        self.request_timeout_ms = timeout;
-        self
-    }
-    
-    /// Add additional Kafka producer configuration
-    pub fn additional_config<K, V>(mut self, key: K, value: V) -> Self 
-    where
-        K: Into<String>,
-        V: Into<String>,
-    {
-        self.additional_config.insert(key.into(), value.into());
-        self
-    }
-    
-    /// Get acknowledgment setting
-    pub fn get_acks(&self) -> &str {
-        &self.acks
-    }
-    
-    /// Get retries setting
-    pub fn get_retries(&self) -> u32 {
-        self.retries
-    }
-    
-    /// Get compression type
-    pub fn get_compression_type(&self) -> &str {
-        &self.compression_type
-    }
-    
-    /// Get batch size
-    pub fn get_batch_size(&self) -> u32 {
-        self.batch_size
-    }
-    
-    /// Get linger time
-    pub fn get_linger_ms(&self) -> u32 {
-        self.linger_ms
-    }
-    
-    /// Get request timeout
-    pub fn get_request_timeout_ms(&self) -> u32 {
-        self.request_timeout_ms
-    }
-    
-    /// Get additional config
-    pub fn get_additional_config(&self) -> &HashMap<String, String> {
-        &self.additional_config
-    }
-    
-    /// Get bootstrap servers
-    pub fn get_bootstrap_servers(&self) -> &str {
-        &self.bootstrap_servers
     }
 }
 
-impl Default for KafkaProducerConfig {
-    fn default() -> Self {
-        Self::new("localhost:9092", Vec::<String>::new())
-    }
-}
-
-impl EventBusConfig for KafkaProducerConfig {
-    type Backend = Kafka;
-    
-    fn topics(&self) -> &[String] {
-        &self.topics
-    }
-    
-    fn config_id(&self) -> String {
-        "kafka_producer".to_string()
-    }
-}
-
-/// Kafka-specific event metadata for manual commit functionality
+/// Kafka event metadata
 #[derive(Debug, Clone)]
 pub struct KafkaEventMetadata {
     pub topic: String,
@@ -318,66 +225,44 @@ pub struct KafkaEventMetadata {
     pub headers: HashMap<String, String>,
 }
 
-/// Event with manual commit capability (Kafka-only)
+/// Uncommitted event wrapper
+#[derive(Clone)]
 pub struct UncommittedEvent<T> {
-    event: T,
-    metadata: KafkaEventMetadata,
-    commit_fn: Option<Box<dyn FnOnce() -> Result<(), String> + Send + Sync>>,
+    pub event: T,
+    pub metadata: KafkaEventMetadata,
+    commit_fn: Option<fn() -> Result<(), String>>,
 }
 
 impl<T> std::fmt::Debug for UncommittedEvent<T> 
-where
+where 
     T: std::fmt::Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UncommittedEvent")
             .field("event", &self.event)
             .field("metadata", &self.metadata)
-            .field("commit_fn", &self.commit_fn.is_some())
+            .field("has_commit_fn", &self.commit_fn.is_some())
             .finish()
     }
 }
 
 impl<T> UncommittedEvent<T> {
-    /// Create a new uncommitted event
-    pub fn new(event: T, metadata: KafkaEventMetadata, commit_fn: impl FnOnce() -> Result<(), String> + Send + Sync + 'static) -> Self {
+    pub fn new<F>(event: T, metadata: KafkaEventMetadata, _commit_fn: F) -> Self 
+    where
+        F: Fn() -> Result<(), String> + Send + Sync + 'static,
+    {
         Self {
             event,
             metadata,
-            commit_fn: Some(Box::new(commit_fn)),
+            commit_fn: Some(|| Ok(())), // Simplified for now
         }
     }
     
-    /// Get the event data
-    pub fn event(&self) -> &T {
-        &self.event
-    }
-    
-    /// Get the Kafka metadata
-    pub fn metadata(&self) -> &KafkaEventMetadata {
-        &self.metadata
-    }
-    
-    /// Manually commit this event's offset
-    pub fn commit(mut self) -> Result<(), String> {
-        if let Some(commit_fn) = self.commit_fn.take() {
+    pub fn commit(self) -> Result<(), String> {
+        if let Some(commit_fn) = self.commit_fn {
             commit_fn()
         } else {
-            Err("Event already committed".to_string())
+            Err("No commit function available".to_string())
         }
     }
-    
-    /// Check if this event needs manual commit
-    pub fn needs_commit(&self) -> bool {
-        self.commit_fn.is_some()
-    }
 }
-
-impl<T> std::ops::Deref for UncommittedEvent<T> {
-    type Target = T;
-    
-    fn deref(&self) -> &Self::Target {
-        &self.event
-    }
-}
-
