@@ -112,6 +112,8 @@ impl EventBusAppExt for App {
     }
 
     fn add_bus_event_multi<T: BusEvent + Event>(&mut self, topics: &[&str]) -> &mut Self {
+        let topic_list: Vec<String> = topics.iter().map(|t| (*t).to_string()).collect();
+
         // Ensure event is registered first
         if !self.world().contains_resource::<Events<T>>() {
             bevy::prelude::App::add_event::<T>(self);
@@ -131,7 +133,7 @@ impl EventBusAppExt for App {
         }
 
         // Register JSON decoder for each topic
-        for &topic in topics {
+        for topic in &topic_list {
             let typed_decoder = TypedDecoder::<T>::json_decoder();
 
             if let Some(mut registry) = self.world_mut().get_resource_mut::<DecoderRegistry>() {
@@ -148,6 +150,8 @@ impl EventBusAppExt for App {
                 "Registered JSON decoder for topic"
             );
         }
+
+        crate::writers::outbound_bridge::ensure_bridge::<T>(self, &topic_list);
 
         self
     }

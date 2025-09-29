@@ -83,6 +83,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
         app.insert_resource(EventBusBackendResource::from_box(boxed));
         app.insert_resource(self.1.clone());
         app.insert_resource(EventBusErrorQueue::default());
+        crate::writers::outbound_bridge::activate_registered_bridges(app);
         // Pre-create topics and subscribe BEFORE connecting so background consumer starts with full assignment.
         if let Some(pre) = app.world().get_resource::<PreconfiguredTopics>().cloned() {
             if let Some(backend_res) = app

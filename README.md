@@ -5,8 +5,8 @@ A Bevy plugin that connects Bevy's event system to external message brokers like
 ## Features
 
 - **Seamless integration with Bevy's event system**
-  - Events are simultaneously sent to both Bevy's internal event system and external message brokers
-  - Familiar API design following Bevy's conventions (EventBusReader/EventBusWriter)
+    - Familiar API design following Bevy's conventions (EventBusReader/EventBusWriter)
+    - External brokers are driven through ergonomic system parameters
 
 - **Automatic event registration**
   - Simply derive `ExternalBusEvent` on your event types
@@ -88,12 +88,12 @@ fn main() {
 ```rust
 // System that sends events
 fn player_level_up_system(
-    mut ev_writer: EventBusWriter<PlayerLevelUpEvent>,
+    mut ev_writer: EventBusWriter,
     query: Query<(Entity, &PlayerXp, &PlayerLevel)>,
 ) {
     for (entity, xp, level) in query.iter() {
         if xp.0 >= level.next_level_requirement {
-            // Send to specific topic - will also trigger Bevy event system
+            // Send to specific topic via the configured backend
             let _ = ev_writer.write(
                 "game-events.level-up",
                 PlayerLevelUpEvent { 
@@ -199,7 +199,7 @@ If you don't want to handle errors explicitly, simply don't add error handling s
 
 ```rust
 // Simple usage without explicit error handling
-fn simple_event_sending(mut ev_writer: EventBusWriter<PlayerLevelUpEvent>) {
+fn simple_event_sending(mut ev_writer: EventBusWriter) {
     ev_writer.write("game-events.level-up", PlayerLevelUpEvent { 
         entity_id: 123, 
         new_level: 5 
@@ -316,7 +316,7 @@ const GAME_EVENTS_PRODUCER: KafkaProducerConfig = KafkaProducerConfig::new()
 // Clean system signatures without backend types
 fn process_player_events(
     mut reader: EventBusReader<PlayerEvent>,
-    mut writer: EventBusWriter<GameStateEvent>,
+    mut writer: EventBusWriter,
 ) {
     // Read using configuration - automatically reads from all configured topics
     let events = reader.read_with_config(&GAME_EVENTS_CONSUMER);
@@ -343,7 +343,7 @@ The configuration system enables backend-specific functionality at compile time:
 // Kafka-specific features
 fn kafka_specific_system(
     mut reader: EventBusReader<PlayerEvent>,
-    mut writer: EventBusWriter<GameStateEvent>,
+    mut writer: EventBusWriter,
 ) {
     let kafka_consumer = KafkaConsumerConfig::new("manual-commit-group")
         .topics(&["critical-events"])

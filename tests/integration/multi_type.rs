@@ -77,9 +77,7 @@ fn single_topic_multiple_types_same_frame() {
     let tclone = topic.clone();
     writer.add_systems(
         Update,
-        move |mut w1: EventBusWriter<TestEvent>,
-              mut w2: EventBusWriter<UserLoginEvent>,
-              mut started: Local<bool>| {
+        move |mut w1: EventBusWriter, mut w2: EventBusWriter, mut started: Local<bool>| {
             if !*started {
                 *started = true;
                 return;
@@ -190,9 +188,7 @@ fn single_topic_multiple_types_interleaved_frames() {
     let tclone = topic.clone();
     writer.add_systems(
         Update,
-        move |mut w1: EventBusWriter<TestEvent>,
-              mut w2: EventBusWriter<UserLoginEvent>,
-              mut c: ResMut<Counter>| {
+        move |mut w1: EventBusWriter, mut w2: EventBusWriter, mut c: ResMut<Counter>| {
             if c.0 % 2 == 0 {
                 let _ = w1.write(
                     &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&tclone]),

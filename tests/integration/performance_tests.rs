@@ -153,10 +153,7 @@ fn run_throughput_test(
     });
 
     // Sending system
-    fn sender_system(
-        mut state: ResMut<PerformanceTestState>,
-        mut writer: EventBusWriter<PerformanceTestEvent>,
-    ) {
+    fn sender_system(mut state: ResMut<PerformanceTestState>, mut writer: EventBusWriter) {
         if state.messages_sent >= state.messages_to_send {
             if state.send_end_time.is_none() {
                 state.send_end_time = Some(Instant::now());

@@ -1,7 +1,6 @@
 use crate::{BusEvent, EventBusError, backends::EventBusBackendResource, config::EventBusConfig};
 use bevy::prelude::*;
-use std::collections::HashMap;
-use std::sync::Mutex;
+use std::{collections::HashMap, sync::Mutex};
 
 #[cfg(feature = "kafka")]
 use crate::config::kafka::KafkaProducerConfig;
@@ -39,45 +38,46 @@ impl EventBusErrorQueue {
     }
 }
 
-/// Writes events to both internal Bevy events and external message broker topics
+/// Writes events to external message broker topics
 ///
 /// All methods use "fire and forget" semantics - errors are sent as EventBusError<T> events
 /// rather than returned as Results.
 #[derive(bevy::ecs::system::SystemParam)]
-pub struct EventBusWriter<'w, T: BusEvent + Event> {
+pub struct EventBusWriter<'w> {
     backend: Option<Res<'w, EventBusBackendResource>>,
-    events: EventWriter<'w, T>,
     error_queue: Res<'w, EventBusErrorQueue>,
 }
 
-impl<'w, T: BusEvent + Event> EventBusWriter<'w, T> {
+impl<'w> EventBusWriter<'w> {
     /// Write an event using mandatory configuration
     ///
     /// You must provide configuration that specifies which topics to write to.
     /// Uses fire-and-forget semantics. Any errors are sent as EventBusError<T> events.
-    pub fn write<C: EventBusConfig>(&mut self, config: &C, event: T) {
+    pub fn write<T: BusEvent + Event, C: EventBusConfig>(&mut self, config: &C, event: T) {
         for topic in config.topics() {
-            // Clone event for potential error reporting
-            let event_clone = event.clone();
-
-            // Send to external backend immediately if available
-            if let Some(backend_res) = &self.backend {
-                let backend = backend_res.read();
-                if !(**backend).try_send(&event_clone, topic) {
-                    // Backend send failed - queue error event to avoid conflicts
+            match &self.backend {
+                Some(backend_res) => {
+                    let backend = backend_res.read();
+                    if !(**backend).try_send(&event, topic) {
+                        let error_event = EventBusError::immediate(
+                            topic.clone(),
+                            crate::EventBusErrorType::Other,
+                            "Failed to send to external backend".to_string(),
+                            event.clone(),
+                        );
+                        self.error_queue.add_error(error_event);
+                    }
+                }
+                None => {
                     let error_event = EventBusError::immediate(
                         topic.clone(),
-                        crate::EventBusErrorType::Other, // Since we don't know the specific reason
-                        "Failed to send to external backend".to_string(),
-                        event_clone,
+                        crate::EventBusErrorType::NotConfigured,
+                        "No event bus backend configured".to_string(),
+                        event.clone(),
                     );
                     self.error_queue.add_error(error_event);
-                    continue; // Try other topics even if one fails
                 }
             }
-
-            // Also send to internal Bevy events
-            self.events.write(event_clone);
         }
     }
 
@@ -86,7 +86,7 @@ impl<'w, T: BusEvent + Event> EventBusWriter<'w, T> {
     /// All events are written as a batch operation to all configured topics.
     /// Uses fire-and-forget semantics. If any event fails, an error event is
     /// fired but processing continues.
-    pub fn write_batch<C: EventBusConfig>(
+    pub fn write_batch<T: BusEvent + Event, C: EventBusConfig>(
         &mut self,
         config: &C,
         events: impl IntoIterator<Item = T>,
@@ -94,85 +94,98 @@ impl<'w, T: BusEvent + Event> EventBusWriter<'w, T> {
         let events: Vec<_> = events.into_iter().collect();
 
         for topic in config.topics() {
-            // Send each event to external backend immediately if available
-            if let Some(backend_res) = &self.backend {
-                let backend = backend_res.read();
-                for event in &events {
-                    if !(**backend).try_send(event, topic) {
-                        // Backend send failed - queue error event
+            match &self.backend {
+                Some(backend_res) => {
+                    let backend = backend_res.read();
+                    for event in &events {
+                        if !(**backend).try_send(event, topic) {
+                            let error_event = EventBusError::immediate(
+                                topic.clone(),
+                                crate::EventBusErrorType::Other,
+                                "Failed to send to external backend".to_string(),
+                                event.clone(),
+                            );
+                            self.error_queue.add_error(error_event);
+                        }
+                    }
+                }
+                None => {
+                    for event in &events {
                         let error_event = EventBusError::immediate(
                             topic.clone(),
-                            crate::EventBusErrorType::Other,
-                            "Failed to send to external backend".to_string(),
+                            crate::EventBusErrorType::NotConfigured,
+                            "No event bus backend configured".to_string(),
                             event.clone(),
                         );
                         self.error_queue.add_error(error_event);
-                        // Continue with other events even if one fails
                     }
                 }
-            }
-
-            // Also send to internal Bevy events
-            for event in &events {
-                self.events.write(event.clone());
             }
         }
     }
 
     /// Write an event with headers using mandatory configuration
     ///
-    /// Headers are only sent to external brokers; internal Bevy events don't support headers.
+    /// Headers are only sent to external brokers.
     /// Uses fire-and-forget semantics. Any errors are sent as EventBusError<T> events.
-    pub fn write_with_headers<C: EventBusConfig>(
+    pub fn write_with_headers<T: BusEvent + Event, C: EventBusConfig>(
         &mut self,
         config: &C,
         event: T,
         headers: HashMap<String, String>,
     ) {
         for topic in config.topics() {
-            // Clone event for potential error reporting
-            let event_clone = event.clone();
-
-            // Send to external backend with headers if available
-            if let Some(backend_res) = &self.backend {
-                let backend = backend_res.read();
-                if !(**backend).try_send_with_headers(&event_clone, topic, &headers) {
-                    // Backend send failed - queue error event
+            match &self.backend {
+                Some(backend_res) => {
+                    let backend = backend_res.read();
+                    if !(**backend).try_send_with_headers(&event, topic, &headers) {
+                        let error_event = EventBusError::immediate(
+                            topic.clone(),
+                            crate::EventBusErrorType::Other,
+                            "Failed to send to external backend with headers".to_string(),
+                            event.clone(),
+                        );
+                        self.error_queue.add_error(error_event);
+                    }
+                }
+                None => {
                     let error_event = EventBusError::immediate(
                         topic.clone(),
-                        crate::EventBusErrorType::Other,
-                        "Failed to send to external backend with headers".to_string(),
-                        event_clone,
+                        crate::EventBusErrorType::NotConfigured,
+                        "No event bus backend configured".to_string(),
+                        event.clone(),
                     );
                     self.error_queue.add_error(error_event);
-                    continue; // Try other topics even if one fails
                 }
             }
-
-            // Also send to internal Bevy events (headers are lost in internal events)
-            self.events.write(event_clone);
         }
     }
 
     /// Write the default value of the event using mandatory configuration
     ///
     /// Uses fire-and-forget semantics. Any errors are sent as EventBusError<T> events.
-    pub fn write_default<C: EventBusConfig>(&mut self, config: &C)
+    pub fn write_default<T, C>(&mut self, config: &C)
     where
-        T: Default,
+        T: BusEvent + Event + Default,
+        C: EventBusConfig,
     {
-        self.write(config, T::default())
+        self.write::<T, C>(config, T::default())
     }
 }
 
 #[cfg(feature = "kafka")]
-impl<'w, T: BusEvent + Event> EventBusWriter<'w, T> {
+impl<'w> EventBusWriter<'w> {
     /// Write with partition key to ensure ordering - Kafka specific
     ///
     /// Uses the partition key to determine which partition the message goes to,
     /// ensuring ordering for messages with the same key.
     /// Requires a KafkaProducerConfig.
-    pub fn write_with_key(&mut self, config: &KafkaProducerConfig, event: T, _key: &str) {
+    pub fn write_with_key<T: BusEvent + Event>(
+        &mut self,
+        config: &KafkaProducerConfig,
+        event: T,
+        _key: &str,
+    ) {
         // TODO: Implement actual Kafka partition key functionality through backend
         tracing::warn!(
             "Kafka partition key write not yet implemented - falling back to regular write"
@@ -184,7 +197,7 @@ impl<'w, T: BusEvent + Event> EventBusWriter<'w, T> {
     ///
     /// Kafka-specific method for writing with headers.
     /// Requires a KafkaProducerConfig.
-    pub fn write_with_headers_kafka(
+    pub fn write_with_headers_kafka<T: BusEvent + Event>(
         &mut self,
         config: &KafkaProducerConfig,
         event: T,
@@ -203,7 +216,7 @@ impl<'w, T: BusEvent + Event> EventBusWriter<'w, T> {
     ///
     /// Kafka-specific method for writing with both partition key and headers.
     /// Requires a KafkaProducerConfig.
-    pub fn write_with_key_and_headers(
+    pub fn write_with_key_and_headers<T: BusEvent + Event>(
         &mut self,
         config: &KafkaProducerConfig,
         event: T,

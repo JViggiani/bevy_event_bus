@@ -46,7 +46,7 @@ fn no_event_duplication_exactly_once_delivery() {
 
     writer.insert_resource(ToSend(expected_events.clone(), topic.clone()));
 
-    fn writer_system(mut w: EventBusWriter<TestEvent>, data: Res<ToSend>) {
+    fn writer_system(mut w: EventBusWriter, data: Res<ToSend>) {
         for event in &data.0 {
             let _ = w.write(
                 &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&data.1]),

@@ -32,7 +32,7 @@ pub use resources::{
     EventBusConsumerConfig, EventMetadata, EventWrapper, KafkaMetadata, ProcessedMessage,
     TopicDecodedEvents,
 };
-pub use writers::event_bus_writer::EventBusWriter;
+pub use writers::event_bus_writer::{EventBusErrorQueue, EventBusWriter};
 
 // Re-export backends
 #[cfg(feature = "kafka")]

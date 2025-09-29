@@ -29,30 +29,19 @@ impl EventMetadata {
     }
 }
 
-/// Unified event wrapper that provides direct access to event data with optional metadata.
-/// External events from message brokers include metadata while internal Bevy events do not.
-/// The wrapper can be used directly as the event thanks to Deref implementation.
+/// Unified event wrapper that provides direct access to event data along with its metadata.
+/// Wrappers are only produced for externally sourced events, so metadata is always present.
+/// The wrapper can be used directly as the event thanks to the `Deref` implementation.
 #[derive(Debug, Clone)]
 pub struct EventWrapper<T: BusEvent> {
     event: T,
-    metadata: Option<EventMetadata>,
+    metadata: EventMetadata,
 }
 
 impl<T: BusEvent> EventWrapper<T> {
-    /// Create a new EventWrapper for an external event with metadata
-    pub fn new_external(event: T, metadata: EventMetadata) -> Self {
-        Self {
-            event,
-            metadata: Some(metadata),
-        }
-    }
-
-    /// Create a new EventWrapper for an internal event without metadata
-    pub fn new_internal(event: T) -> Self {
-        Self {
-            event,
-            metadata: None,
-        }
+    /// Create a new `EventWrapper` for an event coming from the external bus.
+    pub fn new(event: T, metadata: EventMetadata) -> Self {
+        Self { event, metadata }
     }
 
     /// Get the event data regardless of source
@@ -60,19 +49,9 @@ impl<T: BusEvent> EventWrapper<T> {
         &self.event
     }
 
-    /// Get metadata if this is an external event
-    pub fn metadata(&self) -> Option<&EventMetadata> {
-        self.metadata.as_ref()
-    }
-
-    /// Check if this event came from an external source
-    pub fn is_external(&self) -> bool {
-        self.metadata.is_some()
-    }
-
-    /// Check if this event came from internal Bevy events
-    pub fn is_internal(&self) -> bool {
-        self.metadata.is_none()
+    /// Get metadata associated with this event
+    pub fn metadata(&self) -> &EventMetadata {
+        &self.metadata
     }
 
     /// Extract the inner event, consuming the wrapper
@@ -80,8 +59,8 @@ impl<T: BusEvent> EventWrapper<T> {
         self.event
     }
 
-    /// Extract both event and metadata (if available), consuming the wrapper
-    pub fn into_parts(self) -> (T, Option<EventMetadata>) {
+    /// Extract both event and metadata, consuming the wrapper
+    pub fn into_parts(self) -> (T, EventMetadata) {
         (self.event, self.metadata)
     }
 }
@@ -320,7 +299,7 @@ impl TopicDecodedEvents {
                 .filter_map(|te| {
                     te.event
                         .downcast_ref::<T>()
-                        .map(|event| EventWrapper::new_external(event.clone(), te.metadata.clone()))
+                        .map(|event| EventWrapper::new(event.clone(), te.metadata.clone()))
                 })
                 .collect()
         } else {

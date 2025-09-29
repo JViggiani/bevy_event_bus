@@ -48,7 +48,7 @@ fn multi_topic_isolation() {
 
     let ta = topic_a.clone();
     let tb = topic_b.clone();
-    writer.add_systems(Update, move |mut w: EventBusWriter<TestEvent>| {
+    writer.add_systems(Update, move |mut w: EventBusWriter| {
         let _ = w.write(
             &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&ta]),
             TestEvent {

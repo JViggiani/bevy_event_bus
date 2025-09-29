@@ -37,7 +37,7 @@ fn offset_configuration_earliest_receives_historical_events() {
         producer_app.add_bus_event::<TestEvent>(&topic);
 
         let topic_clone = topic.clone();
-        producer_app.add_systems(Update, move |mut w: EventBusWriter<TestEvent>| {
+        producer_app.add_systems(Update, move |mut w: EventBusWriter| {
             // Send 3 historical events
             for i in 0..3 {
                 let config = kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&topic_clone]);
@@ -148,7 +148,7 @@ fn offset_configuration_latest_ignores_historical_events() {
         producer_app.add_bus_event::<TestEvent>(&topic);
 
         let topic_clone = topic.clone();
-        producer_app.add_systems(Update, move |mut w: EventBusWriter<TestEvent>| {
+        producer_app.add_systems(Update, move |mut w: EventBusWriter| {
             // Send 3 historical events that the latest consumer should NOT see
             for i in 0..3 {
                 let config = kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&topic_clone]);
@@ -202,7 +202,7 @@ fn offset_configuration_latest_ignores_historical_events() {
 
     // Now add a writer to the same app to send new events AFTER consumer is established
     let topic_send = topic.clone();
-    latest_app.add_systems(Update, move |mut w: EventBusWriter<TestEvent>| {
+    latest_app.add_systems(Update, move |mut w: EventBusWriter| {
         // Send new event after consumer is established
         let config = kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&topic_send]);
         let _ = w.write(
@@ -278,7 +278,7 @@ fn default_offset_configuration_is_latest() {
         producer_app.add_bus_event::<TestEvent>(&topic);
 
         let topic_clone = topic.clone();
-        producer_app.add_systems(Update, move |mut w: EventBusWriter<TestEvent>| {
+        producer_app.add_systems(Update, move |mut w: EventBusWriter| {
             let config = kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&topic_clone]);
             let _ = w.write(
                 &config,

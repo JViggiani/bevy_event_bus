@@ -33,7 +33,7 @@ fn configuration_with_readers_writers_works() {
 
         // Producer system using configuration
         let topic_clone = topic.clone();
-        let producer_system = move |mut writer: EventBusWriter<TestEvent>| {
+        let producer_system = move |mut writer: EventBusWriter| {
             // Write using configuration - producers specify topics
             let config = kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&topic_clone])
                 .compression_type("none");
@@ -141,7 +141,7 @@ fn kafka_specific_methods_work() {
     });
 
     // Writer system that uses Kafka-specific write methods
-    fn test_kafka_write_methods(mut writer: EventBusWriter<TestEvent>, configs: Res<TestConfigs>) {
+    fn test_kafka_write_methods(mut writer: EventBusWriter, configs: Res<TestConfigs>) {
         // Test Kafka-specific write methods
         let _metadata = writer.write_with_key(
             &configs.producer,
@@ -222,7 +222,7 @@ fn clean_system_signatures() {
     // This test demonstrates that systems can have clean signatures
     // without explicitly mentioning backend types
 
-    fn clean_producer_system(mut writer: EventBusWriter<TestEvent>) {
+    fn clean_producer_system(mut writer: EventBusWriter) {
         // Configuration can be injected from resource or built inline
         let config = kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, Vec::<String>::new())
             .compression_type("none");

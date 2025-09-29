@@ -28,7 +28,7 @@ fn per_topic_order_preserved() {
     let tclone = topic.clone();
     writer.add_systems(
         Update,
-        move |mut w: EventBusWriter<TestEvent>, mut started: Local<bool>| {
+        move |mut w: EventBusWriter, mut started: Local<bool>| {
             if !*started {
                 *started = true;
                 return;
@@ -105,7 +105,7 @@ fn cross_topic_interleave_each_ordered() {
     // Single send frame like earlier test
     writer.add_systems(
         Update,
-        move |mut w: EventBusWriter<TestEvent>, mut started: Local<bool>| {
+        move |mut w: EventBusWriter, mut started: Local<bool>| {
             if !*started {
                 *started = true;
                 return;

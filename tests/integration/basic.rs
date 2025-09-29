@@ -53,7 +53,7 @@ fn test_basic_kafka_event_bus() {
     };
     writer_app.insert_resource(ToSend(event_to_send.clone(), topic.clone()));
 
-    fn writer_system(mut w: EventBusWriter<TestEvent>, data: Res<ToSend>) {
+    fn writer_system(mut w: EventBusWriter, data: Res<ToSend>) {
         let config = kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&data.1]);
         let _ = w.write(&config, data.0.clone());
     }

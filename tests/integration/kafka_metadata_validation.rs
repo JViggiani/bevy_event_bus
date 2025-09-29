@@ -68,10 +68,7 @@ fn kafka_metadata_end_to_end_validation() {
             group.0.as_str(),
             [&topic.0],
         )) {
-            // Only collect external events with metadata
-            if event_wrapper.is_external() {
-                events.0.push(event_wrapper.clone());
-            }
+            events.0.push(event_wrapper.clone());
         }
     }
 
@@ -106,7 +103,7 @@ fn kafka_metadata_end_to_end_validation() {
         sent: false,
     });
 
-    fn writer_system(mut w: EventBusWriter<TestEvent>, mut data: ResMut<TestData>) {
+    fn writer_system(mut w: EventBusWriter, mut data: ResMut<TestData>) {
         if !data.sent {
             for test_event in &data.test_cases {
                 let _ = w.write(
@@ -149,12 +146,10 @@ fn kafka_metadata_end_to_end_validation() {
         assert_eq!(external_event.value, (i + 1) as i32);
 
         // Get metadata for validation
-        let metadata = external_event
-            .metadata()
-            .expect("External event should have metadata");
+        let metadata = external_event.metadata();
 
         // Validate basic metadata
-        assert_eq!(metadata.source, topic_copy);
+        assert_eq!(metadata.source.as_str(), topic_copy.as_str());
 
         // Validate timestamp is within test execution window
         assert!(
@@ -173,7 +168,7 @@ fn kafka_metadata_end_to_end_validation() {
         // Validate Kafka-specific metadata
         if let Some(kafka_meta) = metadata.kafka_metadata() {
             // Topic should match
-            assert_eq!(kafka_meta.topic, topic_copy, "Kafka topic should match");
+            assert_eq!(kafka_meta.topic.as_str(), topic_copy.as_str(), "Kafka topic should match");
 
             // Partition should be valid (0 or higher for single partition topic)
             assert!(
@@ -191,8 +186,10 @@ fn kafka_metadata_end_to_end_validation() {
 
             // For ordered events, offset should generally increase
             if i > 0 {
-                let prev_metadata = received_events[i - 1].metadata().unwrap();
-                let prev_kafka_meta = prev_metadata.kafka_metadata().unwrap();
+                let prev_metadata = received_events[i - 1].metadata();
+                let prev_kafka_meta = prev_metadata
+                    .kafka_metadata()
+                    .expect("Kafka metadata should always be present");
                 if kafka_meta.partition == prev_kafka_meta.partition {
                     assert!(
                         kafka_meta.offset > prev_kafka_meta.offset,
@@ -293,9 +290,7 @@ fn kafka_metadata_topic_isolation() {
             group.0.as_str(),
             [&topics.topic_a],
         )) {
-            if event_wrapper.is_external() {
-                events.topic_a.push(event_wrapper.clone());
-            }
+            events.topic_a.push(event_wrapper.clone());
         }
 
         // Read from topic B
@@ -304,9 +299,7 @@ fn kafka_metadata_topic_isolation() {
             group.0.as_str(),
             [&topics.topic_b],
         )) {
-            if event_wrapper.is_external() {
-                events.topic_b.push(event_wrapper.clone());
-            }
+            events.topic_b.push(event_wrapper.clone());
         }
     }
 
@@ -326,10 +319,7 @@ fn kafka_metadata_topic_isolation() {
         sent: false,
     });
 
-    fn writer_system_isolation(
-        mut w: EventBusWriter<TestEvent>,
-        mut data: ResMut<IsolationTestData>,
-    ) {
+    fn writer_system_isolation(mut w: EventBusWriter, mut data: ResMut<IsolationTestData>) {
         if !data.sent {
             let event_a = TestEvent {
                 message: "topic_a_event".to_string(),
@@ -384,13 +374,11 @@ fn kafka_metadata_topic_isolation() {
     let event_a = &final_events.topic_a[0];
     assert_eq!(event_a.message, "topic_a_event"); // Use Deref
 
-    let metadata_a = event_a
-        .metadata()
-        .expect("External event should have metadata");
-    assert_eq!(metadata_a.source, topic_a.clone());
+    let metadata_a = event_a.metadata();
+    assert_eq!(metadata_a.source.as_str(), topic_a.as_str());
 
     if let Some(kafka_meta_a) = metadata_a.kafka_metadata() {
-        assert_eq!(kafka_meta_a.topic, topic_a.clone());
+        assert_eq!(kafka_meta_a.topic.as_str(), topic_a.as_str());
     } else {
         panic!("Expected Kafka metadata for topic A event");
     }
@@ -404,13 +392,11 @@ fn kafka_metadata_topic_isolation() {
     let event_b = &final_events.topic_b[0];
     assert_eq!(event_b.message, "topic_b_event"); // Use Deref
 
-    let metadata_b = event_b
-        .metadata()
-        .expect("External event should have metadata");
-    assert_eq!(metadata_b.source, topic_b.clone());
+    let metadata_b = event_b.metadata();
+    assert_eq!(metadata_b.source.as_str(), topic_b.as_str());
 
     if let Some(kafka_meta_b) = metadata_b.kafka_metadata() {
-        assert_eq!(kafka_meta_b.topic, topic_b.clone());
+        assert_eq!(kafka_meta_b.topic.as_str(), topic_b.as_str());
     } else {
         panic!("Expected Kafka metadata for topic B event");
     }
@@ -472,9 +458,7 @@ fn kafka_metadata_consistency_under_load() {
             group.0.as_str(),
             [&topic.0],
         )) {
-            if event_wrapper.is_external() {
-                events.0.push(event_wrapper.clone());
-            }
+            events.0.push(event_wrapper.clone());
         }
     }
 
@@ -495,10 +479,7 @@ fn kafka_metadata_consistency_under_load() {
         sent: false,
     });
 
-    fn writer_system_consistency(
-        mut w: EventBusWriter<TestEvent>,
-        mut data: ResMut<ConsistencyTestData>,
-    ) {
+    fn writer_system_consistency(mut w: EventBusWriter, mut data: ResMut<ConsistencyTestData>) {
         if !data.sent {
             for batch in 0..NUM_BATCHES {
                 for i in 0..BATCH_SIZE {
@@ -560,12 +541,10 @@ fn kafka_metadata_consistency_under_load() {
 
     for (i, external_event) in received_events.iter().enumerate() {
         // Get metadata for validation
-        let metadata = external_event
-            .metadata()
-            .expect("External event should have metadata");
+        let metadata = external_event.metadata();
 
         // Validate basic metadata fields are present
-        assert_eq!(metadata.source, topic);
+        assert_eq!(metadata.source.as_str(), topic.as_str());
 
         // Validate timestamp is within test execution window
         assert!(
@@ -583,7 +562,7 @@ fn kafka_metadata_consistency_under_load() {
 
         // Validate Kafka metadata
         if let Some(kafka_meta) = metadata.kafka_metadata() {
-            assert_eq!(kafka_meta.topic, topic);
+            assert_eq!(kafka_meta.topic.as_str(), topic.as_str());
             assert!(kafka_meta.partition >= 0);
             assert!(kafka_meta.offset >= 0);
 

@@ -9,7 +9,7 @@ use crate::{
 #[cfg(feature = "kafka")]
 use crate::config::kafka::{KafkaConsumerConfig, KafkaEventMetadata, UncommittedEvent};
 
-/// Iterator over events with optional metadata (unified internal + external events)
+/// Iterator over events with metadata produced by the external bus pipeline.
 pub struct EventWrapperIterator<'a, T: BusEvent> {
     events: &'a [EventWrapper<T>],
     current: usize,
@@ -59,29 +59,27 @@ impl<'a, T: BusEvent> Iterator for EventBusIterator<'a, T> {
     }
 }
 
-/// Reads events from both internal Bevy events and external message broker topics
+/// Reads events that originated from external message broker topics
 #[derive(bevy::ecs::system::SystemParam)]
 pub struct EventBusReader<'w, 's, T: BusEvent + Event> {
-    event_buffer: Local<'s, Vec<T>>,
     wrapped_events: Local<'s, Vec<EventWrapper<T>>>,
-    events: EventReader<'w, 's, T>,
     metadata_drained: Option<ResMut<'w, DrainedTopicMetadata>>,
     metadata_offsets: Local<'s, std::collections::HashMap<String, usize>>, // per-topic number of metadata messages already decoded for this reader
 }
 
 impl<'w, 's, T: BusEvent + Event> EventBusReader<'w, 's, T> {
-    /// Read all events (internal and external) with mandatory configuration
+    /// Read all events available for the supplied configuration
     ///
     /// This is the only API for reading events. You must provide configuration
     /// that specifies which topics to read from. External events from message
-    /// brokers include metadata, while internal Bevy events do not.
-    /// Use `.metadata()` to check if metadata is available.
+    /// brokers include metadata – use `.metadata()` to access it.
     ///
     /// Returns a vector of `EventWrapper<T>` which derefs to `T`.
     pub fn read<C: EventBusConfig>(&mut self, config: &C) -> Vec<EventWrapper<T>> {
         let mut all_events = Vec::new();
+        let topics = config.topics();
 
-        for topic in config.topics() {
+        for topic in topics {
             // Clear wrapped events buffer first
             self.wrapped_events.clear();
 
@@ -90,55 +88,27 @@ impl<'w, 's, T: BusEvent + Event> EventBusReader<'w, 's, T> {
                 if let Some(messages) = metadata_drained.topics.get(topic) {
                     let start = *self.metadata_offsets.get(topic).unwrap_or(&0);
                     if start < messages.len() {
-                        for processed_msg in messages[start..].iter() {
-                            if let Ok(event) = serde_json::from_slice::<T>(&processed_msg.payload) {
-                                self.wrapped_events.push(EventWrapper::new_external(
-                                    event,
-                                    processed_msg.metadata.clone(),
-                                ));
-                            } else {
-                                tracing::warn!("Failed to deserialize event from topic {}", topic);
+                        for processed_msg in messages.iter().skip(start) {
+                            match serde_json::from_slice::<T>(&processed_msg.payload) {
+                                Ok(event) => self
+                                    .wrapped_events
+                                    .push(EventWrapper::new(event, processed_msg.metadata.clone())),
+                                Err(_) => tracing::warn!(
+                                    "Failed to deserialize event from topic {}",
+                                    topic
+                                ),
                             }
                         }
-                        self.metadata_offsets
-                            .insert(topic.to_string(), messages.len());
+                        self.metadata_offsets.insert(topic.clone(), messages.len());
                     }
                 }
             }
 
-            // Add internal Bevy events (without metadata) - these don't have topic context
-            // so we add them to every topic query (they are shared across all topics)
-            if topic == config.topics().first().unwrap_or(&String::new()) {
-                for event in self.events.read() {
-                    self.wrapped_events
-                        .push(EventWrapper::new_internal(event.clone()));
-                }
-            }
-
-            // Add events from this topic to the result
-            for event_wrapper in &self.wrapped_events {
-                all_events.push(event_wrapper.clone());
-            }
+            // Add events from this topic to the result without cloning
+            all_events.append(&mut *self.wrapped_events);
         }
 
         all_events
-    }
-
-    /// Clear all event buffers and mark internal events as read
-    pub fn clear(&mut self) {
-        self.event_buffer.clear();
-        self.wrapped_events.clear();
-        for _ in self.events.read() {}
-    }
-
-    /// Get the total number of events across all buffers
-    pub fn len(&self) -> usize {
-        self.event_buffer.len() + self.events.len() + self.wrapped_events.len()
-    }
-
-    /// Check if all buffers are empty
-    pub fn is_empty(&self) -> bool {
-        self.event_buffer.is_empty() && self.events.is_empty() && self.wrapped_events.is_empty()
     }
 }
 
@@ -156,55 +126,42 @@ impl<'w, 's, T: BusEvent + Event> EventBusReader<'w, 's, T> {
 
         events
             .into_iter()
-            .filter_map(|wrapper| {
-                // Only external events can be manually committed
-                if wrapper.is_external() {
-                    let metadata = wrapper.metadata().map(|m| {
-                        // Extract Kafka-specific metadata if available
-                        if let Some(kafka_meta) = m.kafka_metadata() {
-                            KafkaEventMetadata {
-                                topic: kafka_meta.topic.clone(),
-                                partition: kafka_meta.partition,
-                                offset: kafka_meta.offset,
-                                timestamp: Some(
-                                    std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .map(|d| d.as_millis() as i64)
-                                        .unwrap_or(0),
-                                ),
-                                key: m.key.clone(),
-                                headers: m.headers.clone(),
-                            }
-                        } else {
-                            // Fallback metadata construction
-                            KafkaEventMetadata {
-                                topic: m.source.clone(),
-                                partition: 0,
-                                offset: 0,
-                                timestamp: Some(
-                                    std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .map(|d| d.as_millis() as i64)
-                                        .unwrap_or(0),
-                                ),
-                                key: m.key.clone(),
-                                headers: m.headers.clone(),
-                            }
-                        }
-                    });
-
-                    metadata.map(|kafka_metadata| {
-                        UncommittedEvent::new(wrapper, kafka_metadata, || {
-                            // TODO: Implement actual commit logic through backend
-                            tracing::warn!(
-                                "Manual commit not yet implemented - this is a placeholder"
-                            );
-                            Ok(())
-                        })
-                    })
+            .map(|wrapper| {
+                let metadata = wrapper.metadata();
+                let kafka_metadata = if let Some(kafka_meta) = metadata.kafka_metadata() {
+                    KafkaEventMetadata {
+                        topic: kafka_meta.topic.clone(),
+                        partition: kafka_meta.partition,
+                        offset: kafka_meta.offset,
+                        timestamp: Some(
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as i64)
+                                .unwrap_or(0),
+                        ),
+                        key: metadata.key.clone(),
+                        headers: metadata.headers.clone(),
+                    }
                 } else {
-                    None
-                }
+                    KafkaEventMetadata {
+                        topic: metadata.source.clone(),
+                        partition: 0,
+                        offset: 0,
+                        timestamp: Some(
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as i64)
+                                .unwrap_or(0),
+                        ),
+                        key: metadata.key.clone(),
+                        headers: metadata.headers.clone(),
+                    }
+                };
+
+                UncommittedEvent::new(wrapper, kafka_metadata, || {
+                    tracing::warn!("Manual commit not yet implemented - this is a placeholder");
+                    Ok(())
+                })
             })
             .collect()
     }

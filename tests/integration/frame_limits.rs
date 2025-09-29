@@ -28,7 +28,7 @@ fn frame_limit_spreads_drain() {
     ));
     reader.add_bus_event::<TestEvent>(&topic);
     let tclone = topic.clone();
-    writer.add_systems(Update, move |mut w: EventBusWriter<TestEvent>| {
+    writer.add_systems(Update, move |mut w: EventBusWriter| {
         for i in 0..15 {
             let _ = w.write(
                 &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&tclone]),

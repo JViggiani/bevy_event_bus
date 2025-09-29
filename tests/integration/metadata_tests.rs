@@ -44,7 +44,7 @@ fn metadata_propagation_from_kafka_to_bevy() {
     let topic_clone = topic.clone();
     writer.add_systems(
         Update,
-        move |mut w: EventBusWriter<TestEvent>, mut sent: Local<bool>| {
+        move |mut w: EventBusWriter, mut sent: Local<bool>| {
             if !*sent {
                 *sent = true;
                 let _ = w.write(
@@ -69,9 +69,7 @@ fn metadata_propagation_from_kafka_to_bevy() {
                 consumer_group.as_str(),
                 [&tr],
             )) {
-                if wrapper.is_external() {
-                    events.0.push(wrapper.clone());
-                }
+                events.0.push(wrapper.clone());
             }
         },
     );
@@ -98,10 +96,8 @@ fn metadata_propagation_from_kafka_to_bevy() {
     assert_eq!(external_event.value, 42);
 
     // Verify metadata using the metadata() method
-    let metadata = external_event
-        .metadata()
-        .expect("External event should have metadata");
-    assert_eq!(metadata.source, topic);
+    let metadata = external_event.metadata();
+    assert_eq!(metadata.source.as_str(), topic.as_str());
     assert!(metadata.timestamp > std::time::Instant::now() - std::time::Duration::from_secs(10));
 
     // Get Kafka-specific metadata
@@ -110,7 +106,7 @@ fn metadata_propagation_from_kafka_to_bevy() {
             .as_any()
             .downcast_ref::<bevy_event_bus::KafkaMetadata>()
         {
-            assert_eq!(kafka_meta.topic, topic);
+            assert_eq!(kafka_meta.topic.as_str(), topic.as_str());
             assert!(kafka_meta.partition >= 0);
             assert!(kafka_meta.offset >= 0);
 
@@ -166,7 +162,7 @@ fn header_forwarding_producer_to_consumer() {
     let topic_clone = topic.clone();
     writer.add_systems(
         Update,
-        move |mut w: EventBusWriter<TestEvent>, mut sent: Local<bool>| {
+        move |mut w: EventBusWriter, mut sent: Local<bool>| {
             if !*sent {
                 *sent = true;
                 let _ = w.write_with_headers(
@@ -192,9 +188,7 @@ fn header_forwarding_producer_to_consumer() {
                 consumer_group_name.as_str(),
                 [&tr],
             )) {
-                if wrapper.is_external() {
-                    events.0.push(wrapper.clone());
-                }
+                events.0.push(wrapper.clone());
             }
         },
     );
@@ -220,9 +214,7 @@ fn header_forwarding_producer_to_consumer() {
     assert_eq!(received_event.event().value, 123);
 
     // Verify headers were forwarded
-    let metadata = received_event
-        .metadata()
-        .expect("External event should have metadata");
+    let metadata = received_event.metadata();
     assert_eq!(
         metadata.headers.get("trace-id"),
         Some(&"abc-123".to_string())
@@ -275,7 +267,7 @@ fn timestamp_accuracy_for_latency_measurement() {
     let topic_clone = topic.clone();
     writer.add_systems(
         Update,
-        move |mut w: EventBusWriter<TestEvent>, mut sent: Local<bool>| {
+        move |mut w: EventBusWriter, mut sent: Local<bool>| {
             if !*sent {
                 *sent = true;
                 let event = TestEvent {
@@ -304,9 +296,7 @@ fn timestamp_accuracy_for_latency_measurement() {
                 consumer_group.as_str(),
                 [&tr],
             )) {
-                if wrapper.is_external() {
-                    events.0.push(wrapper.clone());
-                }
+                events.0.push(wrapper.clone());
             }
         },
     );
@@ -327,9 +317,7 @@ fn timestamp_accuracy_for_latency_measurement() {
     let receive_time = std::time::Instant::now();
 
     // Get metadata for timestamp verification
-    let metadata = external_event
-        .metadata()
-        .expect("External event should have metadata");
+    let metadata = external_event.metadata();
 
     // Verify timestamp is reasonable (between send time and receive time)
     assert!(
@@ -390,7 +378,7 @@ fn mixed_metadata_and_regular_reading() {
     let topic_clone = topic.clone();
     writer.add_systems(
         Update,
-        move |mut w: EventBusWriter<TestEvent>, mut sent: Local<bool>| {
+        move |mut w: EventBusWriter, mut sent: Local<bool>| {
             if !*sent {
                 *sent = true;
                 for i in 0..3 {
@@ -443,9 +431,7 @@ fn mixed_metadata_and_regular_reading() {
                 metadata_group.as_str(),
                 [&tr2],
             )) {
-                if wrapper.is_external() {
-                    events.0.push(wrapper.clone());
-                }
+                events.0.push(wrapper.clone());
             }
         },
     );
@@ -479,11 +465,9 @@ fn mixed_metadata_and_regular_reading() {
         assert_eq!(metadata_event.value, i as i32);
 
         // Verify Kafka metadata using the metadata() method
-        let metadata = metadata_event
-            .metadata()
-            .expect("External event should have metadata");
+        let metadata = metadata_event.metadata();
         if let Some(kafka_meta) = metadata.kafka_metadata() {
-            assert_eq!(kafka_meta.topic, topic);
+            assert_eq!(kafka_meta.topic.as_str(), topic.as_str());
         } else {
             panic!("Expected Kafka metadata for event {}", i);
         }
