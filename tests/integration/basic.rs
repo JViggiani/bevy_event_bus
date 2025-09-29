@@ -61,8 +61,6 @@ fn test_basic_kafka_event_bus() {
         writer_app.update();
     }
 
-    // Instead of fixed sleep loop we'll actively poll the reader app
-
     // Reader app (separate consumer group with separate backend)
     let mut reader_app = App::new();
     reader_app.add_plugins(EventBusPlugins(

@@ -1,5 +1,5 @@
 use crate::common::events::TestEvent;
-use crate::common::helpers::{unique_topic, wait_for_events};
+use crate::common::helpers::{unique_topic, wait_for_events, run_app_updates};
 use crate::common::setup::setup;
 use bevy::prelude::*;
 use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventWrapper, EventBusAppExt, KafkaConsumerConfig, KafkaProducerConfig};
@@ -170,34 +170,22 @@ fn header_forwarding_producer_to_consumer() {
     );
 
     // Send the event and let it propagate
-    writer.update();
-    writer.update();
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    run_app_updates(&mut writer, 2);
     
-    // Wait for events to be received with polling
-    let mut attempts = 0;
-    let max_attempts = 50; // 5 seconds total
+    // Wait for events to be received
+    let received_events = wait_for_events(
+        &mut reader,
+        "metadata_propagation_test",
+        5000, // 5 seconds timeout
+        1,    // Wait for at least 1 event
+        |app| {
+            let events = app.world().resource::<ReceivedEvents>();
+            events.0.clone()
+        },
+    );
     
-    loop {
-        reader.update();
-        let events = reader.world().resource::<ReceivedEvents>();
-        if !events.0.is_empty() {
-            break;
-        }
-        
-        attempts += 1;
-        if attempts >= max_attempts {
-            panic!("No events received after {} attempts", max_attempts);
-        }
-        
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-
-    // Verify the event was received with headers
-    let events = reader.world().resource::<ReceivedEvents>();
-    assert!(!events.0.is_empty(), "No events received");
-
-    let received_event = &events.0[0];
+    // Verify the event was received with headers  
+    let received_event = &received_events[0];
     assert_eq!(received_event.event().message, "header test");
     assert_eq!(received_event.event().value, 123);
 

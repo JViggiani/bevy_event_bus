@@ -1,5 +1,5 @@
 use crate::common::events::TestEvent;
-use crate::common::helpers::{unique_topic, update_until};
+use crate::common::helpers::{unique_topic, update_until, run_app_updates};
 use crate::common::setup::setup;
 use bevy::prelude::*;
 use bevy_event_bus::{
@@ -71,13 +71,7 @@ fn configuration_with_readers_writers_works() {
     };
 
     // Run producer first
-    for _ in 0..10 {
-        producer_app.update();
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    
-    // Give extra time for messages to be sent to Kafka
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    producer_app.update();
 
     // Then run consumer and verify
     let (success, _frames) = update_until(
@@ -171,10 +165,7 @@ fn kafka_specific_methods_work() {
     app.add_systems(Update, (test_kafka_write_methods, test_kafka_read_methods));
 
     // Run a few updates to execute the test system
-    for _ in 0..5 {
-        app.update();
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    run_app_updates(&mut app, 5);
 
     // If we get here without panicking, the Kafka-specific methods work
 }

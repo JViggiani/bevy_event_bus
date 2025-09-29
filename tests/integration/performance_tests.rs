@@ -204,8 +204,8 @@ fn run_throughput_test(
             panic!("Performance test timed out after 5 minutes");
         }
         
-        // Brief pause to prevent busy waiting
-        std::thread::sleep(std::time::Duration::from_millis(1));
+        // Brief yield to prevent busy waiting
+        std::thread::yield_now();
     }
     
     // Calculate and display results
