@@ -215,13 +215,16 @@ fn wait_metadata(bootstrap: &str, max_wait: Duration) -> (bool, u128) {
     let _g = span.enter();
     let start = Instant::now();
     let mut attempt: u32 = 0;
-    
+
     while start.elapsed() < max_wait {
         attempt += 1;
         let mut cfg = ClientConfig::new();
         cfg.set("bootstrap.servers", bootstrap);
         if let Ok(producer) = cfg.create::<rdkafka::producer::BaseProducer>() {
-            match producer.client().fetch_metadata(None, Duration::from_millis(1000)) {
+            match producer
+                .client()
+                .fetch_metadata(None, Duration::from_millis(1000))
+            {
                 Ok(md) => {
                     info!(
                         brokers = md.brokers().len(),
@@ -286,10 +289,10 @@ pub fn setup_with_offset(offset: &str) -> (KafkaEventBusBackend, String) {
     static GROUP_COUNTER: AtomicUsize = AtomicUsize::new(0);
     let unique = GROUP_COUNTER.fetch_add(1, AtomicOrdering::SeqCst);
     let mut additional_config = std::collections::HashMap::new();
-    
+
     // Set offset configuration
     additional_config.insert("auto.offset.reset".to_string(), offset.to_string());
-    
+
     let config = KafkaConnection {
         bootstrap_servers: bootstrap.clone(),
         client_id: Some(format!("bevy_event_bus_test_client_{}", unique)),
@@ -327,43 +330,68 @@ pub fn ensure_topic(bootstrap: &str, topic: &str, partitions: i32) {
 /// Create a topic and wait for it to be fully ready for read/write operations.
 /// Combines topic creation with readiness verification in a single call.
 /// Returns true if the topic is ready, false if timeout exceeded.
-pub fn ensure_topic_ready(bootstrap: &str, topic: &str, partitions: i32, timeout: Duration) -> bool {
+pub fn ensure_topic_ready(
+    bootstrap: &str,
+    topic: &str,
+    partitions: i32,
+    timeout: Duration,
+) -> bool {
     use rdkafka::config::ClientConfig;
     use rdkafka::consumer::{BaseConsumer, Consumer};
     use rdkafka::producer::{BaseProducer, Producer};
-    
-    let span = info_span!("kafka_container.ensure_topic_ready", bootstrap = bootstrap, topic = topic);
+
+    let span = info_span!(
+        "kafka_container.ensure_topic_ready",
+        bootstrap = bootstrap,
+        topic = topic
+    );
     let _g = span.enter();
     let start = Instant::now();
     let mut attempts = 0u32;
-    
+
     // First ensure topic exists using Admin API
     ensure_topic(bootstrap, topic, partitions);
-    
+
     while start.elapsed() < timeout {
         attempts += 1;
-        
+
         // Test both producer and consumer can see the topic
         let mut producer_cfg = ClientConfig::new();
         producer_cfg.set("bootstrap.servers", bootstrap);
-        producer_cfg.set("client.id", &format!("topic_readiness_producer_{}", attempts));
-        
+        producer_cfg.set(
+            "client.id",
+            &format!("topic_readiness_producer_{}", attempts),
+        );
+
         let mut consumer_cfg = ClientConfig::new();
         consumer_cfg.set("bootstrap.servers", bootstrap);
-        consumer_cfg.set("group.id", &format!("topic_readiness_consumer_{}", attempts));
-        consumer_cfg.set("client.id", &format!("topic_readiness_consumer_{}", attempts));
+        consumer_cfg.set(
+            "group.id",
+            &format!("topic_readiness_consumer_{}", attempts),
+        );
+        consumer_cfg.set(
+            "client.id",
+            &format!("topic_readiness_consumer_{}", attempts),
+        );
         consumer_cfg.set("auto.offset.reset", "earliest");
-        
+
         if let (Ok(producer), Ok(consumer)) = (
             producer_cfg.create::<BaseProducer>(),
             consumer_cfg.create::<BaseConsumer>(),
         ) {
             // Check if producer can fetch metadata for this specific topic
-            match producer.client().fetch_metadata(Some(topic), Duration::from_millis(1000)) {
+            match producer
+                .client()
+                .fetch_metadata(Some(topic), Duration::from_millis(1000))
+            {
                 Ok(metadata) => {
                     // Check if topic exists in metadata with at least one partition
-                    if let Some(topic_metadata) = metadata.topics().iter().find(|t| t.name() == topic) {
-                        if !topic_metadata.partitions().is_empty() && topic_metadata.error().is_none() {
+                    if let Some(topic_metadata) =
+                        metadata.topics().iter().find(|t| t.name() == topic)
+                    {
+                        if !topic_metadata.partitions().is_empty()
+                            && topic_metadata.error().is_none()
+                        {
                             // Topic exists with partitions, now test consumer can subscribe
                             if consumer.subscribe(&[topic]).is_ok() {
                                 info!(
@@ -381,12 +409,12 @@ pub fn ensure_topic_ready(bootstrap: &str, topic: &str, partitions: i32, timeout
                 }
             }
         }
-        
+
         // Progressive backoff: 50ms, 100ms, 200ms, 400ms, 400ms...
         let delay_ms = std::cmp::min(50 * 2_u64.pow((attempts - 1).min(3)), 400);
         std::thread::sleep(Duration::from_millis(delay_ms));
     }
-    
+
     warn!(
         attempts,
         elapsed_ms = start.elapsed().as_millis(),

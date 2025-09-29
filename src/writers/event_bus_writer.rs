@@ -1,11 +1,7 @@
+use crate::{BusEvent, EventBusError, backends::EventBusBackendResource, config::EventBusConfig};
 use bevy::prelude::*;
 use std::collections::HashMap;
 use std::sync::Mutex;
-use crate::{
-    BusEvent, EventBusError,
-    backends::EventBusBackendResource,
-    config::EventBusConfig,
-};
 
 #[cfg(feature = "kafka")]
 use crate::config::kafka::KafkaProducerConfig;
@@ -25,7 +21,7 @@ impl EventBusErrorQueue {
             }));
         }
     }
-    
+
     pub fn flush_errors(&self, world: &mut World) {
         if let Ok(mut pending) = self.pending_errors.lock() {
             for error_fn in pending.drain(..) {
@@ -33,7 +29,7 @@ impl EventBusErrorQueue {
             }
         }
     }
-    
+
     pub fn drain_pending(&self) -> Vec<Box<dyn Fn(&mut World) + Send + Sync>> {
         if let Ok(mut pending) = self.pending_errors.lock() {
             std::mem::take(&mut *pending)
@@ -44,7 +40,7 @@ impl EventBusErrorQueue {
 }
 
 /// Writes events to both internal Bevy events and external message broker topics
-/// 
+///
 /// All methods use "fire and forget" semantics - errors are sent as EventBusError<T> events
 /// rather than returned as Results.
 #[derive(bevy::ecs::system::SystemParam)]
@@ -56,14 +52,14 @@ pub struct EventBusWriter<'w, T: BusEvent + Event> {
 
 impl<'w, T: BusEvent + Event> EventBusWriter<'w, T> {
     /// Write an event using mandatory configuration
-    /// 
+    ///
     /// You must provide configuration that specifies which topics to write to.
     /// Uses fire-and-forget semantics. Any errors are sent as EventBusError<T> events.
     pub fn write<C: EventBusConfig>(&mut self, config: &C, event: T) {
         for topic in config.topics() {
             // Clone event for potential error reporting
             let event_clone = event.clone();
-            
+
             // Send to external backend immediately if available
             if let Some(backend_res) = &self.backend {
                 let backend = backend_res.read();
@@ -86,11 +82,15 @@ impl<'w, T: BusEvent + Event> EventBusWriter<'w, T> {
     }
 
     /// Write multiple events using mandatory configuration
-    /// 
-    /// All events are written as a batch operation to all configured topics. 
-    /// Uses fire-and-forget semantics. If any event fails, an error event is 
+    ///
+    /// All events are written as a batch operation to all configured topics.
+    /// Uses fire-and-forget semantics. If any event fails, an error event is
     /// fired but processing continues.
-    pub fn write_batch<C: EventBusConfig>(&mut self, config: &C, events: impl IntoIterator<Item = T>) {
+    pub fn write_batch<C: EventBusConfig>(
+        &mut self,
+        config: &C,
+        events: impl IntoIterator<Item = T>,
+    ) {
         let events: Vec<_> = events.into_iter().collect();
 
         for topic in config.topics() {
@@ -120,19 +120,19 @@ impl<'w, T: BusEvent + Event> EventBusWriter<'w, T> {
     }
 
     /// Write an event with headers using mandatory configuration
-    /// 
+    ///
     /// Headers are only sent to external brokers; internal Bevy events don't support headers.
     /// Uses fire-and-forget semantics. Any errors are sent as EventBusError<T> events.
     pub fn write_with_headers<C: EventBusConfig>(
-        &mut self, 
+        &mut self,
         config: &C,
-        event: T, 
-        headers: HashMap<String, String>
+        event: T,
+        headers: HashMap<String, String>,
     ) {
         for topic in config.topics() {
             // Clone event for potential error reporting
             let event_clone = event.clone();
-            
+
             // Send to external backend with headers if available
             if let Some(backend_res) = &self.backend {
                 let backend = backend_res.read();
@@ -155,7 +155,7 @@ impl<'w, T: BusEvent + Event> EventBusWriter<'w, T> {
     }
 
     /// Write the default value of the event using mandatory configuration
-    /// 
+    ///
     /// Uses fire-and-forget semantics. Any errors are sent as EventBusError<T> events.
     pub fn write_default<C: EventBusConfig>(&mut self, config: &C)
     where
@@ -168,47 +168,57 @@ impl<'w, T: BusEvent + Event> EventBusWriter<'w, T> {
 #[cfg(feature = "kafka")]
 impl<'w, T: BusEvent + Event> EventBusWriter<'w, T> {
     /// Write with partition key to ensure ordering - Kafka specific
-    /// 
+    ///
     /// Uses the partition key to determine which partition the message goes to,
     /// ensuring ordering for messages with the same key.
     /// Requires a KafkaProducerConfig.
     pub fn write_with_key(&mut self, config: &KafkaProducerConfig, event: T, _key: &str) {
         // TODO: Implement actual Kafka partition key functionality through backend
-        tracing::warn!("Kafka partition key write not yet implemented - falling back to regular write");
+        tracing::warn!(
+            "Kafka partition key write not yet implemented - falling back to regular write"
+        );
         self.write(config, event);
     }
-    
+
     /// Write with custom headers - Kafka specific
-    /// 
+    ///
     /// Kafka-specific method for writing with headers.
     /// Requires a KafkaProducerConfig.
-    pub fn write_with_headers_kafka(&mut self, config: &KafkaProducerConfig, event: T, headers: &[(&str, &str)]) {
+    pub fn write_with_headers_kafka(
+        &mut self,
+        config: &KafkaProducerConfig,
+        event: T,
+        headers: &[(&str, &str)],
+    ) {
         // Convert headers to HashMap
-        let headers_map: HashMap<String, String> = headers.iter()
+        let headers_map: HashMap<String, String> = headers
+            .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-        
+
         self.write_with_headers(config, event, headers_map);
     }
-    
+
     /// Write with both partition key and headers - Kafka specific
-    /// 
+    ///
     /// Kafka-specific method for writing with both partition key and headers.
     /// Requires a KafkaProducerConfig.
     pub fn write_with_key_and_headers(
-        &mut self, 
+        &mut self,
         config: &KafkaProducerConfig,
-        event: T, 
-        _key: &str, 
-        headers: &[(&str, &str)]
+        event: T,
+        _key: &str,
+        headers: &[(&str, &str)],
     ) {
         // TODO: Implement actual Kafka key + headers functionality
-        tracing::warn!("Kafka key + headers write not yet implemented - falling back to headers only");
+        tracing::warn!(
+            "Kafka key + headers write not yet implemented - falling back to headers only"
+        );
         self.write_with_headers_kafka(config, event, headers);
     }
-    
+
     /// Flush all pending messages - Kafka specific
-    /// 
+    ///
     /// Kafka-specific method for flushing the producer.
     /// Requires a KafkaProducerConfig.
     pub fn flush(&mut self, _config: &KafkaProducerConfig) -> Result<(), String> {
@@ -217,5 +227,3 @@ impl<'w, T: BusEvent + Event> EventBusWriter<'w, T> {
         Ok(())
     }
 }
-
-

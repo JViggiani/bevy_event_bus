@@ -1,8 +1,10 @@
 use crate::common::events::TestEvent;
-use crate::common::helpers::unique_topic;
+use crate::common::helpers::{
+    DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, unique_consumer_group, unique_topic,
+};
 use crate::common::setup::setup;
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, KafkaConsumerConfig};
+use bevy_event_bus::{EventBusPlugins, EventBusReader};
 
 // Test that repeatedly reading an empty topic does not hang or block frames.
 #[test]
@@ -19,11 +21,16 @@ fn idle_empty_topic_poll_does_not_block() {
     app.insert_resource(Ticks::default());
     app.add_event::<TestEvent>(); // ensure event type registered though we won't send
     let topic_read = topic.clone();
+    let consumer_group = unique_consumer_group("idle_read");
     app.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>, mut ticks: ResMut<Ticks>| {
             // Try reading every frame; should be instant (reader fallback/drained path fast)
-            for _ in r.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&topic_read])) { /* none expected */ }
+            for _ in r.read(&kafka_consumer_config(
+                DEFAULT_KAFKA_BOOTSTRAP,
+                consumer_group.as_str(),
+                [&topic_read],
+            )) { /* none expected */ }
             ticks.0 += 1;
         },
     );

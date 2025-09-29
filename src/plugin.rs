@@ -5,8 +5,8 @@ use crate::{
     decoder::DecoderRegistry,
     registration::EVENT_REGISTRY,
     resources::{
-        ConsumerMetrics, DecodedEventBuffer, DrainMetricsEvent, DrainedTopicMetadata, EventBusConsumerConfig, EventMetadata,
-        MessageQueue, ProcessedMessage, TopicDecodedEvents,
+        ConsumerMetrics, DecodedEventBuffer, DrainMetricsEvent, DrainedTopicMetadata,
+        EventBusConsumerConfig, EventMetadata, MessageQueue, ProcessedMessage, TopicDecodedEvents,
     },
     runtime::{block_on, ensure_runtime},
     writers::event_bus_writer::EventBusErrorQueue,
@@ -28,7 +28,7 @@ impl Plugin for EventBusPlugin {
     fn build(&self, app: &mut App) {
         // Register core error events
         app.add_event::<crate::EventBusDecodeError>();
-        
+
         // Invoke registration callbacks (derive macro populated). We DO NOT drain so multiple Apps each see events.
         let guard = EVENT_REGISTRY.lock().unwrap();
         for cb in guard.iter() {
@@ -132,7 +132,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
         {
             let mut guard = backend_res.write();
             let _ = block_on(guard.connect());
-            
+
             if let Some(kafka) = guard
                 .as_any_mut()
                 .downcast_mut::<crate::backends::kafka_backend::KafkaEventBusBackend>(
@@ -141,7 +141,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                     app.world_mut()
                         .insert_resource(MessageQueue { receiver: rx });
                 }
-                
+
                 // Inject lifecycle sender into kafka backend by wrapping its background task via a helper channel
                 // (Since backend code owns spawning, we detect readiness here: receiver presence == ready)
                 let (tx, rx_life) = crossbeam_channel::unbounded::<LifecycleMessage>();
@@ -186,14 +186,14 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
             // Default queue length metrics when no queue
             metrics.queue_len_start = 0;
             metrics.queue_len_end = 0;
-            
+
             if let Some(queue) = maybe_queue {
                 metrics.queue_len_start = queue.receiver.len();
                 let limit = config.max_events_per_frame;
                 let time_budget = config
                     .max_drain_millis
                     .map(std::time::Duration::from_millis);
-                
+
                 // Drain loop with multi-decoder pipeline
                 while limit
                     .map(|l| metrics.drained_last_frame < l)
@@ -210,32 +210,40 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                             break;
                         }
                     }
-                    
+
                     match queue.receiver.try_recv() {
                         Ok(msg) => {
                             let topic_name = msg.topic.clone();
                             tracing::debug!(topic=%topic_name, "Processing message with multi-decoder pipeline");
-                            
+
                             // Create metadata for this message using new backend-agnostic structure
                             let metadata = EventMetadata::new(
-                                msg.topic.clone(),  // source
+                                msg.topic.clone(), // source
                                 msg.timestamp,
                                 msg.headers.clone(),
-                                msg.key.as_ref().map(|k| String::from_utf8_lossy(k).to_string()), // key as String
-                                Some(Box::new(crate::resources::backend_metadata::KafkaMetadata {
-                                    topic: msg.topic.clone(),
-                                    partition: msg.partition,
-                                    offset: msg.offset,
-                                })),
+                                msg.key
+                                    .as_ref()
+                                    .map(|k| String::from_utf8_lossy(k).to_string()), // key as String
+                                Some(Box::new(
+                                    crate::resources::backend_metadata::KafkaMetadata {
+                                        topic: msg.topic.clone(),
+                                        partition: msg.partition,
+                                        offset: msg.offset,
+                                    },
+                                )),
                             );
-                            
+
                             // Attempt multi-decode using registered decoders
-                            let decoded_events = decoder_registry.decode_all(&topic_name, &msg.payload);
-                            
+                            let decoded_events =
+                                decoder_registry.decode_all(&topic_name, &msg.payload);
+
                             // Get or create topic buffer
-                            let topic_buffer = decoded_buffer.topics.entry(topic_name.clone()).or_insert_with(TopicDecodedEvents::new);
+                            let topic_buffer = decoded_buffer
+                                .topics
+                                .entry(topic_name.clone())
+                                .or_insert_with(TopicDecodedEvents::new);
                             topic_buffer.total_processed += 1;
-                            
+
                             if decoded_events.is_empty() {
                                 // No decoder succeeded - fire decode error event
                                 topic_buffer.decode_failures += 1;
@@ -244,20 +252,24 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                                     decoders_tried = decoder_registry.decoder_count(&topic_name),
                                     "No decoder succeeded for message"
                                 );
-                                
+
                                 // Generate decode error event
                                 let decode_error = crate::EventBusDecodeError::new(
                                     topic_name.clone(),
-                                    format!("No decoder succeeded. Tried {} decoders", decoder_registry.decoder_count(&topic_name)),
+                                    format!(
+                                        "No decoder succeeded. Tried {} decoders",
+                                        decoder_registry.decoder_count(&topic_name)
+                                    ),
                                     msg.payload.clone(),
-                                    format!("tried_{}_decoders", decoder_registry.decoder_count(&topic_name)),
+                                    format!(
+                                        "tried_{}_decoders",
+                                        decoder_registry.decoder_count(&topic_name)
+                                    ),
                                     Some(metadata.clone()),
                                 );
-                                
-                                // Store decode error for event dispatch 
-                                metadata_buffers
-                                    .decode_errors
-                                    .push(decode_error);
+
+                                // Store decode error for event dispatch
+                                metadata_buffers.decode_errors.push(decode_error);
                             } else {
                                 // At least one decoder succeeded
                                 for decoded_event in decoded_events {
@@ -266,7 +278,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                                         decoder = %decoded_event.decoder_name,
                                         "Successfully decoded event"
                                     );
-                                    
+
                                     // Store the decoded event in the type-erased buffer
                                     // The event Box contains the actual event, we need to store it properly
                                     let type_erased = crate::resources::TypeErasedEvent {
@@ -274,34 +286,35 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                                         metadata: metadata.clone(),
                                         decoder_name: decoded_event.decoder_name,
                                     };
-                                    
-                                    topic_buffer.events_by_type
+
+                                    topic_buffer
+                                        .events_by_type
                                         .entry(decoded_event.type_id)
                                         .or_insert_with(Vec::new)
                                         .push(type_erased);
                                 }
-                                
+
                                 // Also add the original message to DrainedTopicMetadata for EventBusReader compatibility
                                 // This allows existing EventBusReader<T> to find the events by deserializing the original payload
                                 let processed_msg = ProcessedMessage {
                                     payload: msg.payload.clone(),
                                     metadata: metadata.clone(),
                                 };
-                                
+
                                 metadata_buffers
                                     .topics
                                     .entry(topic_name.clone())
                                     .or_insert_with(Vec::new)
                                     .push(processed_msg);
                             }
-                            
+
                             metrics.drained_last_frame += 1;
                         }
                         Err(crossbeam_channel::TryRecvError::Empty) => break,
                         Err(crossbeam_channel::TryRecvError::Disconnected) => break,
                     }
                 }
-                
+
                 metrics.remaining_channel_after_drain = queue.receiver.len();
                 metrics.queue_len_end = metrics.remaining_channel_after_drain;
                 metrics.total_drained += metrics.drained_last_frame;
@@ -319,18 +332,20 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                     }
                 }
             }
-            
+
             // Count idle frame if nothing drained
             if metrics.drained_last_frame == 0 {
                 metrics.idle_frames += 1;
             }
-            
+
             // Periodic cleanup of empty topic buffers
             if metrics.idle_frames % 30 == 0 && metrics.idle_frames > 0 {
                 let before_count = metadata_buffers.topics.len();
-                metadata_buffers.topics.retain(|_topic, buffer| !buffer.is_empty());
+                metadata_buffers
+                    .topics
+                    .retain(|_topic, buffer| !buffer.is_empty());
                 let after_count = metadata_buffers.topics.len();
-                
+
                 if before_count > after_count {
                     tracing::debug!(
                         cleaned_topics = before_count - after_count,
@@ -338,12 +353,14 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                         "Cleaned up empty topic metadata buffers"
                     );
                 }
-                
+
                 // Also clean up decoded event buffers
                 let before_decoded = decoded_buffer.topics.len();
-                decoded_buffer.topics.retain(|_topic, buffer| buffer.total_events() > 0);
+                decoded_buffer
+                    .topics
+                    .retain(|_topic, buffer| buffer.total_events() > 0);
                 let after_decoded = decoded_buffer.topics.len();
-                
+
                 if before_decoded > after_decoded {
                     tracing::debug!(
                         cleaned_decoded_topics = before_decoded - after_decoded,
@@ -352,14 +369,14 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                     );
                 }
             }
-            
+
             metrics.drain_duration_us = frame_start.elapsed().as_micros();
             if metrics.drain_duration_us == 0
                 && (metrics.drained_last_frame > 0 || metrics.queue_len_start > 0)
             {
                 metrics.drain_duration_us = 1; // avoid zero-duration flake
             }
-            
+
             // Emit metrics snapshot every frame for observability
             drain_events.write(DrainMetricsEvent {
                 drained: metrics.drained_last_frame,
@@ -379,7 +396,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                 let error_queue = world.resource::<EventBusErrorQueue>();
                 error_queue.drain_pending()
             };
-            
+
             // Then flush them
             for error_fn in pending_errors {
                 error_fn(world);

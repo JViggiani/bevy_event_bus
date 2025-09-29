@@ -1,8 +1,10 @@
 use crate::common::events::TestEvent;
-use crate::common::helpers::unique_topic;
-use crate::common::helpers::wait_for_events;
+use crate::common::helpers::{
+    DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
+    unique_topic, wait_for_events,
+};
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt, KafkaConsumerConfig, KafkaProducerConfig};
+use bevy_event_bus::{EventBusAppExt, EventBusPlugins, EventBusReader, EventBusWriter};
 
 #[test]
 fn per_topic_order_preserved() {
@@ -33,7 +35,7 @@ fn per_topic_order_preserved() {
             }
             for i in 0..10 {
                 let _ = w.write(
-                    &KafkaProducerConfig::new("localhost:9092", [&tclone]),
+                    &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&tclone]),
                     TestEvent {
                         message: format!("msg-{i}"),
                         value: i,
@@ -49,10 +51,15 @@ fn per_topic_order_preserved() {
     struct Collected(Vec<TestEvent>);
     reader.insert_resource(Collected::default());
     let tr = topic.clone();
+    let consumer_group = unique_consumer_group("ordering_single_topic");
     reader.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>, mut c: ResMut<Collected>| {
-            for wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&tr])) {
+            for wrapper in r.read(&kafka_consumer_config(
+                DEFAULT_KAFKA_BOOTSTRAP,
+                consumer_group.as_str(),
+                [&tr],
+            )) {
                 c.0.push(wrapper.event().clone());
             }
         },
@@ -105,14 +112,14 @@ fn cross_topic_interleave_each_ordered() {
             }
             for i in 0..5 {
                 let _ = w.write(
-                    &KafkaProducerConfig::new("localhost:9092", [&t1c]),
+                    &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&t1c]),
                     TestEvent {
                         message: format!("A{i}"),
                         value: i,
                     },
                 );
                 let _ = w.write(
-                    &KafkaProducerConfig::new("localhost:9092", [&t2c]),
+                    &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&t2c]),
                     TestEvent {
                         message: format!("B{i}"),
                         value: i,
@@ -132,15 +139,24 @@ fn cross_topic_interleave_each_ordered() {
     reader.insert_resource(CollectedT2::default());
     let ta = t1.clone();
     let tb = t2.clone();
+    let consumer_group = unique_consumer_group("ordering_dual_topic");
     reader.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>,
               mut c1: ResMut<CollectedT1>,
               mut c2: ResMut<CollectedT2>| {
-            for wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&ta])) {
+            for wrapper in r.read(&kafka_consumer_config(
+                DEFAULT_KAFKA_BOOTSTRAP,
+                consumer_group.as_str(),
+                [&ta],
+            )) {
                 c1.0.push(wrapper.event().clone());
             }
-            for wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&tb])) {
+            for wrapper in r.read(&kafka_consumer_config(
+                DEFAULT_KAFKA_BOOTSTRAP,
+                consumer_group.as_str(),
+                [&tb],
+            )) {
                 c2.0.push(wrapper.event().clone());
             }
         },

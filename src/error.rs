@@ -1,14 +1,14 @@
-use bevy::prelude::*;
-use serde::{Serialize, Deserialize};
 use crate::BusEvent;
 use crate::resources::EventMetadata;
+use bevy::prelude::*;
+use serde::{Deserialize, Serialize};
 
 /// Types of errors that can occur in the event bus
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EventBusErrorType {
-    Serialization,    // JSON serialization failed
-    Connection,       // Backend connection issues
-    NotConfigured,    // Backend not configured
+    Serialization,   // JSON serialization failed
+    Connection,      // Backend connection issues
+    NotConfigured,   // Backend not configured
     Topic,           // Invalid topic name/format
     Timeout,         // Network timeout
     DeliveryFailure, // Async delivery failure from Kafka
@@ -18,7 +18,7 @@ pub enum EventBusErrorType {
 }
 
 /// Event fired when any operation on the event bus fails
-/// 
+///
 /// This replaces both the old Result-based error handling and EventBusDeliveryFailure.
 /// All errors, whether immediate (serialization) or async (delivery), are sent as events.
 #[derive(Event, Debug, Clone)]
@@ -78,7 +78,7 @@ impl<T: BusEvent> EventBusError<T> {
 }
 
 /// Event fired when message deserialization fails
-/// 
+///
 /// This is a non-generic error event for cases where we cannot create EventBusError<T>
 /// because the deserialization failed and we don't have a T instance.
 #[derive(Event, Debug, Clone)]

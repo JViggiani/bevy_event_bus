@@ -1,8 +1,11 @@
 use crate::common::events::TestEvent;
-use crate::common::helpers::{unique_topic, update_until};
+use crate::common::helpers::{
+    DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
+    unique_topic, update_until,
+};
 use crate::common::setup::setup;
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt, KafkaConsumerConfig, KafkaProducerConfig};
+use bevy_event_bus::{EventBusAppExt, EventBusPlugins, EventBusReader, EventBusWriter};
 
 #[test]
 fn multi_topic_isolation() {
@@ -13,16 +16,16 @@ fn multi_topic_isolation() {
 
     // Create topics and wait for them to be fully ready
     let topic_a_ready = crate::common::setup::ensure_topic_ready(
-        &_b2, 
-        &topic_a, 
+        &_b2,
+        &topic_a,
         1, // partitions
-        std::time::Duration::from_secs(5)
+        std::time::Duration::from_secs(5),
     );
     let topic_b_ready = crate::common::setup::ensure_topic_ready(
-        &_b2, 
-        &topic_b, 
+        &_b2,
+        &topic_b,
         1, // partitions
-        std::time::Duration::from_secs(5)
+        std::time::Duration::from_secs(5),
     );
     assert!(topic_a_ready, "Topic {} not ready within timeout", topic_a);
     assert!(topic_b_ready, "Topic {} not ready within timeout", topic_b);
@@ -34,7 +37,7 @@ fn multi_topic_isolation() {
     ));
     writer.add_bus_event::<TestEvent>(&topic_a);
     writer.add_bus_event::<TestEvent>(&topic_b);
-    
+
     let mut reader = App::new();
     reader.add_plugins(EventBusPlugins(
         backend_r,
@@ -47,14 +50,14 @@ fn multi_topic_isolation() {
     let tb = topic_b.clone();
     writer.add_systems(Update, move |mut w: EventBusWriter<TestEvent>| {
         let _ = w.write(
-            &KafkaProducerConfig::new("localhost:9092", [&ta]),
+            &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&ta]),
             TestEvent {
                 message: "A1".into(),
                 value: 1,
             },
         );
         let _ = w.write(
-            &KafkaProducerConfig::new("localhost:9092", [&tb]),
+            &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&tb]),
             TestEvent {
                 message: "B1".into(),
                 value: 2,
@@ -68,13 +71,22 @@ fn multi_topic_isolation() {
     reader.insert_resource(Collected::default());
     let ta_r = topic_a.clone();
     let tb_r = topic_b.clone();
+    let consumer_group = unique_consumer_group("multi_topic_reader");
     reader.add_systems(
         Update,
         move |mut r: EventBusReader<TestEvent>, mut col: ResMut<Collected>| {
-            for wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&ta_r])) {
+            for wrapper in r.read(&kafka_consumer_config(
+                DEFAULT_KAFKA_BOOTSTRAP,
+                consumer_group.as_str(),
+                [&ta_r],
+            )) {
                 col.0.push(wrapper.event().clone());
             }
-            for wrapper in r.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&tb_r])) {
+            for wrapper in r.read(&kafka_consumer_config(
+                DEFAULT_KAFKA_BOOTSTRAP,
+                consumer_group.as_str(),
+                [&tb_r],
+            )) {
                 col.0.push(wrapper.event().clone());
             }
         },

@@ -1,8 +1,14 @@
+use crate::common::helpers::{
+    DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, unique_consumer_group, unique_topic,
+};
 use crate::common::setup::build_basic_app_simple;
 use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
 use bevy_event_bus::{ConsumerMetrics, DrainMetricsEvent};
-use bevy_event_bus::{DrainedTopicMetadata, EventBusConsumerConfig, EventBusReader, ProcessedMessage, EventMetadata, KafkaMetadata, KafkaConsumerConfig};
+use bevy_event_bus::{
+    DrainedTopicMetadata, EventBusConsumerConfig, EventBusReader, EventMetadata, KafkaMetadata,
+    ProcessedMessage,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, bevy_event_bus::ExternalBusEvent)]
@@ -20,11 +26,12 @@ fn drain_empty_ok() {
 
 #[test]
 fn unlimited_buffer_gathers() {
+    let topic = unique_topic("background_unlimited");
+    let consumer_group = unique_consumer_group("background_unlimited");
     let mut app = build_basic_app_simple();
     // Simulate manually inserting drained payloads (bypass Kafka for unit-style test)
     {
         let mut buffers = app.world_mut().resource_mut::<DrainedTopicMetadata>();
-        let topic = "t".to_string();
         let entry = buffers.topics.entry(topic.clone()).or_default();
         for i in 0..5u32 {
             let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
@@ -42,12 +49,18 @@ fn unlimited_buffer_gathers() {
             entry.push(ProcessedMessage { payload, metadata });
         }
     }
+    let topic_for_reader = topic.clone();
+    let consumer_group_for_reader = consumer_group.clone();
     // Reader should deserialize all
     let _ = app
         .world_mut()
-        .run_system_once(|mut r: EventBusReader<TestMsg>| {
+        .run_system_once(move |mut r: EventBusReader<TestMsg>| {
             let mut collected = Vec::new();
-            let config = KafkaConsumerConfig::new("localhost:9092", "test_group", ["t"]);
+            let config = kafka_consumer_config(
+                DEFAULT_KAFKA_BOOTSTRAP,
+                consumer_group_for_reader.as_str(),
+                [topic_for_reader.as_str()],
+            );
             for wrapper in r.read(&config) {
                 collected.push(wrapper.event().clone());
             }
@@ -57,6 +70,8 @@ fn unlimited_buffer_gathers() {
 
 #[test]
 fn frame_limit_respected() {
+    let topic = unique_topic("background_cap");
+    let consumer_group = unique_consumer_group("background_cap");
     let mut app = build_basic_app_simple();
     app.insert_resource(EventBusConsumerConfig {
         max_events_per_frame: Some(3),
@@ -65,16 +80,16 @@ fn frame_limit_respected() {
     // Preload channel by faking buffers (simulate drain would only take first 3)
     {
         let mut buffers = app.world_mut().resource_mut::<DrainedTopicMetadata>();
-        let entry = buffers.topics.entry("cap".into()).or_default();
+        let entry = buffers.topics.entry(topic.clone()).or_default();
         for i in 0..10u32 {
             let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
             let metadata = EventMetadata {
-                source: "cap".to_string(),
+                source: topic.clone(),
                 timestamp: std::time::Instant::now(),
                 headers: std::collections::HashMap::new(),
                 key: None,
                 backend_specific: Some(Box::new(KafkaMetadata {
-                    topic: "cap".to_string(),
+                    topic: topic.clone(),
                     partition: 0,
                     offset: i as i64,
                 })),
@@ -83,10 +98,16 @@ fn frame_limit_respected() {
         }
     }
     // Reader only sees existing buffer; limit logic applies only during drain; since we injected directly this test is less meaningful but placeholder.
+    let topic_for_reader = topic.clone();
+    let consumer_group_for_reader = consumer_group.clone();
     let _ = app
         .world_mut()
-        .run_system_once(|mut r: EventBusReader<TestMsg>| {
-            let config = KafkaConsumerConfig::new("localhost:9092", "test_group", ["cap"]);
+        .run_system_once(move |mut r: EventBusReader<TestMsg>| {
+            let config = kafka_consumer_config(
+                DEFAULT_KAFKA_BOOTSTRAP,
+                consumer_group_for_reader.as_str(),
+                [topic_for_reader.as_str()],
+            );
             let count = r.read(&config).len();
             assert_eq!(count, 10);
         });

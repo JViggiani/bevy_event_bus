@@ -2,8 +2,8 @@ use bevy::prelude::*;
 
 use crate::{
     BusEvent,
-    resources::{DrainedTopicMetadata, EventWrapper},
     config::EventBusConfig,
+    resources::{DrainedTopicMetadata, EventWrapper},
 };
 
 #[cfg(feature = "kafka")]
@@ -71,20 +71,20 @@ pub struct EventBusReader<'w, 's, T: BusEvent + Event> {
 
 impl<'w, 's, T: BusEvent + Event> EventBusReader<'w, 's, T> {
     /// Read all events (internal and external) with mandatory configuration
-    /// 
+    ///
     /// This is the only API for reading events. You must provide configuration
-    /// that specifies which topics to read from. External events from message 
-    /// brokers include metadata, while internal Bevy events do not. 
+    /// that specifies which topics to read from. External events from message
+    /// brokers include metadata, while internal Bevy events do not.
     /// Use `.metadata()` to check if metadata is available.
-    /// 
+    ///
     /// Returns a vector of `EventWrapper<T>` which derefs to `T`.
     pub fn read<C: EventBusConfig>(&mut self, config: &C) -> Vec<EventWrapper<T>> {
         let mut all_events = Vec::new();
-        
+
         for topic in config.topics() {
             // Clear wrapped events buffer first
             self.wrapped_events.clear();
-            
+
             // Read external events with metadata from drained buffers
             if let Some(metadata_drained) = &mut self.metadata_drained {
                 if let Some(messages) = metadata_drained.topics.get(topic) {
@@ -100,7 +100,8 @@ impl<'w, 's, T: BusEvent + Event> EventBusReader<'w, 's, T> {
                                 tracing::warn!("Failed to deserialize event from topic {}", topic);
                             }
                         }
-                        self.metadata_offsets.insert(topic.to_string(), messages.len());
+                        self.metadata_offsets
+                            .insert(topic.to_string(), messages.len());
                     }
                 }
             }
@@ -109,7 +110,8 @@ impl<'w, 's, T: BusEvent + Event> EventBusReader<'w, 's, T> {
             // so we add them to every topic query (they are shared across all topics)
             if topic == config.topics().first().unwrap_or(&String::new()) {
                 for event in self.events.read() {
-                    self.wrapped_events.push(EventWrapper::new_internal(event.clone()));
+                    self.wrapped_events
+                        .push(EventWrapper::new_internal(event.clone()));
                 }
             }
 
@@ -118,7 +120,7 @@ impl<'w, 's, T: BusEvent + Event> EventBusReader<'w, 's, T> {
                 all_events.push(event_wrapper.clone());
             }
         }
-        
+
         all_events
     }
 
@@ -136,22 +138,24 @@ impl<'w, 's, T: BusEvent + Event> EventBusReader<'w, 's, T> {
 
     /// Check if all buffers are empty
     pub fn is_empty(&self) -> bool {
-        self.event_buffer.is_empty() 
-            && self.events.is_empty() 
-            && self.wrapped_events.is_empty()
+        self.event_buffer.is_empty() && self.events.is_empty() && self.wrapped_events.is_empty()
     }
 }
 
 #[cfg(feature = "kafka")]
 impl<'w, 's, T: BusEvent + Event> EventBusReader<'w, 's, T> {
     /// Read events without auto-committing (manual commit mode) - Kafka specific
-    /// 
+    ///
     /// This method is only available when using a Kafka configuration with manual commit enabled.
     /// Returns events that can be manually committed after processing.
-    pub fn read_uncommitted(&mut self, config: &KafkaConsumerConfig) -> Vec<UncommittedEvent<EventWrapper<T>>> {
+    pub fn read_uncommitted(
+        &mut self,
+        config: &KafkaConsumerConfig,
+    ) -> Vec<UncommittedEvent<EventWrapper<T>>> {
         let events = self.read(config);
-        
-        events.into_iter()
+
+        events
+            .into_iter()
             .filter_map(|wrapper| {
                 // Only external events can be manually committed
                 if wrapper.is_external() {
@@ -166,7 +170,7 @@ impl<'w, 's, T: BusEvent + Event> EventBusReader<'w, 's, T> {
                                     std::time::SystemTime::now()
                                         .duration_since(std::time::UNIX_EPOCH)
                                         .map(|d| d.as_millis() as i64)
-                                        .unwrap_or(0)
+                                        .unwrap_or(0),
                                 ),
                                 key: m.key.clone(),
                                 headers: m.headers.clone(),
@@ -181,32 +185,32 @@ impl<'w, 's, T: BusEvent + Event> EventBusReader<'w, 's, T> {
                                     std::time::SystemTime::now()
                                         .duration_since(std::time::UNIX_EPOCH)
                                         .map(|d| d.as_millis() as i64)
-                                        .unwrap_or(0)
+                                        .unwrap_or(0),
                                 ),
                                 key: m.key.clone(),
                                 headers: m.headers.clone(),
                             }
                         }
                     });
-                    
-                    metadata.map(|kafka_metadata| UncommittedEvent::new(
-                            wrapper,
-                            kafka_metadata,
-                            || {
-                                // TODO: Implement actual commit logic through backend
-                                tracing::warn!("Manual commit not yet implemented - this is a placeholder");
-                                Ok(())
-                            }
-                        ))
+
+                    metadata.map(|kafka_metadata| {
+                        UncommittedEvent::new(wrapper, kafka_metadata, || {
+                            // TODO: Implement actual commit logic through backend
+                            tracing::warn!(
+                                "Manual commit not yet implemented - this is a placeholder"
+                            );
+                            Ok(())
+                        })
+                    })
                 } else {
                     None
                 }
             })
             .collect()
     }
-    
+
     /// Get consumer lag information for a Kafka configuration
-    /// 
+    ///
     /// Returns the lag for the configured consumer group across all topics.
     /// This is a placeholder implementation that will be enhanced when backend integration is complete.
     pub fn get_consumer_lag(&self, _config: &KafkaConsumerConfig) -> Result<i64, String> {

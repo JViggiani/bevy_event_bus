@@ -1,24 +1,68 @@
 use bevy::prelude::*;
-use std::time::{Duration, Instant};
 use bevy_event_bus::backends::EventBusBackend;
+use bevy_event_bus::{KafkaConnection, KafkaConsumerConfig, KafkaProducerConfig};
+use std::collections::HashMap;
+use std::process;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// Generate a unique topic name per test invocation
-pub fn unique_topic(base: &str) -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    format!("{}-{}", base, nanos)
+/// Default bootstrap servers used across tests when a specific endpoint is not required.
+pub const DEFAULT_KAFKA_BOOTSTRAP: &str = "localhost:9092";
+
+/// Construct a `KafkaProducerConfig` using common defaults for tests.
+pub fn kafka_producer_config<I, T>(bootstrap_servers: &str, topics: I) -> KafkaProducerConfig
+where
+    I: IntoIterator<Item = T>,
+    T: Into<String>,
+{
+    KafkaProducerConfig::new(bootstrap_servers, topics)
 }
 
-/// Poll an app until predicate returns true or timeout
+/// Construct a `KafkaConsumerConfig` using common defaults for tests.
+pub fn kafka_consumer_config<I, T>(
+    bootstrap_servers: &str,
+    consumer_group: impl Into<String>,
+    topics: I,
+) -> KafkaConsumerConfig
+where
+    I: IntoIterator<Item = T>,
+    T: Into<String>,
+{
+    KafkaConsumerConfig::new(bootstrap_servers, consumer_group, topics)
+}
 
-/// Build a pair (writer, reader) apps with independent backends (separate consumer groups)
+/// Build a baseline `KafkaConnection` frequently used in integration tests.
+pub fn kafka_connection_for_tests(
+    bootstrap_servers: &str,
+    client_id: Option<String>,
+) -> KafkaConnection {
+    KafkaConnection {
+        bootstrap_servers: bootstrap_servers.to_string(),
+        client_id,
+        timeout_ms: 5000,
+        additional_config: HashMap::new(),
+    }
+}
 
-/// Send a batch of events implementing Clone + serde via EventBusWriter
+fn next_unique_suffix() -> String {
+    static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let counter = UNIQUE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_secs(0))
+        .as_nanos();
+    format!("{}-{}-{}", process::id(), nanos, counter)
+}
 
-/// Collect all currently available events of type T for a topic
+/// Generate a unique topic name per test invocation.
+pub fn unique_topic(base: &str) -> String {
+    format!("{}-{}", base, next_unique_suffix())
+}
+
+/// Generate a unique consumer group identifier for Kafka-backed tests.
+pub fn unique_consumer_group(base: &str) -> String {
+    format!("{}-{}", base, next_unique_suffix())
+}
 
 /// Spin update frames on a reader app until predicate true or timeout (ms). Returns (success, frames_run).
 pub fn update_until(
@@ -74,19 +118,19 @@ pub async fn wait_for_condition<F, Fut>(
     timeout_ms: u64,
     initial_delay_ms: u64,
     max_delay_ms: u64,
-) -> bool 
+) -> bool
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = bool>,
 {
     let start = Instant::now();
     let mut delay = initial_delay_ms;
-    
+
     while start.elapsed() < Duration::from_millis(timeout_ms) {
         if condition().await {
             return true;
         }
-        
+
         tokio::time::sleep(Duration::from_millis(delay)).await;
         delay = (delay * 2).min(max_delay_ms);
     }
@@ -94,11 +138,7 @@ where
 }
 
 /// Wait for backend to be ready by checking if it can send a test message.
-pub async fn wait_for_backend_ready<B>(
-    backend: &B,
-    topic: &str,
-    timeout_ms: u64,
-) -> bool 
+pub async fn wait_for_backend_ready<B>(backend: &B, topic: &str, timeout_ms: u64) -> bool
 where
     B: EventBusBackend,
 {
@@ -110,7 +150,8 @@ where
         timeout_ms,
         50,  // Start with 50ms delay
         500, // Max 500ms delay
-    ).await
+    )
+    .await
 }
 
 /// Wait for consumer group to be ready by checking if it can receive messages.
@@ -119,7 +160,7 @@ pub async fn wait_for_consumer_group_ready<B>(
     topic: &str,
     group_id: &str,
     timeout_ms: u64,
-) -> bool 
+) -> bool
 where
     B: EventBusBackend,
 {
@@ -131,9 +172,10 @@ where
             !result.is_empty() || true // Accept empty results as "ready"
         },
         timeout_ms,
-        100, // Start with 100ms delay  
+        100,  // Start with 100ms delay
         1000, // Max 1000ms delay
-    ).await
+    )
+    .await
 }
 
 /// Wait for messages to be available in a consumer group.
@@ -149,24 +191,30 @@ where
 {
     let start = Instant::now();
     let mut last_count = 0;
-    
+
     loop {
         let messages = backend.receive_serialized_with_group(topic, group_id).await;
         let count = messages.len();
-        
+
         if count != last_count {
-            tracing::info!(topic, group_id, count, min_count, "wait_for_messages_in_group progress");
+            tracing::info!(
+                topic,
+                group_id,
+                count,
+                min_count,
+                "wait_for_messages_in_group progress"
+            );
             last_count = count;
         }
-        
+
         if count >= min_count {
             return messages;
         }
-        
+
         if start.elapsed() > Duration::from_millis(timeout_ms) {
             return messages;
         }
-        
+
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
@@ -181,36 +229,36 @@ pub fn run_app_updates(app: &mut App, iterations: u32) {
 }
 
 /// Helper to setup a Kafka backend and consumer group with proper synchronization
-pub async fn setup_kafka_consumer_group<B>(
-    backend: &mut B,
-    topics: &[String],
-    group_id: &str,
-) where
+pub async fn setup_kafka_consumer_group<B>(backend: &mut B, topics: &[String], group_id: &str)
+where
     B: EventBusBackend,
 {
     // Connect the backend to Kafka
     let connect_result = backend.connect().await;
     assert!(connect_result, "Failed to connect to Kafka");
-    
+
     // Send dummy messages to ensure topics exist in Kafka
     let dummy_message = b"topic_creation_dummy";
     for topic in topics {
         backend.try_send_serialized(dummy_message, topic);
     }
-    
+
     // Wait for backend to be ready for the first topic
     if !topics.is_empty() {
         let backend_ready = wait_for_backend_ready(backend, &topics[0], 5000).await;
         assert!(backend_ready, "Backend not ready within timeout");
     }
-    
+
     // Create consumer group after topics exist
-    backend.create_consumer_group(topics, group_id).await.unwrap();
-    
+    backend
+        .create_consumer_group(topics, group_id)
+        .await
+        .unwrap();
+
     // Wait for consumer group to be ready
     if !topics.is_empty() {
-        let consumer_ready = wait_for_consumer_group_ready(backend, &topics[0], group_id, 10000).await;
+        let consumer_ready =
+            wait_for_consumer_group_ready(backend, &topics[0], group_id, 10000).await;
         assert!(consumer_ready, "Consumer group not ready within timeout");
     }
 }
-

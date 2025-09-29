@@ -1,8 +1,11 @@
 use crate::common::events::{TestEvent, UserLoginEvent};
-use crate::common::helpers::{unique_topic, update_until};
+use crate::common::helpers::{
+    DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
+    unique_topic, update_until,
+};
 use crate::common::setup::setup;
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt, KafkaConsumerConfig, KafkaProducerConfig};
+use bevy_event_bus::{EventBusAppExt, EventBusPlugins, EventBusReader, EventBusWriter};
 
 #[test]
 fn single_topic_multiple_types_same_frame() {
@@ -32,10 +35,17 @@ fn single_topic_multiple_types_same_frame() {
     reader.insert_resource(CollectedA::default());
     reader.insert_resource(CollectedB::default());
     let tr_a = topic.clone();
+    let consumer_group = unique_consumer_group("multi_type_same_frame");
+    let consumer_group_for_test = consumer_group.clone();
+    let consumer_group_for_login = consumer_group.clone();
     reader.add_systems(
         Update,
         move |mut r1: EventBusReader<TestEvent>, mut a: ResMut<CollectedA>| {
-            for wrapper in r1.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&tr_a])) {
+            for wrapper in r1.read(&kafka_consumer_config(
+                DEFAULT_KAFKA_BOOTSTRAP,
+                consumer_group_for_test.as_str(),
+                [&tr_a],
+            )) {
                 a.0.push(wrapper.event().clone());
             }
         },
@@ -44,7 +54,11 @@ fn single_topic_multiple_types_same_frame() {
     reader.add_systems(
         Update,
         move |mut r2: EventBusReader<UserLoginEvent>, mut b: ResMut<CollectedB>| {
-            for wrapper in r2.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&tr_b])) {
+            for wrapper in r2.read(&kafka_consumer_config(
+                DEFAULT_KAFKA_BOOTSTRAP,
+                consumer_group_for_login.as_str(),
+                [&tr_b],
+            )) {
                 b.0.push(wrapper.event().clone());
             }
         },
@@ -52,10 +66,10 @@ fn single_topic_multiple_types_same_frame() {
 
     // Ensure topic is ready before proceeding
     let topic_ready = crate::common::setup::ensure_topic_ready(
-        &_b2, 
-        &topic, 
+        &_b2,
+        &topic,
         1, // partitions
-        std::time::Duration::from_secs(5)
+        std::time::Duration::from_secs(5),
     );
     assert!(topic_ready, "Topic {} not ready within timeout", topic);
 
@@ -71,14 +85,14 @@ fn single_topic_multiple_types_same_frame() {
                 return;
             }
             let _ = w1.write(
-                &KafkaProducerConfig::new("localhost:9092", [&tclone]),
+                &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&tclone]),
                 TestEvent {
                     message: "hello".into(),
                     value: 42,
                 },
             );
             let _ = w2.write(
-                &KafkaProducerConfig::new("localhost:9092", [&tclone]),
+                &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&tclone]),
                 UserLoginEvent {
                     user_id: "u1".into(),
                     timestamp: 1,
@@ -94,9 +108,9 @@ fn single_topic_multiple_types_same_frame() {
         let b = app.world().resource::<CollectedB>();
         !a.0.is_empty() && !b.0.is_empty()
     });
-    
+
     assert!(ok, "Timed out waiting for both event types within timeout");
-    
+
     let a = reader.world().resource::<CollectedA>();
     let b = reader.world().resource::<CollectedB>();
     assert_eq!(a.0.len(), 1, "Expected 1 TestEvent, got {}", a.0.len());
@@ -131,10 +145,17 @@ fn single_topic_multiple_types_interleaved_frames() {
     reader.insert_resource(CollectedA::default());
     reader.insert_resource(CollectedB::default());
     let tr_a2 = topic.clone();
+    let consumer_group2 = unique_consumer_group("multi_type_interleaved");
+    let consumer_group2_for_test = consumer_group2.clone();
+    let consumer_group2_for_login = consumer_group2.clone();
     reader.add_systems(
         Update,
         move |mut r1: EventBusReader<TestEvent>, mut a: ResMut<CollectedA>| {
-            for wrapper in r1.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&tr_a2])) {
+            for wrapper in r1.read(&kafka_consumer_config(
+                DEFAULT_KAFKA_BOOTSTRAP,
+                consumer_group2_for_test.as_str(),
+                [&tr_a2],
+            )) {
                 a.0.push(wrapper.event().clone());
             }
         },
@@ -143,7 +164,11 @@ fn single_topic_multiple_types_interleaved_frames() {
     reader.add_systems(
         Update,
         move |mut r2: EventBusReader<UserLoginEvent>, mut b: ResMut<CollectedB>| {
-            for wrapper in r2.read(&KafkaConsumerConfig::new("localhost:9092", "test_group", [&tr_b2])) {
+            for wrapper in r2.read(&kafka_consumer_config(
+                DEFAULT_KAFKA_BOOTSTRAP,
+                consumer_group2_for_login.as_str(),
+                [&tr_b2],
+            )) {
                 b.0.push(wrapper.event().clone());
             }
         },
@@ -151,10 +176,10 @@ fn single_topic_multiple_types_interleaved_frames() {
 
     // Ensure topic is ready before proceeding
     let topic_ready = crate::common::setup::ensure_topic_ready(
-        &_b2, 
-        &topic, 
+        &_b2,
+        &topic,
         1, // partitions
-        std::time::Duration::from_secs(5)
+        std::time::Duration::from_secs(5),
     );
     assert!(topic_ready, "Topic {} not ready within timeout", topic);
 
@@ -170,7 +195,7 @@ fn single_topic_multiple_types_interleaved_frames() {
               mut c: ResMut<Counter>| {
             if c.0 % 2 == 0 {
                 let _ = w1.write(
-                    &KafkaProducerConfig::new("localhost:9092", [&tclone]),
+                    &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&tclone]),
                     TestEvent {
                         message: format!("m{}", c.0),
                         value: c.0 as i32,
@@ -178,7 +203,7 @@ fn single_topic_multiple_types_interleaved_frames() {
                 );
             } else {
                 let _ = w2.write(
-                    &KafkaProducerConfig::new("localhost:9092", [&tclone]),
+                    &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&tclone]),
                     UserLoginEvent {
                         user_id: format!("u{}", c.0),
                         timestamp: c.0 as u64,
@@ -198,8 +223,11 @@ fn single_topic_multiple_types_interleaved_frames() {
         let b = app.world().resource::<CollectedB>();
         a.0.len() >= 3 && b.0.len() >= 3
     });
-    
-    assert!(ok, "Timed out waiting for interleaved events within timeout");
+
+    assert!(
+        ok,
+        "Timed out waiting for interleaved events within timeout"
+    );
     let a = reader.world().resource::<CollectedA>();
     let b = reader.world().resource::<CollectedB>();
     assert!(a.0.len() >= 3);

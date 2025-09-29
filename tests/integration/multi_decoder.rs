@@ -1,21 +1,21 @@
 //! Integration test for comprehensive multi-decoder pipeline scenario
-//! 
+//!
 //! This test demonstrates a realistic scenario with:
 //! - Multiple event types (PlayerMove, PlayerAttack, GameStateUpdate)
 //! - Multiple topics (game_events, combat_events, analytics_events)  
 //! - Complex many-to-many relationships between events and topics
 //! - Verification that decoders work correctly across all configurations
-//! 
+//!
 //! This validates the many-to-many relationship capabilities of the event bus
 //! in a real Kafka environment.
 
 use bevy::prelude::*;
 use bevy_event_bus::prelude::*;
-use bevy_event_bus::{PreconfiguredTopics, EventBusAppExt};
+use bevy_event_bus::{EventBusAppExt, PreconfiguredTopics};
 use serde::{Deserialize, Serialize};
 
-use crate::common::setup::setup;
 use crate::common::helpers::unique_topic;
+use crate::common::setup::setup;
 
 // Event types for the comprehensive test
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Event)]
@@ -49,61 +49,74 @@ fn test_multi_decoder() {
     let topic_game = unique_topic("game_events");
     let topic_combat = unique_topic("combat_events");
     let topic_analytics = unique_topic("analytics_events");
-    
+
     // Set up a single app that demonstrates comprehensive many-to-many relationships
     let (backend, _) = setup();
     let mut app = App::new();
     app.add_plugins(EventBusPlugins(
         backend,
-        PreconfiguredTopics::new([topic_game.clone(), topic_combat.clone(), topic_analytics.clone()]),
+        PreconfiguredTopics::new([
+            topic_game.clone(),
+            topic_combat.clone(),
+            topic_analytics.clone(),
+        ]),
     ));
-    
+
     // Configure comprehensive many-to-many relationships using the new API
-    
+
     // PlayerMove events should be decoded from both game_events and combat_events
     // (movement happens in both general gameplay and combat scenarios)
     app.add_bus_event_multi::<PlayerMove>(&[&topic_game, &topic_combat]);
-    
+
     // PlayerAttack events should only be decoded from combat_events
     // (attacks are combat-specific)
     app.add_bus_event::<PlayerAttack>(&topic_combat);
-    
+
     // GameStateUpdate events should be decoded from both game_events and analytics_events
     // (game state updates come from both gameplay and analytics systems)
     app.add_bus_event_multi::<GameStateUpdate>(&[&topic_game, &topic_analytics]);
-    
+
     // Initialize the app
     app.update();
-    
+
     // Verify the decoder registrations are correct
     let registry = app.world().resource::<DecoderRegistry>();
-    
+
     // Check game_events topic: should have PlayerMove and GameStateUpdate decoders
-    assert_eq!(registry.decoder_count(&topic_game), 2, 
-        "game_events should have 2 decoders (PlayerMove + GameStateUpdate)");
-    
-    // Check combat_events topic: should have PlayerMove and PlayerAttack decoders  
-    assert_eq!(registry.decoder_count(&topic_combat), 2,
-        "combat_events should have 2 decoders (PlayerMove + PlayerAttack)");
-    
+    assert_eq!(
+        registry.decoder_count(&topic_game),
+        2,
+        "game_events should have 2 decoders (PlayerMove + GameStateUpdate)"
+    );
+
+    // Check combat_events topic: should have PlayerMove and PlayerAttack decoders
+    assert_eq!(
+        registry.decoder_count(&topic_combat),
+        2,
+        "combat_events should have 2 decoders (PlayerMove + PlayerAttack)"
+    );
+
     // Check analytics_events topic: should have only GameStateUpdate decoder
-    assert_eq!(registry.decoder_count(&topic_analytics), 1,
-        "analytics_events should have 1 decoder (GameStateUpdate)");
-    
+    assert_eq!(
+        registry.decoder_count(&topic_analytics),
+        1,
+        "analytics_events should have 1 decoder (GameStateUpdate)"
+    );
+
     // Test that the decoders actually work by creating test messages and decoding them
-    
+
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    
+
     let move_event = PlayerMove {
         player_id: 1,
         x: 10.0,
         y: 20.0,
         timestamp,
     };
-    
+
     let attack_event = PlayerAttack {
         attacker_id: 1,
         target_id: 2,
@@ -111,63 +124,125 @@ fn test_multi_decoder() {
         weapon: "sword".to_string(),
         timestamp: timestamp + 1,
     };
-    
+
     let state_event = GameStateUpdate {
         level: 5,
         score: 1000,
         players_online: 25,
         timestamp: timestamp + 2,
     };
-    
+
     // Serialize test events to JSON
     let move_json = serde_json::to_string(&move_event).unwrap();
-    let attack_json = serde_json::to_string(&attack_event).unwrap(); 
+    let attack_json = serde_json::to_string(&attack_event).unwrap();
     let state_json = serde_json::to_string(&state_event).unwrap();
-    
+
     let mut registry = app.world_mut().resource_mut::<DecoderRegistry>();
-    
+
     // Test PlayerMove decoding from game_events topic
     let decoded_game_moves = registry.decode_all(&topic_game, move_json.as_bytes());
-    assert_eq!(decoded_game_moves.len(), 1, "Should decode PlayerMove from game_events");
-    let decoded_move = decoded_game_moves[0].as_any().downcast_ref::<PlayerMove>().unwrap();
-    assert_eq!(*decoded_move, move_event, "Decoded PlayerMove should match original");
-    
-    // Test PlayerMove decoding from combat_events topic  
+    assert_eq!(
+        decoded_game_moves.len(),
+        1,
+        "Should decode PlayerMove from game_events"
+    );
+    let decoded_move = decoded_game_moves[0]
+        .as_any()
+        .downcast_ref::<PlayerMove>()
+        .unwrap();
+    assert_eq!(
+        *decoded_move, move_event,
+        "Decoded PlayerMove should match original"
+    );
+
+    // Test PlayerMove decoding from combat_events topic
     let decoded_combat_moves = registry.decode_all(&topic_combat, move_json.as_bytes());
-    assert_eq!(decoded_combat_moves.len(), 1, "Should decode PlayerMove from combat_events");
-    let decoded_move = decoded_combat_moves[0].as_any().downcast_ref::<PlayerMove>().unwrap();
-    assert_eq!(*decoded_move, move_event, "Decoded PlayerMove should match original");
-    
+    assert_eq!(
+        decoded_combat_moves.len(),
+        1,
+        "Should decode PlayerMove from combat_events"
+    );
+    let decoded_move = decoded_combat_moves[0]
+        .as_any()
+        .downcast_ref::<PlayerMove>()
+        .unwrap();
+    assert_eq!(
+        *decoded_move, move_event,
+        "Decoded PlayerMove should match original"
+    );
+
     // Test PlayerAttack decoding from combat_events topic (should work)
     let decoded_attacks = registry.decode_all(&topic_combat, attack_json.as_bytes());
-    assert_eq!(decoded_attacks.len(), 1, "Should decode PlayerAttack from combat_events");
-    let decoded_attack = decoded_attacks[0].as_any().downcast_ref::<PlayerAttack>().unwrap();
-    assert_eq!(*decoded_attack, attack_event, "Decoded PlayerAttack should match original");
-    
+    assert_eq!(
+        decoded_attacks.len(),
+        1,
+        "Should decode PlayerAttack from combat_events"
+    );
+    let decoded_attack = decoded_attacks[0]
+        .as_any()
+        .downcast_ref::<PlayerAttack>()
+        .unwrap();
+    assert_eq!(
+        *decoded_attack, attack_event,
+        "Decoded PlayerAttack should match original"
+    );
+
     // Test PlayerAttack decoding from game_events topic (should fail - no decoder)
     let decoded_game_attacks = registry.decode_all(&topic_game, attack_json.as_bytes());
-    assert_eq!(decoded_game_attacks.len(), 0, "Should not decode PlayerAttack from game_events");
-    
-    // Test PlayerAttack decoding from analytics_events topic (should fail - no decoder) 
+    assert_eq!(
+        decoded_game_attacks.len(),
+        0,
+        "Should not decode PlayerAttack from game_events"
+    );
+
+    // Test PlayerAttack decoding from analytics_events topic (should fail - no decoder)
     let decoded_analytics_attacks = registry.decode_all(&topic_analytics, attack_json.as_bytes());
-    assert_eq!(decoded_analytics_attacks.len(), 0, "Should not decode PlayerAttack from analytics_events");
-    
+    assert_eq!(
+        decoded_analytics_attacks.len(),
+        0,
+        "Should not decode PlayerAttack from analytics_events"
+    );
+
     // Test GameStateUpdate decoding from game_events topic
     let decoded_game_states = registry.decode_all(&topic_game, state_json.as_bytes());
-    assert_eq!(decoded_game_states.len(), 1, "Should decode GameStateUpdate from game_events");
-    let decoded_state = decoded_game_states[0].as_any().downcast_ref::<GameStateUpdate>().unwrap();
-    assert_eq!(*decoded_state, state_event, "Decoded GameStateUpdate should match original");
-    
+    assert_eq!(
+        decoded_game_states.len(),
+        1,
+        "Should decode GameStateUpdate from game_events"
+    );
+    let decoded_state = decoded_game_states[0]
+        .as_any()
+        .downcast_ref::<GameStateUpdate>()
+        .unwrap();
+    assert_eq!(
+        *decoded_state, state_event,
+        "Decoded GameStateUpdate should match original"
+    );
+
     // Test GameStateUpdate decoding from analytics_events topic
     let decoded_analytics_states = registry.decode_all(&topic_analytics, state_json.as_bytes());
-    assert_eq!(decoded_analytics_states.len(), 1, "Should decode GameStateUpdate from analytics_events");
-    let decoded_state = decoded_analytics_states[0].as_any().downcast_ref::<GameStateUpdate>().unwrap();
-    assert_eq!(*decoded_state, state_event, "Decoded GameStateUpdate should match original");
-    
+    assert_eq!(
+        decoded_analytics_states.len(),
+        1,
+        "Should decode GameStateUpdate from analytics_events"
+    );
+    let decoded_state = decoded_analytics_states[0]
+        .as_any()
+        .downcast_ref::<GameStateUpdate>()
+        .unwrap();
+    assert_eq!(
+        *decoded_state, state_event,
+        "Decoded GameStateUpdate should match original"
+    );
+
     // Test GameStateUpdate decoding from combat_events topic (should fail - no decoder)
     let decoded_combat_states = registry.decode_all(&topic_combat, state_json.as_bytes());
-    assert_eq!(decoded_combat_states.len(), 0, "Should not decode GameStateUpdate from combat_events");
-    
+    assert_eq!(
+        decoded_combat_states.len(),
+        0,
+        "Should not decode GameStateUpdate from combat_events"
+    );
+
     println!("✅ Comprehensive multi-decoder pipeline test completed successfully!");
     println!("   - 3 event types across 3 topics");
     println!("   - Many-to-many event-topic relationships verified");

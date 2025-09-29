@@ -10,10 +10,10 @@ pub mod kafka;
 pub trait EventBusConfig: Send + Sync + Clone + 'static {
     /// The backend type this configuration is for (e.g., Kafka, InMemory)
     type Backend: BackendMarker;
-    
+
     /// Get topics this config applies to
     fn topics(&self) -> &[String];
-    
+
     /// Get a unique identifier for this configuration instance
     fn config_id(&self) -> String;
 }

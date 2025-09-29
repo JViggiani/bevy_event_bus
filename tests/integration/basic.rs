@@ -1,8 +1,11 @@
 use crate::common::TestEvent;
+use crate::common::helpers::{
+    DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
+    unique_topic, update_until,
+};
 use crate::common::setup::setup;
-use crate::common::helpers::{unique_topic, update_until};
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusPlugins, EventBusReader, EventBusWriter, EventBusAppExt, KafkaConsumerConfig, KafkaProducerConfig};
+use bevy_event_bus::{EventBusAppExt, EventBusPlugins, EventBusReader, EventBusWriter};
 use tracing::{info, info_span};
 use tracing_subscriber::EnvFilter;
 
@@ -37,7 +40,7 @@ fn test_basic_kafka_event_bus() {
         backend_writer,
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
-    
+
     // Register bus event to enable EventBusWriter error handling
     writer_app.add_bus_event::<TestEvent>(&topic);
 
@@ -51,7 +54,7 @@ fn test_basic_kafka_event_bus() {
     writer_app.insert_resource(ToSend(event_to_send.clone(), topic.clone()));
 
     fn writer_system(mut w: EventBusWriter<TestEvent>, data: Res<ToSend>) {
-        let config = KafkaProducerConfig::new("localhost:9092", [&data.1]);
+        let config = kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&data.1]);
         let _ = w.write(&config, data.0.clone());
     }
     writer_app.add_systems(Update, writer_system);
@@ -67,7 +70,7 @@ fn test_basic_kafka_event_bus() {
         backend_reader,
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
-    
+
     // Register bus event for reading
     reader_app.add_bus_event::<TestEvent>(&topic);
 
@@ -76,14 +79,19 @@ fn test_basic_kafka_event_bus() {
     reader_app.insert_resource(Collected::default());
     #[derive(Resource, Clone)]
     struct Topic(String);
+    #[derive(Resource, Clone)]
+    struct ConsumerGroup(String);
+    let consumer_group = unique_consumer_group("basic_reader_group");
     reader_app.insert_resource(Topic(topic.clone()));
+    reader_app.insert_resource(ConsumerGroup(consumer_group));
 
     fn reader_system(
         mut r: EventBusReader<TestEvent>,
         topic: Res<Topic>,
+        group: Res<ConsumerGroup>,
         mut collected: ResMut<Collected>,
     ) {
-        let config = KafkaConsumerConfig::new("localhost:9092", "test_group", [&topic.0]);
+        let config = kafka_consumer_config(DEFAULT_KAFKA_BOOTSTRAP, group.0.as_str(), [&topic.0]);
         for wrapper in r.read(&config) {
             collected.0.push(wrapper.event().clone());
         }
@@ -98,7 +106,7 @@ fn test_basic_kafka_event_bus() {
         let collected = app.world().resource::<Collected>();
         !collected.0.is_empty()
     });
-    
+
     if received {
         info!(
             frames,
@@ -106,7 +114,7 @@ fn test_basic_kafka_event_bus() {
             "Received first message"
         );
     }
-    
+
     info!(
         total_frames = frames,
         poll_elapsed_ms = start_poll.elapsed().as_millis(),

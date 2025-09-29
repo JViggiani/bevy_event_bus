@@ -1,9 +1,9 @@
+use crate::BusEvent;
+use crate::resources::backend_metadata::EventMetadata;
 use bevy::prelude::*;
 use crossbeam_channel::Receiver;
 use std::collections::HashMap;
 use std::time::Instant;
-use crate::BusEvent;
-use crate::resources::backend_metadata::EventMetadata;
 
 /// Raw incoming message captured by background consumer task
 #[derive(Debug, Clone)]
@@ -22,7 +22,7 @@ impl EventMetadata {
     pub fn key_as_string(&self) -> Option<String> {
         self.key.clone()
     }
-    
+
     /// Get a human-readable representation of the key
     pub fn key_display(&self) -> Option<String> {
         self.key.clone()
@@ -46,7 +46,7 @@ impl<T: BusEvent> EventWrapper<T> {
             metadata: Some(metadata),
         }
     }
-    
+
     /// Create a new EventWrapper for an internal event without metadata
     pub fn new_internal(event: T) -> Self {
         Self {
@@ -54,32 +54,32 @@ impl<T: BusEvent> EventWrapper<T> {
             metadata: None,
         }
     }
-    
+
     /// Get the event data regardless of source
     pub fn event(&self) -> &T {
         &self.event
     }
-    
+
     /// Get metadata if this is an external event
     pub fn metadata(&self) -> Option<&EventMetadata> {
         self.metadata.as_ref()
     }
-    
+
     /// Check if this event came from an external source
     pub fn is_external(&self) -> bool {
         self.metadata.is_some()
     }
-    
+
     /// Check if this event came from internal Bevy events
     pub fn is_internal(&self) -> bool {
         self.metadata.is_none()
     }
-    
+
     /// Extract the inner event, consuming the wrapper
     pub fn into_event(self) -> T {
         self.event
     }
-    
+
     /// Extract both event and metadata (if available), consuming the wrapper
     pub fn into_parts(self) -> (T, Option<EventMetadata>) {
         (self.event, self.metadata)
@@ -88,15 +88,14 @@ impl<T: BusEvent> EventWrapper<T> {
 
 impl<T: BusEvent> std::ops::Deref for EventWrapper<T> {
     type Target = T;
-    
+
     fn deref(&self) -> &Self::Target {
         &self.event
     }
 }
 
 /// Configuration controlling how many events are drained each frame
-#[derive(Resource, Debug, Clone)]
-#[derive(Default)]
+#[derive(Resource, Debug, Clone, Default)]
 pub struct EventBusConsumerConfig {
     /// Maximum events to drain per frame (None = unlimited)
     pub max_events_per_frame: Option<usize>,
@@ -125,8 +124,7 @@ pub struct DrainedTopicMetadata {
 }
 
 /// Basic consumer metrics (frame-scoped counters + cumulative stats)
-#[derive(Resource, Debug, Clone)]
-#[derive(Default)]
+#[derive(Resource, Debug, Clone, Default)]
 pub struct ConsumerMetrics {
     pub drained_last_frame: usize,
     pub remaining_channel_after_drain: usize,
@@ -176,7 +174,7 @@ mod tests {
             offset: 42,
         };
         metadata.backend_specific = Some(Box::new(kafka_metadata));
-        
+
         if let Some(kafka_meta) = metadata.kafka_metadata() {
             assert_eq!(kafka_meta.topic, "test_topic");
             assert_eq!(kafka_meta.partition, 0);
@@ -189,7 +187,7 @@ mod tests {
         let mut headers = std::collections::HashMap::new();
         headers.insert("correlation_id".to_string(), "abc-123".to_string());
         headers.insert("source_service".to_string(), "world_simulator".to_string());
-        
+
         let metadata_with_headers = EventMetadata::new(
             "events_topic".to_string(),
             Instant::now(),
@@ -201,11 +199,20 @@ mod tests {
                 offset: 456,
             })),
         );
-        
+
         assert_eq!(metadata_with_headers.source, "events_topic");
-        assert_eq!(metadata_with_headers.key_as_string(), Some("event_key_789".to_string()));
-        assert_eq!(metadata_with_headers.headers.get("correlation_id"), Some(&"abc-123".to_string()));
-        assert_eq!(metadata_with_headers.headers.get("source_service"), Some(&"world_simulator".to_string()));
+        assert_eq!(
+            metadata_with_headers.key_as_string(),
+            Some("event_key_789".to_string())
+        );
+        assert_eq!(
+            metadata_with_headers.headers.get("correlation_id"),
+            Some(&"abc-123".to_string())
+        );
+        assert_eq!(
+            metadata_with_headers.headers.get("source_service"),
+            Some(&"world_simulator".to_string())
+        );
     }
 
     #[test]
@@ -216,7 +223,7 @@ mod tests {
             partition: 1,
             offset: 100,
         };
-        
+
         let metadata = EventMetadata::new(
             "kafka_topic".to_string(),
             Instant::now(),
@@ -224,7 +231,7 @@ mod tests {
             Some("partition_key".to_string()),
             Some(Box::new(kafka_meta)),
         );
-        
+
         // Test the helper method
         assert!(metadata.kafka_metadata().is_some());
         if let Some(k_meta) = metadata.kafka_metadata() {
@@ -258,10 +265,10 @@ pub struct DecodedEventBuffer {
 pub struct TopicDecodedEvents {
     /// Maps TypeId to a vector of type-erased decoded events with metadata
     pub events_by_type: HashMap<std::any::TypeId, Vec<TypeErasedEvent>>,
-    
+
     /// Total number of raw messages processed for this topic
     pub total_processed: usize,
-    
+
     /// Number of messages that failed to decode with any decoder
     pub decode_failures: usize,
 }
@@ -270,10 +277,10 @@ pub struct TopicDecodedEvents {
 pub struct TypeErasedEvent {
     /// The decoded event as a type-erased box
     pub event: Box<dyn std::any::Any + Send + Sync>,
-    
+
     /// Metadata associated with this event
     pub metadata: EventMetadata,
-    
+
     /// Name of the decoder that produced this event (for debugging)
     pub decoder_name: String,
 }
@@ -282,26 +289,31 @@ impl TopicDecodedEvents {
     pub fn new() -> Self {
         Self::default()
     }
-    
+
     /// Add a decoded event to the appropriate type bucket
-    pub fn add_event<T: 'static + Send + Sync>(&mut self, event: T, metadata: EventMetadata, decoder_name: String) {
+    pub fn add_event<T: 'static + Send + Sync>(
+        &mut self,
+        event: T,
+        metadata: EventMetadata,
+        decoder_name: String,
+    ) {
         let type_id = std::any::TypeId::of::<T>();
         let type_erased = TypeErasedEvent {
             event: Box::new(event),
             metadata,
             decoder_name,
         };
-        
+
         self.events_by_type
             .entry(type_id)
             .or_insert_with(Vec::new)
             .push(type_erased);
     }
-    
+
     /// Get events of a specific type, converting them back from type-erased storage
     pub fn get_events<T: BusEvent>(&self) -> Vec<EventWrapper<T>> {
         let type_id = std::any::TypeId::of::<T>();
-        
+
         if let Some(type_erased_events) = self.events_by_type.get(&type_id) {
             type_erased_events
                 .iter()
@@ -315,25 +327,28 @@ impl TopicDecodedEvents {
             Vec::new()
         }
     }
-    
+
     /// Get the number of events of a specific type
     pub fn count_events<T: 'static>(&self) -> usize {
         let type_id = std::any::TypeId::of::<T>();
-        self.events_by_type.get(&type_id).map(|v| v.len()).unwrap_or(0)
+        self.events_by_type
+            .get(&type_id)
+            .map(|v| v.len())
+            .unwrap_or(0)
     }
-    
+
     /// Get total number of successfully decoded events across all types
     pub fn total_events(&self) -> usize {
         self.events_by_type.values().map(|v| v.len()).sum()
     }
-    
+
     /// Clear all events (typically called after processing)
     pub fn clear(&mut self) {
         self.events_by_type.clear();
         self.total_processed = 0;
         self.decode_failures = 0;
     }
-    
+
     /// Get decode success rate as a percentage
     pub fn success_rate(&self) -> f32 {
         if self.total_processed == 0 {

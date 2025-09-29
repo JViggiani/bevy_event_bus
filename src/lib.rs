@@ -20,18 +20,17 @@ mod writers;
 // Re-exports
 pub use app_ext::EventBusAppExt;
 pub use backends::EventBusBackend;
-pub use config::{EventBusConfig, BackendMarker, Kafka, InMemory, ProcessingLimits};
-pub use decoder::{DecoderRegistry, DecoderFn, TypedDecoder, DecodedEvent};
-pub use error::{EventBusError, EventBusErrorType, EventBusDecodeError};
+pub use config::{BackendMarker, EventBusConfig, InMemory, Kafka, ProcessingLimits};
+pub use decoder::{DecodedEvent, DecoderFn, DecoderRegistry, TypedDecoder};
+pub use error::{EventBusDecodeError, EventBusError, EventBusErrorType};
 pub use event::BusEvent;
 pub use plugin::{BackendDownEvent, BackendReadyEvent, BackendStatus};
 pub use plugin::{EventBusPlugin, EventBusPlugins, PreconfiguredTopics};
 pub use readers::event_bus_reader::EventBusReader;
 pub use resources::{
-    ConsumerMetrics, DecodedEventBuffer, EventBusConsumerConfig,
-    EventMetadata, ProcessedMessage,
-    TopicDecodedEvents, KafkaMetadata, BackendMetadata, EventWrapper,
-    DrainMetricsEvent, DrainedTopicMetadata,
+    BackendMetadata, ConsumerMetrics, DecodedEventBuffer, DrainMetricsEvent, DrainedTopicMetadata,
+    EventBusConsumerConfig, EventMetadata, EventWrapper, KafkaMetadata, ProcessedMessage,
+    TopicDecodedEvents,
 };
 pub use writers::event_bus_writer::EventBusWriter;
 
@@ -39,7 +38,9 @@ pub use writers::event_bus_writer::EventBusWriter;
 #[cfg(feature = "kafka")]
 pub use backends::kafka_backend::{KafkaConnection, KafkaEventBusBackend};
 #[cfg(feature = "kafka")]
-pub use config::kafka::{KafkaConsumerConfig, KafkaProducerConfig, KafkaEventMetadata, UncommittedEvent};
+pub use config::kafka::{
+    KafkaConsumerConfig, KafkaEventMetadata, KafkaProducerConfig, UncommittedEvent,
+};
 
 // Re-export the derive macro
 pub use bevy_event_bus_derive::ExternalBusEvent;
@@ -50,19 +51,21 @@ pub use runtime::{block_on, runtime};
 /// Re-export common items for convenience
 pub mod prelude {
     pub use crate::{
-        app_ext::EventBusAppExt,
         BusEvent, ConsumerMetrics, DecodedEvent, DecodedEventBuffer, DecoderRegistry,
-        EventBusBackend, EventBusConsumerConfig, EventBusError, EventBusErrorType, 
-        EventBusDecodeError, EventBusPlugin, EventBusPlugins, EventBusReader, EventBusWriter, EventWrapper,
-        ProcessedMessage, TopicDecodedEvents, EventMetadata, ExternalBusEvent,
+        EventBusBackend, EventBusConsumerConfig, EventBusDecodeError, EventBusError,
+        EventBusErrorType, EventBusPlugin, EventBusPlugins, EventBusReader, EventBusWriter,
+        EventMetadata, EventWrapper, ExternalBusEvent, ProcessedMessage, TopicDecodedEvents,
         TypedDecoder,
-        config::{EventBusConfig, BackendMarker, Kafka, InMemory, ProcessingLimits},
+        app_ext::EventBusAppExt,
+        config::{BackendMarker, EventBusConfig, InMemory, Kafka, ProcessingLimits},
     };
-    
+
     #[cfg(feature = "kafka")]
     pub use crate::{
         KafkaConnection, KafkaEventBusBackend,
-        config::kafka::{KafkaConsumerConfig, KafkaProducerConfig, KafkaEventMetadata, UncommittedEvent},
+        config::kafka::{
+            KafkaConsumerConfig, KafkaEventMetadata, KafkaProducerConfig, UncommittedEvent,
+        },
     };
 }
 
