@@ -3,6 +3,8 @@
 //! This crate provides an interface similar to Bevy's EventReader/EventWriter
 //! but connected to external message brokers like Kafka.
 
+extern crate self as bevy_event_bus;
+
 // Core modules
 pub mod app_ext;
 pub mod backends;
@@ -26,13 +28,17 @@ pub use error::{EventBusDecodeError, EventBusError, EventBusErrorType};
 pub use event::BusEvent;
 pub use plugin::{BackendDownEvent, BackendReadyEvent, BackendStatus};
 pub use plugin::{EventBusPlugin, EventBusPlugins, PreconfiguredTopics};
-pub use readers::event_bus_reader::EventBusReader;
+pub use readers::BusEventReader;
+#[cfg(feature = "kafka")]
+pub use readers::{KafkaEventReader, KafkaReaderError};
 pub use resources::{
     BackendMetadata, ConsumerMetrics, DecodedEventBuffer, DrainMetricsEvent, DrainedTopicMetadata,
     EventBusConsumerConfig, EventMetadata, EventWrapper, KafkaMetadata, ProcessedMessage,
     TopicDecodedEvents,
 };
-pub use writers::event_bus_writer::{EventBusErrorQueue, EventBusWriter};
+pub use writers::{BusEventWriter, EventBusErrorQueue};
+#[cfg(feature = "kafka")]
+pub use writers::{KafkaEventWriter, KafkaWriterError};
 
 // Re-export backends
 #[cfg(feature = "kafka")]
@@ -50,10 +56,10 @@ pub use runtime::{block_on, runtime};
 
 /// Re-export common items for convenience
 pub mod prelude {
-    pub use crate::{
-        BusEvent, ConsumerMetrics, DecodedEvent, DecodedEventBuffer, DecoderRegistry,
-        EventBusBackend, EventBusConsumerConfig, EventBusDecodeError, EventBusError,
-        EventBusErrorType, EventBusPlugin, EventBusPlugins, EventBusReader, EventBusWriter,
+    pub use bevy_event_bus::{
+        BusEvent, BusEventReader, BusEventWriter, ConsumerMetrics, DecodedEvent,
+        DecodedEventBuffer, DecoderRegistry, EventBusBackend, EventBusConsumerConfig,
+        EventBusDecodeError, EventBusError, EventBusErrorType, EventBusPlugin, EventBusPlugins,
         EventMetadata, EventWrapper, ExternalBusEvent, ProcessedMessage, TopicDecodedEvents,
         TypedDecoder,
         app_ext::EventBusAppExt,
@@ -61,8 +67,9 @@ pub mod prelude {
     };
 
     #[cfg(feature = "kafka")]
-    pub use crate::{
-        KafkaConnection, KafkaEventBusBackend,
+    pub use bevy_event_bus::{
+        KafkaConnection, KafkaEventBusBackend, KafkaEventReader, KafkaEventWriter,
+        KafkaReaderError, KafkaWriterError,
         config::kafka::{
             KafkaConsumerConfig, KafkaEventMetadata, KafkaProducerConfig, UncommittedEvent,
         },

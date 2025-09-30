@@ -1,14 +1,16 @@
-use crate::common::events::TestEvent;
-use crate::common::helpers::{
+use std::collections::HashMap;
+
+use bevy::prelude::*;
+use bevy_event_bus::{
+    EventBusAppExt, EventBusPlugins, KafkaConsumerConfig, KafkaEventBusBackend, KafkaEventReader,
+    KafkaEventWriter, KafkaProducerConfig,
+};
+use integration_tests::common::events::TestEvent;
+use integration_tests::common::helpers::{
     DEFAULT_KAFKA_BOOTSTRAP, kafka_connection_for_tests, kafka_consumer_config,
     kafka_producer_config, run_app_updates, unique_consumer_group, unique_topic, update_until,
 };
-use crate::common::setup::setup;
-use bevy::prelude::*;
-use bevy_event_bus::{
-    EventBusAppExt, EventBusPlugins, EventBusReader, EventBusWriter, KafkaConsumerConfig,
-    KafkaEventBusBackend, KafkaProducerConfig,
-};
+use integration_tests::common::setup::setup;
 
 #[derive(Resource, Default)]
 struct Collected(Vec<TestEvent>);
@@ -33,7 +35,7 @@ fn configuration_with_readers_writers_works() {
 
         // Producer system using configuration
         let topic_clone = topic.clone();
-        let producer_system = move |mut writer: EventBusWriter| {
+        let producer_system = move |mut writer: KafkaEventWriter| {
             // Write using configuration - producers specify topics
             let config = kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&topic_clone])
                 .compression_type("none");
@@ -63,7 +65,7 @@ fn configuration_with_readers_writers_works() {
         let topic_clone = topic.clone();
         let consumer_group = unique_consumer_group("config_reader_group");
         let consumer_system =
-            move |mut reader: EventBusReader<TestEvent>, mut collected: ResMut<Collected>| {
+            move |mut reader: KafkaEventReader<TestEvent>, mut collected: ResMut<Collected>| {
                 // Read using configuration
                 let config =
                     kafka_consumer_config(DEFAULT_KAFKA_BOOTSTRAP, &consumer_group, [&topic_clone]);
@@ -141,7 +143,7 @@ fn kafka_specific_methods_work() {
     });
 
     // Writer system that uses Kafka-specific write methods
-    fn test_kafka_write_methods(mut writer: EventBusWriter, configs: Res<TestConfigs>) {
+    fn test_kafka_write_methods(mut writer: KafkaEventWriter, configs: Res<TestConfigs>) {
         // Test Kafka-specific write methods
         let _metadata = writer.write_with_key(
             &configs.producer,
@@ -158,21 +160,20 @@ fn kafka_specific_methods_work() {
                 message: "headers_test".to_string(),
                 value: 2,
             },
-            [
+            HashMap::from([
                 ("header1".to_string(), "value1".to_string()),
                 ("header2".to_string(), "value2".to_string()),
-            ]
-            .into(),
+            ]),
         );
 
-        let _flush_result = writer.flush(&configs.producer);
+        let _flush_result = writer.flush();
     }
 
     // Reader system that uses Kafka-specific read methods
-    fn test_kafka_read_methods(mut reader: EventBusReader<TestEvent>, configs: Res<TestConfigs>) {
+    fn test_kafka_read_methods(mut reader: KafkaEventReader<TestEvent>, configs: Res<TestConfigs>) {
         // Test Kafka-specific read methods
-        let _uncommitted_events = reader.read_uncommitted(&configs.consumer);
-        let _lag = reader.get_consumer_lag(&configs.consumer);
+        let _events = reader.read(&configs.consumer);
+        let _lag = reader.consumer_lag(&configs.consumer);
     }
 
     app.add_systems(Update, (test_kafka_write_methods, test_kafka_read_methods));
@@ -222,7 +223,7 @@ fn clean_system_signatures() {
     // This test demonstrates that systems can have clean signatures
     // without explicitly mentioning backend types
 
-    fn clean_producer_system(mut writer: EventBusWriter) {
+    fn clean_producer_system(mut writer: KafkaEventWriter) {
         // Configuration can be injected from resource or built inline
         let config = kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, Vec::<String>::new())
             .compression_type("none");
@@ -235,7 +236,7 @@ fn clean_system_signatures() {
         );
     }
 
-    fn clean_consumer_system(mut reader: EventBusReader<TestEvent>) {
+    fn clean_consumer_system(mut reader: KafkaEventReader<TestEvent>) {
         // Using inline configuration
         let config = kafka_consumer_config(DEFAULT_KAFKA_BOOTSTRAP, "clean_group", ["clean_test"]);
         let _events = reader.read(&config);

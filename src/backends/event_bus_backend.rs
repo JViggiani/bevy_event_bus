@@ -1,5 +1,5 @@
-use crate::BusEvent;
 use async_trait::async_trait;
+use bevy_event_bus::BusEvent;
 use std::collections::HashMap;
 use std::fmt::Debug;
 

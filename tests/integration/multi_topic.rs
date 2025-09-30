@@ -1,11 +1,11 @@
-use crate::common::events::TestEvent;
-use crate::common::helpers::{
+use bevy::prelude::*;
+use bevy_event_bus::{EventBusAppExt, EventBusPlugins, KafkaEventReader, KafkaEventWriter};
+use integration_tests::common::events::TestEvent;
+use integration_tests::common::helpers::{
     DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
     unique_topic, update_until,
 };
-use crate::common::setup::setup;
-use bevy::prelude::*;
-use bevy_event_bus::{EventBusAppExt, EventBusPlugins, EventBusReader, EventBusWriter};
+use integration_tests::common::setup::setup;
 
 #[test]
 fn multi_topic_isolation() {
@@ -15,13 +15,13 @@ fn multi_topic_isolation() {
     let topic_b = unique_topic("topicB");
 
     // Create topics and wait for them to be fully ready
-    let topic_a_ready = crate::common::setup::ensure_topic_ready(
+    let topic_a_ready = integration_tests::common::setup::ensure_topic_ready(
         &_b2,
         &topic_a,
         1, // partitions
         std::time::Duration::from_secs(5),
     );
-    let topic_b_ready = crate::common::setup::ensure_topic_ready(
+    let topic_b_ready = integration_tests::common::setup::ensure_topic_ready(
         &_b2,
         &topic_b,
         1, // partitions
@@ -48,7 +48,7 @@ fn multi_topic_isolation() {
 
     let ta = topic_a.clone();
     let tb = topic_b.clone();
-    writer.add_systems(Update, move |mut w: EventBusWriter| {
+    writer.add_systems(Update, move |mut w: KafkaEventWriter| {
         let _ = w.write(
             &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&ta]),
             TestEvent {
@@ -74,7 +74,7 @@ fn multi_topic_isolation() {
     let consumer_group = unique_consumer_group("multi_topic_reader");
     reader.add_systems(
         Update,
-        move |mut r: EventBusReader<TestEvent>, mut col: ResMut<Collected>| {
+        move |mut r: KafkaEventReader<TestEvent>, mut col: ResMut<Collected>| {
             for wrapper in r.read(&kafka_consumer_config(
                 DEFAULT_KAFKA_BOOTSTRAP,
                 consumer_group.as_str(),

@@ -1,11 +1,11 @@
-use crate::common::events::TestEvent;
-use crate::common::helpers::{
+use bevy::prelude::*;
+use bevy_event_bus::{EventBusAppExt, EventBusPlugins, KafkaEventReader, KafkaEventWriter};
+use integration_tests::common::events::TestEvent;
+use integration_tests::common::helpers::{
     DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
     unique_topic, update_until,
 };
-use crate::common::setup::setup;
-use bevy::prelude::*;
-use bevy_event_bus::{EventBusAppExt, EventBusPlugins, EventBusReader, EventBusWriter};
+use integration_tests::common::setup::setup;
 
 /// Test that events are delivered exactly once - no duplication
 #[test]
@@ -17,7 +17,7 @@ fn no_event_duplication_exactly_once_delivery() {
     let topic = unique_topic("exactly_once");
 
     // Create topic and wait for it to be fully ready
-    let topic_ready = crate::common::setup::ensure_topic_ready(
+    let topic_ready = integration_tests::common::setup::ensure_topic_ready(
         &_bootstrap_reader,
         &topic,
         1, // partitions
@@ -46,7 +46,7 @@ fn no_event_duplication_exactly_once_delivery() {
 
     writer.insert_resource(ToSend(expected_events.clone(), topic.clone()));
 
-    fn writer_system(mut w: EventBusWriter, data: Res<ToSend>) {
+    fn writer_system(mut w: KafkaEventWriter, data: Res<ToSend>) {
         for event in &data.0 {
             let _ = w.write(
                 &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&data.1]),
@@ -77,7 +77,7 @@ fn no_event_duplication_exactly_once_delivery() {
     reader.insert_resource(ConsumerGroup(consumer_group));
 
     fn reader_system(
-        mut r: EventBusReader<TestEvent>,
+        mut r: KafkaEventReader<TestEvent>,
         topic: Res<Topic>,
         group: Res<ConsumerGroup>,
         mut collected: ResMut<Collected>,

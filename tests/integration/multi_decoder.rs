@@ -14,8 +14,8 @@ use bevy_event_bus::prelude::*;
 use bevy_event_bus::{EventBusAppExt, PreconfiguredTopics};
 use serde::{Deserialize, Serialize};
 
-use crate::common::helpers::unique_topic;
-use crate::common::setup::setup;
+use integration_tests::common::helpers::unique_topic;
+use integration_tests::common::setup::setup;
 
 // Event types for the comprehensive test
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Event)]

@@ -1,6 +1,6 @@
-use crate::BusEvent;
-use crate::resources::EventMetadata;
 use bevy::prelude::*;
+use bevy_event_bus::BusEvent;
+use bevy_event_bus::resources::EventMetadata;
 use serde::{Deserialize, Serialize};
 
 /// Types of errors that can occur in the event bus

@@ -1,7 +1,7 @@
 //! Comprehensive error handling tests for bevy_event_bus
 //!
 //! This module tests the library's resilience and error handling capabilities using
-//! the new fire-and-forget API where EventBusWriter methods return () and errors
+//! the new fire-and-forget API where KafkaEventWriter methods return () and errors
 //! are sent as EventBusError<T> events.
 //!
 //! Tests cover:
@@ -11,11 +11,13 @@
 //! - Batch operations with errors
 //! - Error retry mechanisms
 
-use crate::common::MockEventBusBackend;
-use crate::common::helpers::{DEFAULT_KAFKA_BOOTSTRAP, kafka_producer_config, unique_topic};
 use bevy::prelude::*;
 use bevy_event_bus::{EventBusAppExt, EventBusError};
-use bevy_event_bus::{EventBusPlugins, EventBusWriter, PreconfiguredTopics};
+use bevy_event_bus::{EventBusPlugins, KafkaEventWriter, PreconfiguredTopics};
+use integration_tests::common::MockEventBusBackend;
+use integration_tests::common::helpers::{
+    DEFAULT_KAFKA_BOOTSTRAP, kafka_producer_config, unique_topic,
+};
 use serde::{Deserialize, Serialize};
 
 // Event types for various test scenarios
@@ -82,7 +84,7 @@ fn test_delivery_error_handling() {
     // System to write events that will fail due to simulated backend issues
     app.add_systems(
         Update,
-        move |mut state: ResMut<ErrorTestState>, mut writer: EventBusWriter| {
+        move |mut state: ResMut<ErrorTestState>, mut writer: KafkaEventWriter| {
             if !state.test_completed {
                 for i in 0..3 {
                     let test_event = TestErrorEvent {
@@ -209,9 +211,9 @@ fn test_multiple_event_types_error_handling() {
     app.add_systems(
         Update,
         move |mut state: ResMut<MultiEventTestState>,
-              mut player_writer: EventBusWriter,
-              mut combat_writer: EventBusWriter,
-              mut analytics_writer: EventBusWriter| {
+              mut player_writer: KafkaEventWriter,
+              mut combat_writer: KafkaEventWriter,
+              mut analytics_writer: KafkaEventWriter| {
             if !state.test_completed {
                 // Player event
                 let player_event = PlayerEvent {
@@ -360,7 +362,7 @@ fn test_centralized_error_handling() {
     // System to send events to both topics
     app.add_systems(
         Update,
-        move |mut state: ResMut<CentralizedErrorTestState>, mut writer: EventBusWriter| {
+        move |mut state: ResMut<CentralizedErrorTestState>, mut writer: KafkaEventWriter| {
             if !state.test_completed {
                 // Send to working topic
                 for i in 0..3 {
@@ -494,7 +496,7 @@ fn test_batch_operation_error_handling() {
     // System to send events in batches
     app.add_systems(
         Update,
-        move |mut state: ResMut<BatchTestState>, mut writer: EventBusWriter| {
+        move |mut state: ResMut<BatchTestState>, mut writer: KafkaEventWriter| {
             if !state.test_completed {
                 let events_per_batch = 5;
                 let num_batches = 3;
@@ -620,7 +622,7 @@ fn test_error_retry_mechanism() {
     // System to send initial events
     app.add_systems(
         Update,
-        move |mut state: ResMut<RetryTestState>, mut writer: EventBusWriter| {
+        move |mut state: ResMut<RetryTestState>, mut writer: KafkaEventWriter| {
             if !state.initial_send_complete {
                 // Send initial events
                 for i in 0..3 {
@@ -644,7 +646,7 @@ fn test_error_retry_mechanism() {
         Update,
         move |mut errors: EventReader<EventBusError<TestEvent>>,
               mut state: ResMut<RetryTestState>,
-              mut writer: EventBusWriter| {
+              mut writer: KafkaEventWriter| {
             for error in errors.read() {
                 state.errors_received.push(error.clone());
 

@@ -1,7 +1,7 @@
 //! Multi-decoder pipeline supporting multiple event types per topic
 
-use crate::BusEvent;
 use bevy::prelude::*;
+use bevy_event_bus::BusEvent;
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 

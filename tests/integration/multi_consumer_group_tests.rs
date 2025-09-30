@@ -1,11 +1,11 @@
-use crate::common::events::TestEvent;
-use crate::common::helpers::{
+use bevy_event_bus::EventBusBackend;
+use bevy_event_bus::backends::kafka_backend::KafkaEventBusBackend;
+use integration_tests::common::events::TestEvent;
+use integration_tests::common::helpers::{
     kafka_connection_for_tests, setup_kafka_consumer_group, unique_consumer_group, unique_topic,
     wait_for_consumer_group_ready, wait_for_messages_in_group,
 };
-use crate::common::setup::setup;
-use bevy_event_bus::EventBusBackend;
-use bevy_event_bus::backends::kafka_backend::KafkaEventBusBackend;
+use integration_tests::common::setup::setup;
 
 #[tokio::test]
 async fn test_create_consumer_group() {

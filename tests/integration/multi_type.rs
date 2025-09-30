@@ -1,11 +1,11 @@
-use crate::common::events::{TestEvent, UserLoginEvent};
-use crate::common::helpers::{
+use bevy::prelude::*;
+use bevy_event_bus::{EventBusAppExt, EventBusPlugins, KafkaEventReader, KafkaEventWriter};
+use integration_tests::common::events::{TestEvent, UserLoginEvent};
+use integration_tests::common::helpers::{
     DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
     unique_topic, update_until,
 };
-use crate::common::setup::setup;
-use bevy::prelude::*;
-use bevy_event_bus::{EventBusAppExt, EventBusPlugins, EventBusReader, EventBusWriter};
+use integration_tests::common::setup::setup;
 
 #[test]
 fn single_topic_multiple_types_same_frame() {
@@ -40,7 +40,7 @@ fn single_topic_multiple_types_same_frame() {
     let consumer_group_for_login = consumer_group.clone();
     reader.add_systems(
         Update,
-        move |mut r1: EventBusReader<TestEvent>, mut a: ResMut<CollectedA>| {
+        move |mut r1: KafkaEventReader<TestEvent>, mut a: ResMut<CollectedA>| {
             for wrapper in r1.read(&kafka_consumer_config(
                 DEFAULT_KAFKA_BOOTSTRAP,
                 consumer_group_for_test.as_str(),
@@ -53,7 +53,7 @@ fn single_topic_multiple_types_same_frame() {
     let tr_b = topic.clone();
     reader.add_systems(
         Update,
-        move |mut r2: EventBusReader<UserLoginEvent>, mut b: ResMut<CollectedB>| {
+        move |mut r2: KafkaEventReader<UserLoginEvent>, mut b: ResMut<CollectedB>| {
             for wrapper in r2.read(&kafka_consumer_config(
                 DEFAULT_KAFKA_BOOTSTRAP,
                 consumer_group_for_login.as_str(),
@@ -65,7 +65,7 @@ fn single_topic_multiple_types_same_frame() {
     );
 
     // Ensure topic is ready before proceeding
-    let topic_ready = crate::common::setup::ensure_topic_ready(
+    let topic_ready = integration_tests::common::setup::ensure_topic_ready(
         &_b2,
         &topic,
         1, // partitions
@@ -77,7 +77,7 @@ fn single_topic_multiple_types_same_frame() {
     let tclone = topic.clone();
     writer.add_systems(
         Update,
-        move |mut w1: EventBusWriter, mut w2: EventBusWriter, mut started: Local<bool>| {
+        move |mut w1: KafkaEventWriter, mut w2: KafkaEventWriter, mut started: Local<bool>| {
             if !*started {
                 *started = true;
                 return;
@@ -148,7 +148,7 @@ fn single_topic_multiple_types_interleaved_frames() {
     let consumer_group2_for_login = consumer_group2.clone();
     reader.add_systems(
         Update,
-        move |mut r1: EventBusReader<TestEvent>, mut a: ResMut<CollectedA>| {
+        move |mut r1: KafkaEventReader<TestEvent>, mut a: ResMut<CollectedA>| {
             for wrapper in r1.read(&kafka_consumer_config(
                 DEFAULT_KAFKA_BOOTSTRAP,
                 consumer_group2_for_test.as_str(),
@@ -161,7 +161,7 @@ fn single_topic_multiple_types_interleaved_frames() {
     let tr_b2 = topic.clone();
     reader.add_systems(
         Update,
-        move |mut r2: EventBusReader<UserLoginEvent>, mut b: ResMut<CollectedB>| {
+        move |mut r2: KafkaEventReader<UserLoginEvent>, mut b: ResMut<CollectedB>| {
             for wrapper in r2.read(&kafka_consumer_config(
                 DEFAULT_KAFKA_BOOTSTRAP,
                 consumer_group2_for_login.as_str(),
@@ -173,7 +173,7 @@ fn single_topic_multiple_types_interleaved_frames() {
     );
 
     // Ensure topic is ready before proceeding
-    let topic_ready = crate::common::setup::ensure_topic_ready(
+    let topic_ready = integration_tests::common::setup::ensure_topic_ready(
         &_b2,
         &topic,
         1, // partitions
@@ -188,7 +188,7 @@ fn single_topic_multiple_types_interleaved_frames() {
     let tclone = topic.clone();
     writer.add_systems(
         Update,
-        move |mut w1: EventBusWriter, mut w2: EventBusWriter, mut c: ResMut<Counter>| {
+        move |mut w1: KafkaEventWriter, mut w2: KafkaEventWriter, mut c: ResMut<Counter>| {
             if c.0 % 2 == 0 {
                 let _ = w1.write(
                     &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&tclone]),

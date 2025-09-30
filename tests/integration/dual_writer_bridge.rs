@@ -1,14 +1,14 @@
-use crate::common::events::TestEvent;
-use crate::common::helpers::{
+use bevy::prelude::*;
+use bevy_event_bus::{
+    EventBusAppExt, EventBusPlugins, EventWrapper, KafkaEventReader, KafkaEventWriter,
+    PreconfiguredTopics,
+};
+use integration_tests::common::events::TestEvent;
+use integration_tests::common::helpers::{
     kafka_consumer_config, kafka_producer_config, run_app_updates, unique_consumer_group,
     unique_topic, wait_for_events,
 };
-use crate::common::setup::setup;
-use bevy::prelude::*;
-use bevy_event_bus::{
-    EventBusAppExt, EventBusPlugins, EventBusReader, EventBusWriter, EventWrapper,
-    PreconfiguredTopics,
-};
+use integration_tests::common::setup::setup;
 use tracing::{info, info_span};
 use tracing_subscriber::EnvFilter;
 
@@ -21,7 +21,7 @@ struct WriterState {
 
 fn dual_writer_emitter(
     mut standard_writer: EventWriter<TestEvent>,
-    mut bus_writer: EventBusWriter,
+    mut bus_writer: KafkaEventWriter,
     mut state: ResMut<WriterState>,
 ) {
     if state.dispatched {
@@ -59,7 +59,7 @@ struct ReaderState {
 struct CapturedEvents(Vec<EventWrapper<TestEvent>>);
 
 fn capture_wrapped_events(
-    mut reader: EventBusReader<TestEvent>,
+    mut reader: KafkaEventReader<TestEvent>,
     state: Res<ReaderState>,
     mut captured: ResMut<CapturedEvents>,
 ) {

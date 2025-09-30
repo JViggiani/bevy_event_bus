@@ -1,11 +1,11 @@
-use crate::common::TestEvent;
-use crate::common::helpers::{
+use bevy::prelude::*;
+use bevy_event_bus::{EventBusAppExt, EventBusPlugins, KafkaEventReader, KafkaEventWriter};
+use integration_tests::common::TestEvent;
+use integration_tests::common::helpers::{
     DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
     unique_topic, update_until,
 };
-use crate::common::setup::setup;
-use bevy::prelude::*;
-use bevy_event_bus::{EventBusAppExt, EventBusPlugins, EventBusReader, EventBusWriter};
+use integration_tests::common::setup::setup;
 use tracing::{info, info_span};
 use tracing_subscriber::EnvFilter;
 
@@ -41,7 +41,7 @@ fn test_basic_kafka_event_bus() {
         bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
     ));
 
-    // Register bus event to enable EventBusWriter error handling
+    // Register bus event to enable KafkaEventWriter error handling
     writer_app.add_bus_event::<TestEvent>(&topic);
 
     #[derive(Resource, Clone)]
@@ -53,7 +53,7 @@ fn test_basic_kafka_event_bus() {
     };
     writer_app.insert_resource(ToSend(event_to_send.clone(), topic.clone()));
 
-    fn writer_system(mut w: EventBusWriter, data: Res<ToSend>) {
+    fn writer_system(mut w: KafkaEventWriter, data: Res<ToSend>) {
         let config = kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&data.1]);
         let _ = w.write(&config, data.0.clone());
     }
@@ -86,7 +86,7 @@ fn test_basic_kafka_event_bus() {
     reader_app.insert_resource(ConsumerGroup(consumer_group));
 
     fn reader_system(
-        mut r: EventBusReader<TestEvent>,
+        mut r: KafkaEventReader<TestEvent>,
         topic: Res<Topic>,
         group: Res<ConsumerGroup>,
         mut collected: ResMut<Collected>,

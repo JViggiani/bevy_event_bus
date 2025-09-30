@@ -1,14 +1,14 @@
-use crate::common::events::TestEvent;
-use crate::common::helpers::{
+use bevy::prelude::*;
+use bevy_event_bus::{
+    EventBusAppExt, EventBusPlugins, KafkaConnection, KafkaEventBusBackend, KafkaEventReader,
+    KafkaEventWriter,
+};
+use integration_tests::common::events::TestEvent;
+use integration_tests::common::helpers::{
     DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
     unique_topic, update_until,
 };
-use crate::common::setup::setup;
-use bevy::prelude::*;
-use bevy_event_bus::{
-    EventBusAppExt, EventBusPlugins, EventBusReader, EventBusWriter, KafkaConnection,
-    KafkaEventBusBackend,
-};
+use integration_tests::common::setup::setup;
 use std::collections::HashMap;
 
 /// Test that consumers with "earliest" offset receive historical events
@@ -18,7 +18,7 @@ fn offset_configuration_earliest_receives_historical_events() {
 
     // Create topic and ensure it's ready before proceeding
     let (_backend_setup, bootstrap) = setup();
-    let topic_ready = crate::common::setup::ensure_topic_ready(
+    let topic_ready = integration_tests::common::setup::ensure_topic_ready(
         &bootstrap,
         &topic,
         1, // partitions
@@ -37,7 +37,7 @@ fn offset_configuration_earliest_receives_historical_events() {
         producer_app.add_bus_event::<TestEvent>(&topic);
 
         let topic_clone = topic.clone();
-        producer_app.add_systems(Update, move |mut w: EventBusWriter| {
+        producer_app.add_systems(Update, move |mut w: KafkaEventWriter| {
             // Send 3 historical events
             for i in 0..3 {
                 let config = kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&topic_clone]);
@@ -77,7 +77,7 @@ fn offset_configuration_earliest_receives_historical_events() {
     let consumer_group = unique_consumer_group("earliest_test");
     earliest_app.add_systems(
         Update,
-        move |mut r: EventBusReader<TestEvent>, mut c: ResMut<CollectedEarliest>| {
+        move |mut r: KafkaEventReader<TestEvent>, mut c: ResMut<CollectedEarliest>| {
             let config = kafka_consumer_config(
                 DEFAULT_KAFKA_BOOTSTRAP,
                 consumer_group.as_str(),
@@ -129,7 +129,7 @@ fn offset_configuration_latest_ignores_historical_events() {
 
     // Create topic and ensure it's ready before proceeding
     let (_backend_setup, bootstrap) = setup();
-    let topic_ready = crate::common::setup::ensure_topic_ready(
+    let topic_ready = integration_tests::common::setup::ensure_topic_ready(
         &bootstrap,
         &topic,
         1, // partitions
@@ -148,7 +148,7 @@ fn offset_configuration_latest_ignores_historical_events() {
         producer_app.add_bus_event::<TestEvent>(&topic);
 
         let topic_clone = topic.clone();
-        producer_app.add_systems(Update, move |mut w: EventBusWriter| {
+        producer_app.add_systems(Update, move |mut w: KafkaEventWriter| {
             // Send 3 historical events that the latest consumer should NOT see
             for i in 0..3 {
                 let config = kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&topic_clone]);
@@ -188,7 +188,7 @@ fn offset_configuration_latest_ignores_historical_events() {
     let consumer_group = unique_consumer_group("latest_test");
     latest_app.add_systems(
         Update,
-        move |mut r: EventBusReader<TestEvent>, mut c: ResMut<CollectedLatest>| {
+        move |mut r: KafkaEventReader<TestEvent>, mut c: ResMut<CollectedLatest>| {
             let config = kafka_consumer_config(
                 DEFAULT_KAFKA_BOOTSTRAP,
                 consumer_group.as_str(),
@@ -202,7 +202,7 @@ fn offset_configuration_latest_ignores_historical_events() {
 
     // Now add a writer to the same app to send new events AFTER consumer is established
     let topic_send = topic.clone();
-    latest_app.add_systems(Update, move |mut w: EventBusWriter| {
+    latest_app.add_systems(Update, move |mut w: KafkaEventWriter| {
         // Send new event after consumer is established
         let config = kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&topic_send]);
         let _ = w.write(
@@ -259,7 +259,7 @@ fn default_offset_configuration_is_latest() {
 
     // Create topic and ensure it's ready before proceeding
     let (_backend_setup, bootstrap) = setup();
-    let topic_ready = crate::common::setup::ensure_topic_ready(
+    let topic_ready = integration_tests::common::setup::ensure_topic_ready(
         &bootstrap,
         &topic,
         1, // partitions
@@ -278,7 +278,7 @@ fn default_offset_configuration_is_latest() {
         producer_app.add_bus_event::<TestEvent>(&topic);
 
         let topic_clone = topic.clone();
-        producer_app.add_systems(Update, move |mut w: EventBusWriter| {
+        producer_app.add_systems(Update, move |mut w: KafkaEventWriter| {
             let config = kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&topic_clone]);
             let _ = w.write(
                 &config,
@@ -315,7 +315,7 @@ fn default_offset_configuration_is_latest() {
     let consumer_group = unique_consumer_group("default_offset");
     app.add_systems(
         Update,
-        move |mut r: EventBusReader<TestEvent>, mut c: ResMut<Collected>| {
+        move |mut r: KafkaEventReader<TestEvent>, mut c: ResMut<Collected>| {
             let config = kafka_consumer_config(
                 DEFAULT_KAFKA_BOOTSTRAP,
                 consumer_group.as_str(),

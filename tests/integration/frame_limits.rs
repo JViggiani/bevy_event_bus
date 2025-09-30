@@ -1,13 +1,13 @@
-use crate::common::events::TestEvent;
-use crate::common::helpers::{
+use bevy::prelude::*;
+use bevy_event_bus::{
+    EventBusAppExt, EventBusConsumerConfig, EventBusPlugins, KafkaEventReader, KafkaEventWriter,
+};
+use integration_tests::common::events::TestEvent;
+use integration_tests::common::helpers::{
     DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
     unique_topic, update_until,
 };
-use crate::common::setup::setup;
-use bevy::prelude::*;
-use bevy_event_bus::{
-    EventBusAppExt, EventBusConsumerConfig, EventBusPlugins, EventBusReader, EventBusWriter,
-};
+use integration_tests::common::setup::setup;
 
 #[test]
 fn frame_limit_spreads_drain() {
@@ -28,7 +28,7 @@ fn frame_limit_spreads_drain() {
     ));
     reader.add_bus_event::<TestEvent>(&topic);
     let tclone = topic.clone();
-    writer.add_systems(Update, move |mut w: EventBusWriter| {
+    writer.add_systems(Update, move |mut w: KafkaEventWriter| {
         for i in 0..15 {
             let _ = w.write(
                 &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&tclone]),
@@ -52,7 +52,7 @@ fn frame_limit_spreads_drain() {
     let consumer_group = unique_consumer_group("frame_limit_reader");
     reader.add_systems(
         Update,
-        move |mut r: EventBusReader<TestEvent>, mut c: ResMut<Collected>| {
+        move |mut r: KafkaEventReader<TestEvent>, mut c: ResMut<Collected>| {
             for wrapper in r.read(&kafka_consumer_config(
                 DEFAULT_KAFKA_BOOTSTRAP,
                 consumer_group.as_str(),

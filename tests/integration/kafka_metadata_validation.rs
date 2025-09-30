@@ -1,13 +1,13 @@
-use crate::common::events::TestEvent;
-use crate::common::helpers::{
+use bevy::prelude::*;
+use bevy_event_bus::{
+    EventBusAppExt, EventBusPlugins, EventWrapper, KafkaEventReader, KafkaEventWriter,
+};
+use integration_tests::common::events::TestEvent;
+use integration_tests::common::helpers::{
     DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
     unique_topic, update_until, wait_for_events,
 };
-use crate::common::setup::setup;
-use bevy::prelude::*;
-use bevy_event_bus::{
-    EventBusAppExt, EventBusPlugins, EventBusReader, EventBusWriter, EventWrapper,
-};
+use integration_tests::common::setup::setup;
 use tracing::{info, info_span};
 
 /// Test that validates Kafka metadata propagation with real broker interaction
@@ -58,7 +58,7 @@ fn kafka_metadata_end_to_end_validation() {
     )));
 
     fn reader_system(
-        mut r: EventBusReader<TestEvent>,
+        mut r: KafkaEventReader<TestEvent>,
         topic: Res<Topic>,
         group: Res<ConsumerGroup>,
         mut events: ResMut<ReceivedEventsWithMetadata>,
@@ -103,7 +103,7 @@ fn kafka_metadata_end_to_end_validation() {
         sent: false,
     });
 
-    fn writer_system(mut w: EventBusWriter, mut data: ResMut<TestData>) {
+    fn writer_system(mut w: KafkaEventWriter, mut data: ResMut<TestData>) {
         if !data.sent {
             for test_event in &data.test_cases {
                 let _ = w.write(
@@ -168,7 +168,11 @@ fn kafka_metadata_end_to_end_validation() {
         // Validate Kafka-specific metadata
         if let Some(kafka_meta) = metadata.kafka_metadata() {
             // Topic should match
-            assert_eq!(kafka_meta.topic.as_str(), topic_copy.as_str(), "Kafka topic should match");
+            assert_eq!(
+                kafka_meta.topic.as_str(),
+                topic_copy.as_str(),
+                "Kafka topic should match"
+            );
 
             // Partition should be valid (0 or higher for single partition topic)
             assert!(
@@ -210,7 +214,7 @@ fn kafka_metadata_end_to_end_validation() {
             panic!("Expected Kafka metadata for event {}, but got None", i);
         }
 
-        // Note: Headers validation would require EventBusWriter enhancements
+        // Note: Headers validation would require KafkaEventWriter enhancements
         // For now, we validate that the headers field exists and is accessible
         assert!(
             metadata.headers.is_empty() || !metadata.headers.is_empty(),
@@ -279,7 +283,7 @@ fn kafka_metadata_topic_isolation() {
     )));
 
     fn reader_system_isolation(
-        mut r: EventBusReader<TestEvent>,
+        mut r: KafkaEventReader<TestEvent>,
         topics: Res<Topics>,
         group: Res<ConsumerGroup>,
         mut events: ResMut<ReceivedEvents>,
@@ -319,7 +323,7 @@ fn kafka_metadata_topic_isolation() {
         sent: false,
     });
 
-    fn writer_system_isolation(mut w: EventBusWriter, mut data: ResMut<IsolationTestData>) {
+    fn writer_system_isolation(mut w: KafkaEventWriter, mut data: ResMut<IsolationTestData>) {
         if !data.sent {
             let event_a = TestEvent {
                 message: "topic_a_event".to_string(),
@@ -448,7 +452,7 @@ fn kafka_metadata_consistency_under_load() {
     )));
 
     fn reader_system_consistency(
-        mut r: EventBusReader<TestEvent>,
+        mut r: KafkaEventReader<TestEvent>,
         topic: Res<Topic>,
         group: Res<ConsumerGroup>,
         mut events: ResMut<ReceivedEventsWithMetadata>,
@@ -479,7 +483,7 @@ fn kafka_metadata_consistency_under_load() {
         sent: false,
     });
 
-    fn writer_system_consistency(mut w: EventBusWriter, mut data: ResMut<ConsistencyTestData>) {
+    fn writer_system_consistency(mut w: KafkaEventWriter, mut data: ResMut<ConsistencyTestData>) {
         if !data.sent {
             for batch in 0..NUM_BATCHES {
                 for i in 0..BATCH_SIZE {

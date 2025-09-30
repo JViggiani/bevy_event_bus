@@ -3,9 +3,9 @@ use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 
-use crate::BusEvent;
-use crate::config::{EventBusConfig, InMemory};
-use crate::writers::event_bus_writer::{EventBusErrorQueue, EventBusWriter};
+use bevy_event_bus::backends::EventBusBackendResource;
+use bevy_event_bus::writers::EventBusErrorQueue;
+use bevy_event_bus::{BusEvent, EventBusError, EventBusErrorType};
 
 /// Tracks event types that need an outbound bridge and the systems used to service them.
 #[derive(Resource, Default)]
@@ -53,37 +53,11 @@ impl OutboundTopicRegistry {
     }
 }
 
-#[derive(Clone)]
-struct BridgeConfig {
-    topics: Vec<String>,
-    id: String,
-}
-
-impl BridgeConfig {
-    fn new<T: BusEvent + Event>(topics: Vec<String>) -> Self {
-        Self {
-            topics,
-            id: format!("bridge::{}", std::any::type_name::<T>()),
-        }
-    }
-}
-
-impl EventBusConfig for BridgeConfig {
-    type Backend = InMemory;
-
-    fn topics(&self) -> &[String] {
-        &self.topics
-    }
-
-    fn config_id(&self) -> String {
-        self.id.clone()
-    }
-}
-
 fn outbound_bridge_system<T: BusEvent + Event>(
     mut reader: EventReader<T>,
     topic_registry: Option<Res<OutboundTopicRegistry>>,
-    mut writer: EventBusWriter,
+    backend: Option<Res<EventBusBackendResource>>,
+    error_queue: Res<EventBusErrorQueue>,
 ) {
     let Some(registry) = topic_registry else {
         return;
@@ -97,10 +71,36 @@ fn outbound_bridge_system<T: BusEvent + Event>(
         return;
     }
 
-    let config = BridgeConfig::new::<T>(topics.to_vec());
-
     for event in reader.read() {
-        writer.write(&config, event.clone());
+        match backend.as_ref() {
+            Some(backend_res) => {
+                let backend_guard = backend_res.read();
+                let backend = &**backend_guard;
+
+                for topic in topics {
+                    if !backend.try_send(event, topic) {
+                        let error_event = EventBusError::immediate(
+                            topic.clone(),
+                            EventBusErrorType::Other,
+                            "Failed to send to external backend".to_string(),
+                            event.clone(),
+                        );
+                        error_queue.add_error(error_event);
+                    }
+                }
+            }
+            None => {
+                for topic in topics {
+                    let error_event = EventBusError::immediate(
+                        topic.clone(),
+                        EventBusErrorType::NotConfigured,
+                        "No event bus backend configured".to_string(),
+                        event.clone(),
+                    );
+                    error_queue.add_error(error_event);
+                }
+            }
+        }
     }
 }
 

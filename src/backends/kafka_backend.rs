@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
-use crate::{EventBusBackend, resources::IncomingMessage};
 use async_trait::async_trait;
+use bevy_event_bus::{EventBusBackend, resources::IncomingMessage};
 use crossbeam_channel::{Receiver, Sender, bounded};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -368,7 +368,7 @@ impl EventBusBackend for KafkaEventBusBackend {
         let running = self.bg_running.clone();
         let dropped_counter = self.dropped.clone();
         let bootstrap = self.config.bootstrap_servers.clone();
-        let rt = crate::runtime::runtime();
+        let rt = bevy_event_bus::runtime::runtime();
         // spawn_blocking not needed; poll is non-blocking with small timeout, but we use spawn to keep simple
         let task = rt.spawn(async move {
             let mut last_err: Option<String> = None;

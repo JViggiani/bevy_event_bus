@@ -1,13 +1,13 @@
-use crate::common::events::TestEvent;
-use crate::common::helpers::{
+use bevy::prelude::*;
+use bevy_event_bus::{
+    EventBusAppExt, EventBusPlugins, EventWrapper, KafkaEventReader, KafkaEventWriter,
+};
+use integration_tests::common::events::TestEvent;
+use integration_tests::common::helpers::{
     DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, run_app_updates,
     unique_consumer_group, unique_topic, wait_for_events,
 };
-use crate::common::setup::setup;
-use bevy::prelude::*;
-use bevy_event_bus::{
-    EventBusAppExt, EventBusPlugins, EventBusReader, EventBusWriter, EventWrapper,
-};
+use integration_tests::common::setup::setup;
 use std::collections::HashMap;
 use tracing::{info, info_span};
 
@@ -44,7 +44,7 @@ fn metadata_propagation_from_kafka_to_bevy() {
     let topic_clone = topic.clone();
     writer.add_systems(
         Update,
-        move |mut w: EventBusWriter, mut sent: Local<bool>| {
+        move |mut w: KafkaEventWriter, mut sent: Local<bool>| {
             if !*sent {
                 *sent = true;
                 let _ = w.write(
@@ -63,7 +63,7 @@ fn metadata_propagation_from_kafka_to_bevy() {
     let consumer_group = unique_consumer_group("metadata_propagation");
     reader.add_systems(
         Update,
-        move |mut r: EventBusReader<TestEvent>, mut events: ResMut<ReceivedEvents>| {
+        move |mut r: KafkaEventReader<TestEvent>, mut events: ResMut<ReceivedEvents>| {
             for wrapper in r.read(&kafka_consumer_config(
                 DEFAULT_KAFKA_BOOTSTRAP,
                 consumer_group.as_str(),
@@ -162,7 +162,7 @@ fn header_forwarding_producer_to_consumer() {
     let topic_clone = topic.clone();
     writer.add_systems(
         Update,
-        move |mut w: EventBusWriter, mut sent: Local<bool>| {
+        move |mut w: KafkaEventWriter, mut sent: Local<bool>| {
             if !*sent {
                 *sent = true;
                 let _ = w.write_with_headers(
@@ -182,7 +182,7 @@ fn header_forwarding_producer_to_consumer() {
     let consumer_group_name = unique_consumer_group("metadata_headers");
     reader.add_systems(
         Update,
-        move |mut r: EventBusReader<TestEvent>, mut events: ResMut<ReceivedEvents>| {
+        move |mut r: KafkaEventReader<TestEvent>, mut events: ResMut<ReceivedEvents>| {
             for wrapper in r.read(&kafka_consumer_config(
                 DEFAULT_KAFKA_BOOTSTRAP,
                 consumer_group_name.as_str(),
@@ -267,7 +267,7 @@ fn timestamp_accuracy_for_latency_measurement() {
     let topic_clone = topic.clone();
     writer.add_systems(
         Update,
-        move |mut w: EventBusWriter, mut sent: Local<bool>| {
+        move |mut w: KafkaEventWriter, mut sent: Local<bool>| {
             if !*sent {
                 *sent = true;
                 let event = TestEvent {
@@ -290,7 +290,7 @@ fn timestamp_accuracy_for_latency_measurement() {
     let consumer_group = unique_consumer_group("metadata_timestamp");
     reader.add_systems(
         Update,
-        move |mut r: EventBusReader<TestEvent>, mut events: ResMut<ReceivedEvents>| {
+        move |mut r: KafkaEventReader<TestEvent>, mut events: ResMut<ReceivedEvents>| {
             for wrapper in r.read(&kafka_consumer_config(
                 DEFAULT_KAFKA_BOOTSTRAP,
                 consumer_group.as_str(),
@@ -378,7 +378,7 @@ fn mixed_metadata_and_regular_reading() {
     let topic_clone = topic.clone();
     writer.add_systems(
         Update,
-        move |mut w: EventBusWriter, mut sent: Local<bool>| {
+        move |mut w: KafkaEventWriter, mut sent: Local<bool>| {
             if !*sent {
                 *sent = true;
                 for i in 0..3 {
@@ -411,7 +411,7 @@ fn mixed_metadata_and_regular_reading() {
     // Regular reader using read()
     regular_reader.add_systems(
         Update,
-        move |mut r: EventBusReader<TestEvent>, mut events: ResMut<RegularEvents>| {
+        move |mut r: KafkaEventReader<TestEvent>, mut events: ResMut<RegularEvents>| {
             for wrapper in r.read(&kafka_consumer_config(
                 DEFAULT_KAFKA_BOOTSTRAP,
                 regular_group.as_str(),
@@ -425,7 +425,7 @@ fn mixed_metadata_and_regular_reading() {
     // Metadata reader using read() with External filtering
     metadata_reader.add_systems(
         Update,
-        move |mut r: EventBusReader<TestEvent>, mut events: ResMut<MetadataEvents>| {
+        move |mut r: KafkaEventReader<TestEvent>, mut events: ResMut<MetadataEvents>| {
             for wrapper in r.read(&kafka_consumer_config(
                 DEFAULT_KAFKA_BOOTSTRAP,
                 metadata_group.as_str(),

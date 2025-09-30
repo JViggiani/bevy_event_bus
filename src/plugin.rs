@@ -1,16 +1,14 @@
 use bevy::prelude::*;
 
-use crate::{
-    backends::{EventBusBackend, EventBusBackendResource},
-    decoder::DecoderRegistry,
-    registration::EVENT_REGISTRY,
-    resources::{
-        ConsumerMetrics, DecodedEventBuffer, DrainMetricsEvent, DrainedTopicMetadata,
-        EventBusConsumerConfig, EventMetadata, MessageQueue, ProcessedMessage, TopicDecodedEvents,
-    },
-    runtime::{block_on, ensure_runtime},
-    writers::event_bus_writer::EventBusErrorQueue,
+use bevy_event_bus::backends::{EventBusBackend, EventBusBackendResource};
+use bevy_event_bus::decoder::DecoderRegistry;
+use bevy_event_bus::registration::EVENT_REGISTRY;
+use bevy_event_bus::resources::{
+    ConsumerMetrics, DecodedEventBuffer, DrainMetricsEvent, DrainedTopicMetadata,
+    EventBusConsumerConfig, EventMetadata, MessageQueue, ProcessedMessage, TopicDecodedEvents,
 };
+use bevy_event_bus::runtime::{block_on, ensure_runtime};
+use bevy_event_bus::writers::EventBusErrorQueue;
 
 /// Pre-configured topics resource inserted at plugin construction.
 #[derive(Resource, Debug, Clone)]
@@ -27,7 +25,7 @@ pub struct EventBusPlugin;
 impl Plugin for EventBusPlugin {
     fn build(&self, app: &mut App) {
         // Register core error events
-        app.add_event::<crate::EventBusDecodeError>();
+        app.add_event::<bevy_event_bus::EventBusDecodeError>();
 
         // Invoke registration callbacks (derive macro populated). We DO NOT drain so multiple Apps each see events.
         let guard = EVENT_REGISTRY.lock().unwrap();
@@ -83,7 +81,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
         app.insert_resource(EventBusBackendResource::from_box(boxed));
         app.insert_resource(self.1.clone());
         app.insert_resource(EventBusErrorQueue::default());
-        crate::writers::outbound_bridge::activate_registered_bridges(app);
+        bevy_event_bus::writers::outbound_bridge::activate_registered_bridges(app);
         // Pre-create topics and subscribe BEFORE connecting so background consumer starts with full assignment.
         if let Some(pre) = app.world().get_resource::<PreconfiguredTopics>().cloned() {
             if let Some(backend_res) = app
@@ -94,7 +92,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                 let mut guard = backend_res.write();
                 if let Some(kafka) = guard
                     .as_any_mut()
-                    .downcast_mut::<crate::backends::kafka_backend::KafkaEventBusBackend>(
+                    .downcast_mut::<bevy_event_bus::backends::kafka_backend::KafkaEventBusBackend>(
                 ) {
                     use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
                     use rdkafka::client::DefaultClientContext;
@@ -136,7 +134,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
 
             if let Some(kafka) = guard
                 .as_any_mut()
-                .downcast_mut::<crate::backends::kafka_backend::KafkaEventBusBackend>(
+                .downcast_mut::<bevy_event_bus::backends::kafka_backend::KafkaEventBusBackend>(
             ) {
                 if let Some(rx) = kafka.take_receiver() {
                     app.world_mut()
@@ -226,7 +224,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                                     .as_ref()
                                     .map(|k| String::from_utf8_lossy(k).to_string()), // key as String
                                 Some(Box::new(
-                                    crate::resources::backend_metadata::KafkaMetadata {
+                                    bevy_event_bus::resources::backend_metadata::KafkaMetadata {
                                         topic: msg.topic.clone(),
                                         partition: msg.partition,
                                         offset: msg.offset,
@@ -255,7 +253,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                                 );
 
                                 // Generate decode error event
-                                let decode_error = crate::EventBusDecodeError::new(
+                                let decode_error = bevy_event_bus::EventBusDecodeError::new(
                                     topic_name.clone(),
                                     format!(
                                         "No decoder succeeded. Tried {} decoders",
@@ -282,7 +280,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
 
                                     // Store the decoded event in the type-erased buffer
                                     // The event Box contains the actual event, we need to store it properly
-                                    let type_erased = crate::resources::TypeErasedEvent {
+                                    let type_erased = bevy_event_bus::resources::TypeErasedEvent {
                                         event: decoded_event.event,
                                         metadata: metadata.clone(),
                                         decoder_name: decoded_event.decoder_name,
@@ -295,8 +293,8 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                                         .push(type_erased);
                                 }
 
-                                // Also add the original message to DrainedTopicMetadata for EventBusReader compatibility
-                                // This allows existing EventBusReader<T> to find the events by deserializing the original payload
+                                // Also add the original message to DrainedTopicMetadata for BusEventReader compatibility
+                                // This allows existing BusEventReader<T> to find the events by deserializing the original payload
                                 let processed_msg = ProcessedMessage {
                                     payload: msg.payload.clone(),
                                     metadata: metadata.clone(),
@@ -323,7 +321,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                 let mut guard = backend_res.write();
                 if let Some(kafka) = guard
                     .as_any_mut()
-                    .downcast_mut::<crate::backends::kafka_backend::KafkaEventBusBackend>(
+                    .downcast_mut::<bevy_event_bus::backends::kafka_backend::KafkaEventBusBackend>(
                 ) {
                     let dropped = kafka.dropped_count();
                     metrics.dropped_messages = dropped;
@@ -390,7 +388,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
         app.add_systems(PreUpdate, drain_system);
         app.add_systems(PreUpdate, decode_error_dispatch_system.after(drain_system));
 
-        // Error queue flush system - runs in PostUpdate to ensure all EventBusWriter operations complete first
+        // Error queue flush system - runs in PostUpdate to ensure all BusEventWriter operations complete first
         fn error_queue_flush_system(world: &mut World) {
             // Extract the pending errors first
             let pending_errors = {
@@ -443,7 +441,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
         // Decode error dispatch system - sends EventBusDecodeError events
         fn decode_error_dispatch_system(
             mut drained_metadata: ResMut<DrainedTopicMetadata>,
-            mut decode_error_writer: EventWriter<crate::EventBusDecodeError>,
+            mut decode_error_writer: EventWriter<bevy_event_bus::EventBusDecodeError>,
         ) {
             // Dispatch all accumulated decode errors as events
             for decode_error in drained_metadata.decode_errors.drain(..) {

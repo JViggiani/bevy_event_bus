@@ -1,10 +1,8 @@
 //! Enhanced registration API for multi-decoder pipeline
 
-use crate::{
-    BusEvent,
-    decoder::{DecoderRegistry, TypedDecoder},
-};
 use bevy::prelude::*;
+use bevy_event_bus::BusEvent;
+use bevy_event_bus::decoder::{DecoderRegistry, TypedDecoder};
 
 /// Extension trait for the Bevy App to simplify event bus registration
 pub trait EventBusAppExt {
@@ -94,7 +92,7 @@ impl EventBusAppExt for App {
         bevy::prelude::App::add_event::<T>(self);
 
         // Auto-register the corresponding error event type
-        bevy::prelude::App::add_event::<crate::EventBusError<T>>(self);
+        bevy::prelude::App::add_event::<bevy_event_bus::EventBusError<T>>(self);
 
         // Register JSON decoder for the topic
         self.add_bus_event_multi::<T>(&[topic])
@@ -105,7 +103,7 @@ impl EventBusAppExt for App {
         bevy::prelude::App::add_event::<T>(self);
 
         // Auto-register the corresponding error event type
-        bevy::prelude::App::add_event::<crate::EventBusError<T>>(self);
+        bevy::prelude::App::add_event::<bevy_event_bus::EventBusError<T>>(self);
 
         // Register JSON decoder for the topics
         self.add_bus_event_multi::<T>(topics)
@@ -122,9 +120,9 @@ impl EventBusAppExt for App {
         // Auto-register the corresponding error event type
         if !self
             .world()
-            .contains_resource::<Events<crate::EventBusError<T>>>()
+            .contains_resource::<Events<bevy_event_bus::EventBusError<T>>>()
         {
-            bevy::prelude::App::add_event::<crate::EventBusError<T>>(self);
+            bevy::prelude::App::add_event::<bevy_event_bus::EventBusError<T>>(self);
         }
 
         // Initialize decoder registry if it doesn't exist
@@ -151,7 +149,7 @@ impl EventBusAppExt for App {
             );
         }
 
-        crate::writers::outbound_bridge::ensure_bridge::<T>(self, &topic_list);
+        bevy_event_bus::writers::outbound_bridge::ensure_bridge::<T>(self, &topic_list);
 
         self
     }
@@ -169,9 +167,9 @@ impl EventBusAppExt for App {
         // Auto-register the corresponding error event type
         if !self
             .world()
-            .contains_resource::<Events<crate::EventBusError<T>>>()
+            .contains_resource::<Events<bevy_event_bus::EventBusError<T>>>()
         {
-            bevy::prelude::App::add_event::<crate::EventBusError<T>>(self);
+            bevy::prelude::App::add_event::<bevy_event_bus::EventBusError<T>>(self);
         }
 
         // Add custom decoder to registry
@@ -198,7 +196,7 @@ impl EventBusAppExt for App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::EventBusPlugin;
+    use bevy_event_bus::EventBusPlugin;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Event)]

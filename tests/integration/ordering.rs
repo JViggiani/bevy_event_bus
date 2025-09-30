@@ -1,18 +1,18 @@
-use crate::common::events::TestEvent;
-use crate::common::helpers::{
+use bevy::prelude::*;
+use bevy_event_bus::{EventBusAppExt, EventBusPlugins, KafkaEventReader, KafkaEventWriter};
+use integration_tests::common::events::TestEvent;
+use integration_tests::common::helpers::{
     DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
     unique_topic, wait_for_events,
 };
-use bevy::prelude::*;
-use bevy_event_bus::{EventBusAppExt, EventBusPlugins, EventBusReader, EventBusWriter};
 
 #[test]
 fn per_topic_order_preserved() {
-    let (backend_w, _b1) = crate::common::setup::setup();
-    let (backend_r, _b2) = crate::common::setup::setup();
+    let (backend_w, _b1) = integration_tests::common::setup::setup();
+    let (backend_r, _b2) = integration_tests::common::setup::setup();
     let topic = unique_topic("ordered");
     bevy_event_bus::runtime();
-    crate::common::setup::ensure_topic(&_b2, &topic, 1);
+    integration_tests::common::setup::ensure_topic(&_b2, &topic, 1);
     let mut writer = App::new();
     let mut reader = App::new();
     writer.add_plugins(EventBusPlugins(
@@ -28,7 +28,7 @@ fn per_topic_order_preserved() {
     let tclone = topic.clone();
     writer.add_systems(
         Update,
-        move |mut w: EventBusWriter, mut started: Local<bool>| {
+        move |mut w: KafkaEventWriter, mut started: Local<bool>| {
             if !*started {
                 *started = true;
                 return;
@@ -54,7 +54,7 @@ fn per_topic_order_preserved() {
     let consumer_group = unique_consumer_group("ordering_single_topic");
     reader.add_systems(
         Update,
-        move |mut r: EventBusReader<TestEvent>, mut c: ResMut<Collected>| {
+        move |mut r: KafkaEventReader<TestEvent>, mut c: ResMut<Collected>| {
             for wrapper in r.read(&kafka_consumer_config(
                 DEFAULT_KAFKA_BOOTSTRAP,
                 consumer_group.as_str(),
@@ -81,13 +81,13 @@ fn per_topic_order_preserved() {
 
 #[test]
 fn cross_topic_interleave_each_ordered() {
-    let (backend_w, _b1) = crate::common::setup::setup();
-    let (backend_r, _b2) = crate::common::setup::setup();
+    let (backend_w, _b1) = integration_tests::common::setup::setup();
+    let (backend_r, _b2) = integration_tests::common::setup::setup();
     let t1 = unique_topic("t1");
     let t2 = unique_topic("t2");
     bevy_event_bus::runtime();
-    crate::common::setup::ensure_topic(&_b2, &t1, 1);
-    crate::common::setup::ensure_topic(&_b2, &t2, 1);
+    integration_tests::common::setup::ensure_topic(&_b2, &t1, 1);
+    integration_tests::common::setup::ensure_topic(&_b2, &t2, 1);
     let mut writer = App::new();
     let mut reader = App::new();
     writer.add_plugins(EventBusPlugins(
@@ -105,7 +105,7 @@ fn cross_topic_interleave_each_ordered() {
     // Single send frame like earlier test
     writer.add_systems(
         Update,
-        move |mut w: EventBusWriter, mut started: Local<bool>| {
+        move |mut w: KafkaEventWriter, mut started: Local<bool>| {
             if !*started {
                 *started = true;
                 return;
@@ -142,7 +142,7 @@ fn cross_topic_interleave_each_ordered() {
     let consumer_group = unique_consumer_group("ordering_dual_topic");
     reader.add_systems(
         Update,
-        move |mut r: EventBusReader<TestEvent>,
+        move |mut r: KafkaEventReader<TestEvent>,
               mut c1: ResMut<CollectedT1>,
               mut c2: ResMut<CollectedT2>| {
             for wrapper in r.read(&kafka_consumer_config(

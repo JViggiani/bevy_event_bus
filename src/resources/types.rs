@@ -1,6 +1,6 @@
-use crate::BusEvent;
-use crate::resources::backend_metadata::EventMetadata;
 use bevy::prelude::*;
+use bevy_event_bus::BusEvent;
+use bevy_event_bus::resources::backend_metadata::EventMetadata;
 use crossbeam_channel::Receiver;
 use std::collections::HashMap;
 use std::time::Instant;
@@ -99,7 +99,7 @@ pub struct ProcessedMessage {
 #[derive(Resource, Default, Debug)]
 pub struct DrainedTopicMetadata {
     pub topics: std::collections::HashMap<String, Vec<ProcessedMessage>>,
-    pub decode_errors: Vec<crate::EventBusDecodeError>,
+    pub decode_errors: Vec<bevy_event_bus::EventBusDecodeError>,
 }
 
 /// Basic consumer metrics (frame-scoped counters + cumulative stats)
@@ -118,7 +118,7 @@ pub struct ConsumerMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resources::backend_metadata::KafkaMetadata;
+    use bevy_event_bus::resources::backend_metadata::KafkaMetadata;
     use std::time::Instant;
 
     #[test]

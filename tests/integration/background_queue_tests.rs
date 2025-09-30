@@ -1,14 +1,14 @@
-use crate::common::helpers::{
-    DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, unique_consumer_group, unique_topic,
-};
-use crate::common::setup::build_basic_app_simple;
 use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
 use bevy_event_bus::{ConsumerMetrics, DrainMetricsEvent};
 use bevy_event_bus::{
-    DrainedTopicMetadata, EventBusConsumerConfig, EventBusReader, EventMetadata, KafkaMetadata,
+    DrainedTopicMetadata, EventBusConsumerConfig, EventMetadata, KafkaEventReader, KafkaMetadata,
     ProcessedMessage,
 };
+use integration_tests::common::helpers::{
+    DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, unique_consumer_group, unique_topic,
+};
+use integration_tests::common::setup::build_basic_app_simple;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, bevy_event_bus::ExternalBusEvent)]
@@ -54,7 +54,7 @@ fn unlimited_buffer_gathers() {
     // Reader should deserialize all
     let _ = app
         .world_mut()
-        .run_system_once(move |mut r: EventBusReader<TestMsg>| {
+        .run_system_once(move |mut r: KafkaEventReader<TestMsg>| {
             let mut collected = Vec::new();
             let config = kafka_consumer_config(
                 DEFAULT_KAFKA_BOOTSTRAP,
@@ -102,7 +102,7 @@ fn frame_limit_respected() {
     let consumer_group_for_reader = consumer_group.clone();
     let _ = app
         .world_mut()
-        .run_system_once(move |mut r: EventBusReader<TestMsg>| {
+        .run_system_once(move |mut r: KafkaEventReader<TestMsg>| {
             let config = kafka_consumer_config(
                 DEFAULT_KAFKA_BOOTSTRAP,
                 consumer_group_for_reader.as_str(),

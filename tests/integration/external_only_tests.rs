@@ -1,13 +1,15 @@
-use crate::common::events::TestEvent;
-use crate::common::helpers::{DEFAULT_KAFKA_BOOTSTRAP, kafka_producer_config, unique_topic};
-use crate::common::mock_backend::MockEventBusBackend;
 use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
 use bevy_event_bus::backends::EventBusBackendResource;
 use bevy_event_bus::{
     EventBusAppExt, EventBusError, EventBusErrorQueue, EventBusErrorType, EventBusPlugin,
-    EventBusPlugins, EventBusWriter, PreconfiguredTopics,
+    EventBusPlugins, KafkaEventWriter, PreconfiguredTopics,
 };
+use integration_tests::common::events::TestEvent;
+use integration_tests::common::helpers::{
+    DEFAULT_KAFKA_BOOTSTRAP, kafka_producer_config, unique_topic,
+};
+use integration_tests::common::mock_backend::MockEventBusBackend;
 
 #[derive(Resource, Default)]
 struct InternalSeen(usize);
@@ -28,7 +30,7 @@ fn writer_does_not_emit_bevy_events() {
     let topic_for_writer = topic.clone();
     app.add_systems(
         Update,
-        move |mut writer: EventBusWriter, mut fired: Local<bool>| {
+        move |mut writer: KafkaEventWriter, mut fired: Local<bool>| {
             if !*fired {
                 *fired = true;
                 writer.write(
@@ -57,7 +59,7 @@ fn writer_does_not_emit_bevy_events() {
     let seen = app.world().resource::<InternalSeen>();
     assert_eq!(
         seen.0, 0,
-        "EventBusWriter should not emit additional Bevy events for the same payload",
+        "KafkaEventWriter should not emit additional Bevy events for the same payload",
     );
 }
 
@@ -77,7 +79,7 @@ fn writer_queues_not_configured_error_when_backend_missing() {
 
     // Drive the writer once
     app.world_mut()
-        .run_system_once(|mut writer: EventBusWriter| {
+        .run_system_once(|mut writer: KafkaEventWriter| {
             writer.write(
                 &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [unique_topic("missing_backend")]),
                 TestEvent {

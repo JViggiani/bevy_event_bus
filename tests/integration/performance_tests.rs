@@ -5,15 +5,15 @@
 //!
 //! Run with: cargo test --test integration_tests performance_tests::test_message_throughput --release -- --ignored --nocapture
 
-use crate::common::helpers::{
+use bevy::prelude::*;
+use bevy_event_bus::{
+    EventBusAppExt, EventBusPlugins, KafkaEventReader, KafkaEventWriter, PreconfiguredTopics,
+};
+use integration_tests::common::helpers::{
     DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
     unique_topic,
 };
-use crate::common::setup::setup;
-use bevy::prelude::*;
-use bevy_event_bus::{
-    EventBusAppExt, EventBusPlugins, EventBusReader, EventBusWriter, PreconfiguredTopics,
-};
+use integration_tests::common::setup::setup;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use std::{
@@ -153,7 +153,7 @@ fn run_throughput_test(
     });
 
     // Sending system
-    fn sender_system(mut state: ResMut<PerformanceTestState>, mut writer: EventBusWriter) {
+    fn sender_system(mut state: ResMut<PerformanceTestState>, mut writer: KafkaEventWriter) {
         if state.messages_sent >= state.messages_to_send {
             if state.send_end_time.is_none() {
                 state.send_end_time = Some(Instant::now());
@@ -192,7 +192,7 @@ fn run_throughput_test(
     // Receiving system
     fn receiver_system(
         mut state: ResMut<PerformanceTestState>,
-        mut reader: EventBusReader<PerformanceTestEvent>,
+        mut reader: KafkaEventReader<PerformanceTestEvent>,
     ) {
         if state.receive_start_time.is_none() && !state.messages_received.is_empty() {
             state.receive_start_time = Some(Instant::now());
