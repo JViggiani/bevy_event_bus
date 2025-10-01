@@ -13,7 +13,7 @@
 
 use bevy::prelude::*;
 use bevy_event_bus::{EventBusAppExt, EventBusError};
-use bevy_event_bus::{EventBusPlugins, KafkaEventWriter, PreconfiguredTopics};
+use bevy_event_bus::{EventBusPlugins, KafkaEventWriter};
 use integration_tests::common::MockEventBusBackend;
 use integration_tests::common::helpers::{
     DEFAULT_KAFKA_BOOTSTRAP, kafka_producer_config, unique_topic,
@@ -64,10 +64,7 @@ fn test_delivery_error_handling() {
     mock_backend.simulate_delivery_failure_for_topic(&topic);
 
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins(
-        mock_backend,
-        PreconfiguredTopics::new([topic.clone()]),
-    ));
+    app.add_plugins(EventBusPlugins(mock_backend));
 
     // Add bus event (automatically registers error events)
     app.add_bus_event::<TestErrorEvent>(&topic);
@@ -183,14 +180,7 @@ fn test_multiple_event_types_error_handling() {
     mock_backend.simulate_delivery_failure_for_topic(&analytics_topic);
 
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins(
-        mock_backend,
-        PreconfiguredTopics::new([
-            player_topic.clone(),
-            combat_topic.clone(),
-            analytics_topic.clone(),
-        ]),
-    ));
+    app.add_plugins(EventBusPlugins(mock_backend));
 
     // Add all event types (automatically registers error events for each)
     app.add_bus_event::<PlayerEvent>(&player_topic);
@@ -340,10 +330,7 @@ fn test_centralized_error_handling() {
     // working_topic is not configured to fail, so it should succeed
 
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins(
-        mock_backend,
-        PreconfiguredTopics::new([working_topic.clone(), failing_topic.clone()]),
-    ));
+    app.add_plugins(EventBusPlugins(mock_backend));
 
     // Add bus events for both topics
     app.add_bus_event::<TestEvent>(&working_topic);
@@ -476,10 +463,7 @@ fn test_batch_operation_error_handling() {
     mock_backend.simulate_delivery_failure_for_topic(&topic);
 
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins(
-        mock_backend,
-        PreconfiguredTopics::new([topic.clone()]),
-    ));
+    app.add_plugins(EventBusPlugins(mock_backend));
 
     app.add_bus_event::<TestEvent>(&topic);
 
@@ -597,10 +581,7 @@ fn test_error_retry_mechanism() {
     mock_backend.simulate_delivery_failure_for_topic(&topic);
 
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins(
-        mock_backend,
-        PreconfiguredTopics::new([topic.clone()]),
-    ));
+    app.add_plugins(EventBusPlugins(mock_backend));
 
     app.add_bus_event::<TestEvent>(&topic);
 

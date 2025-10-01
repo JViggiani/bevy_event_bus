@@ -1,30 +1,48 @@
 use bevy::prelude::*;
+use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
 use bevy_event_bus::{EventBusAppExt, EventBusPlugins, KafkaEventReader, KafkaEventWriter};
 use integration_tests::common::events::{TestEvent, UserLoginEvent};
 use integration_tests::common::helpers::{
     DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
     unique_topic, update_until,
 };
-use integration_tests::common::setup::setup;
+use integration_tests::common::setup::setup_with_offset;
 
 #[test]
 fn single_topic_multiple_types_same_frame() {
-    let (backend_w, _b1) = setup();
-    let (backend_r, _b2) = setup();
     let topic = unique_topic("mixed");
+    let consumer_group = unique_consumer_group("multi_type_same_frame");
+
+    let topic_for_writer = topic.clone();
+    let (backend_w, _b1) = setup_with_offset("earliest", move |builder| {
+        builder.add_topic(
+            KafkaTopicSpec::new(topic_for_writer.clone())
+                .partitions(1)
+                .replication(1),
+        );
+    });
+
+    let topic_for_reader = topic.clone();
+    let group_for_reader = consumer_group.clone();
+    let (backend_r, _b2) = setup_with_offset("earliest", move |builder| {
+        builder.add_topic(
+            KafkaTopicSpec::new(topic_for_reader.clone())
+                .partitions(1)
+                .replication(1),
+        );
+        builder.add_consumer_group(
+            group_for_reader.clone(),
+            KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
+                .initial_offset(KafkaInitialOffset::Earliest),
+        );
+    });
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(
-        backend_w,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
+    writer.add_plugins(EventBusPlugins(backend_w));
     writer.add_bus_event::<TestEvent>(&topic);
     writer.add_bus_event::<UserLoginEvent>(&topic);
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(
-        backend_r,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
+    reader.add_plugins(EventBusPlugins(backend_r));
     reader.add_bus_event::<TestEvent>(&topic);
     reader.add_bus_event::<UserLoginEvent>(&topic);
 
@@ -35,7 +53,6 @@ fn single_topic_multiple_types_same_frame() {
     reader.insert_resource(CollectedA::default());
     reader.insert_resource(CollectedB::default());
     let tr_a = topic.clone();
-    let consumer_group = unique_consumer_group("multi_type_same_frame");
     let consumer_group_for_test = consumer_group.clone();
     let consumer_group_for_login = consumer_group.clone();
     reader.add_systems(
@@ -63,15 +80,6 @@ fn single_topic_multiple_types_same_frame() {
             }
         },
     );
-
-    // Ensure topic is ready before proceeding
-    let topic_ready = integration_tests::common::setup::ensure_topic_ready(
-        &_b2,
-        &topic,
-        1, // partitions
-        std::time::Duration::from_secs(5),
-    );
-    assert!(topic_ready, "Topic {} not ready within timeout", topic);
 
     // Now set up and run the writer to send events
     let tclone = topic.clone();
@@ -117,22 +125,39 @@ fn single_topic_multiple_types_same_frame() {
 
 #[test]
 fn single_topic_multiple_types_interleaved_frames() {
-    let (backend_w, _b1) = setup();
-    let (backend_r, _b2) = setup();
     let topic = unique_topic("mixed2");
+    let consumer_group2 = unique_consumer_group("multi_type_interleaved");
+
+    let topic_for_writer = topic.clone();
+    let (backend_w, _b1) = setup_with_offset("earliest", move |builder| {
+        builder.add_topic(
+            KafkaTopicSpec::new(topic_for_writer.clone())
+                .partitions(1)
+                .replication(1),
+        );
+    });
+
+    let topic_for_reader = topic.clone();
+    let group_for_reader = consumer_group2.clone();
+    let (backend_r, _b2) = setup_with_offset("earliest", move |builder| {
+        builder.add_topic(
+            KafkaTopicSpec::new(topic_for_reader.clone())
+                .partitions(1)
+                .replication(1),
+        );
+        builder.add_consumer_group(
+            group_for_reader.clone(),
+            KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
+                .initial_offset(KafkaInitialOffset::Earliest),
+        );
+    });
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(
-        backend_w,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
+    writer.add_plugins(EventBusPlugins(backend_w));
     writer.add_bus_event::<TestEvent>(&topic);
     writer.add_bus_event::<UserLoginEvent>(&topic);
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(
-        backend_r,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
+    reader.add_plugins(EventBusPlugins(backend_r));
     reader.add_bus_event::<TestEvent>(&topic);
     reader.add_bus_event::<UserLoginEvent>(&topic);
 
@@ -143,7 +168,6 @@ fn single_topic_multiple_types_interleaved_frames() {
     reader.insert_resource(CollectedA::default());
     reader.insert_resource(CollectedB::default());
     let tr_a2 = topic.clone();
-    let consumer_group2 = unique_consumer_group("multi_type_interleaved");
     let consumer_group2_for_test = consumer_group2.clone();
     let consumer_group2_for_login = consumer_group2.clone();
     reader.add_systems(
@@ -171,15 +195,6 @@ fn single_topic_multiple_types_interleaved_frames() {
             }
         },
     );
-
-    // Ensure topic is ready before proceeding
-    let topic_ready = integration_tests::common::setup::ensure_topic_ready(
-        &_b2,
-        &topic,
-        1, // partitions
-        std::time::Duration::from_secs(5),
-    );
-    assert!(topic_ready, "Topic {} not ready within timeout", topic);
 
     // Now set up and run the writer
     #[derive(Resource)]

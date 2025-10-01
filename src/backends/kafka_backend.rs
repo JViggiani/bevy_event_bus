@@ -1,97 +1,140 @@
+use async_trait::async_trait;
+use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded};
 use rdkafka::{
     ClientContext, Offset, TopicPartitionList,
+    admin::{AdminClient, AdminOptions, NewTopic, TopicReplication},
+    client::DefaultClientContext,
     config::ClientConfig,
     consumer::{BaseConsumer, CommitMode, Consumer},
+    error::KafkaError,
     message::{Headers, Message},
     producer::{BaseProducer, BaseRecord, DeliveryResult, Producer, ProducerContext},
 };
-use std::collections::{HashMap, HashSet};
-use std::fmt::Debug;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use tracing::{debug, error, info, warn};
+use std::{
+    collections::{HashMap, VecDeque},
+    fmt::Debug,
+    sync::{
+        Arc, Mutex, RwLock,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    time::{Duration, Instant},
+};
+use tokio::task::JoinHandle;
+use tracing::{debug, warn};
 
-use async_trait::async_trait;
-use bevy_event_bus::{EventBusBackend, resources::IncomingMessage};
-use crossbeam_channel::{Receiver, Sender, bounded};
-use std::sync::atomic::{AtomicBool, Ordering};
+use bevy_event_bus::{
+    EventBusBackend,
+    config::kafka::{
+        KafkaBackendConfig, KafkaConnectionConfig, KafkaConsumerGroupSpec, KafkaInitialOffset,
+        KafkaTopologyConfig,
+    },
+    resources::IncomingMessage,
+    runtime,
+};
 
-/// Configuration for Kafka backend
-/// Connection configuration for Kafka backend initialization
-#[derive(Clone, Debug)]
-pub struct KafkaConnection {
-    /// List of Kafka bootstrap servers
-    pub bootstrap_servers: String,
-    /// Client ID for Kafka
-    pub client_id: Option<String>,
-    /// Connection timeout
-    pub timeout_ms: i32,
-    /// Additional Kafka configuration
-    pub additional_config: HashMap<String, String>,
+const MESSAGE_CHANNEL_CAPACITY: usize = 10_000;
+const COMMIT_CHANNEL_CAPACITY: usize = 2_048;
+const RESULT_CHANNEL_CAPACITY: usize = 1_024;
+
+#[derive(Debug, Clone)]
+pub struct KafkaCommitRequest {
+    pub topic: String,
+    pub partition: i32,
+    pub offset: i64,
+    pub consumer_group: String,
 }
 
-impl Default for KafkaConnection {
-    fn default() -> Self {
-        Self {
-            bootstrap_servers: "localhost:9092".to_string(),
-            client_id: None,
-            timeout_ms: 10000,
-            additional_config: HashMap::new(),
-        }
+#[derive(Debug, Clone)]
+pub struct KafkaCommitResult {
+    pub topic: String,
+    pub partition: i32,
+    pub offset: i64,
+    pub consumer_group: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct KafkaLagMeasurement {
+    pub lag: i64,
+    pub last_updated: Instant,
+}
+
+#[derive(Clone, Default)]
+pub struct KafkaLagCache {
+    inner: Arc<RwLock<HashMap<(String, String), KafkaLagMeasurement>>>,
+}
+
+impl KafkaLagCache {
+    pub fn update(&self, consumer_group: &str, topic: &str, measurement: KafkaLagMeasurement) {
+        let mut guard = self.inner.write().unwrap();
+        guard.insert((consumer_group.to_string(), topic.to_string()), measurement);
+    }
+
+    pub fn snapshot_for_group(&self, consumer_group: &str) -> HashMap<String, KafkaLagMeasurement> {
+        let guard = self.inner.read().unwrap();
+        guard
+            .iter()
+            .filter(|((group, _), _)| group == consumer_group)
+            .map(|((_, topic), measurement)| (topic.clone(), measurement.clone()))
+            .collect()
+    }
+
+    pub fn get(&self, consumer_group: &str, topic: &str) -> Option<KafkaLagMeasurement> {
+        let guard = self.inner.read().unwrap();
+        guard
+            .get(&(consumer_group.to_string(), topic.to_string()))
+            .cloned()
     }
 }
 
-/// Consumer group configuration and state
-struct ConsumerGroup {
-    consumer: BaseConsumer,
-    topics: HashSet<String>,
-    manual_commit_enabled: bool,
-    _group_id: String, // Stored for debugging/logging but not actively used
+#[derive(Clone)]
+struct ConsumerRuntime {
+    consumer: Arc<BaseConsumer>,
+    manual_commit: bool,
+    group_id: String,
+    topics: Vec<String>,
 }
 
-impl ConsumerGroup {
-    fn new(
-        config: &KafkaConnection,
-        group_id: String,
-        manual_commit: bool,
-    ) -> Result<Self, String> {
-        let mut consumer_config = ClientConfig::new();
-        consumer_config.set("bootstrap.servers", &config.bootstrap_servers);
-        consumer_config.set("group.id", &group_id);
+struct KafkaBackendInner {
+    config: KafkaBackendConfig,
+    producer: Arc<BaseProducer<EventBusProducerContext>>,
+    consumers: Arc<Mutex<HashMap<String, ConsumerRuntime>>>,
+    incoming_tx: Sender<IncomingMessage>,
+    incoming_rx: Mutex<Option<Receiver<IncomingMessage>>>,
+    pending_messages: Mutex<VecDeque<IncomingMessage>>,
+    commit_tx: Sender<KafkaCommitRequest>,
+    commit_rx: Mutex<Option<Receiver<KafkaCommitRequest>>>,
+    commit_outcome_tx: Sender<KafkaCommitResult>,
+    commit_outcome_rx: Mutex<Option<Receiver<KafkaCommitResult>>>,
+    lag_cache: KafkaLagCache,
+    running: Arc<AtomicBool>,
+    consumer_handles: Mutex<Vec<JoinHandle<()>>>,
+    commit_handle: Mutex<Option<JoinHandle<()>>>,
+    lag_handle: Mutex<Option<JoinHandle<()>>>,
+    dropped: Arc<AtomicUsize>,
+}
 
-        // Configure auto-commit based on manual_commit flag
-        consumer_config.set(
-            "enable.auto.commit",
-            if manual_commit { "false" } else { "true" },
-        );
-        consumer_config.set("session.timeout.ms", "6000");
-        // For explicit consumer groups, use "earliest" so they can read all messages from the beginning
-        // This is important for testing and for applications that want to process all messages
-        consumer_config.set("auto.offset.reset", "earliest");
+#[derive(Clone)]
+pub struct KafkaEventBusBackend {
+    inner: Arc<KafkaBackendInner>,
+}
 
-        if let Some(client_id) = &config.client_id {
-            consumer_config.set("client.id", &format!("{}_{}", client_id, group_id));
-        }
-
-        // Add any additional configuration
-        for (key, value) in &config.additional_config {
-            consumer_config.set(key, value);
-        }
-
-        let consumer: BaseConsumer = consumer_config
-            .create()
-            .map_err(|e| format!("Failed to create consumer for group {}: {}", group_id, e))?;
-
-        Ok(Self {
-            consumer,
-            topics: HashSet::new(),
-            manual_commit_enabled: manual_commit,
-            _group_id: group_id,
-        })
+impl Debug for KafkaEventBusBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let consumers = self.inner.consumers.lock().unwrap();
+        f.debug_struct("KafkaEventBusBackend")
+            .field(
+                "bootstrap",
+                &self.inner.config.connection.bootstrap_servers(),
+            )
+            .field(
+                "consumer_groups",
+                &consumers.keys().cloned().collect::<Vec<_>>(),
+            )
+            .finish()
     }
 }
 
-/// Custom producer context for Kafka delivery reporting
 #[derive(Clone)]
 struct EventBusProducerContext;
 
@@ -109,7 +152,6 @@ impl ProducerContext for EventBusProducerContext {
                     error = %kafka_error,
                     "Kafka message delivery failed"
                 );
-                // TODO: Fire EventBusError<T> event when we have access to the event type
             }
             Ok(delivery) => {
                 debug!(
@@ -123,168 +165,317 @@ impl ProducerContext for EventBusProducerContext {
     }
 }
 
-/// Kafka implementation of the EventBusBackend
-pub struct KafkaEventBusBackend {
-    config: KafkaConnection,
-    producer: Arc<BaseProducer<EventBusProducerContext>>,
-    // Default consumer for backward compatibility and basic operations
-    default_consumer: Arc<BaseConsumer>,
-    // Multiple consumer groups support
-    consumer_groups: Arc<Mutex<HashMap<String, ConsumerGroup>>>,
-    subscriptions: Arc<Mutex<HashSet<String>>>,
-    bg_running: Arc<AtomicBool>,
-    sender: Option<Sender<IncomingMessage>>,
-    receiver: Option<Receiver<IncomingMessage>>,
-    dropped: Arc<std::sync::atomic::AtomicUsize>,
-    // Tokio task handle for background consumer
-    task_abort: Option<tokio::task::AbortHandle>,
-}
-
-impl std::fmt::Debug for KafkaEventBusBackend {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("KafkaEventBusBackend")
-            .field("config", &self.config)
-            .field(
-                "subscriptions_count",
-                &self.subscriptions.lock().unwrap().len(),
-            )
-            .finish()
-    }
-}
-
 impl KafkaEventBusBackend {
-    pub fn new(config: KafkaConnection) -> Self {
-        // Configure producer
-        let mut producer_config = ClientConfig::new();
-        producer_config.set("bootstrap.servers", &config.bootstrap_servers);
-        producer_config.set("message.timeout.ms", config.timeout_ms.to_string());
+    pub fn new(config: KafkaBackendConfig) -> Self {
+        let producer = Arc::new(build_producer(&config.connection));
+        ensure_topics(&config.connection, &config.topology);
 
-        if let Some(client_id) = &config.client_id {
-            producer_config.set("client.id", client_id);
-        }
+        let consumers = Arc::new(Mutex::new(build_consumers(
+            &config.connection,
+            &config.topology,
+        )));
 
-        // Add any additional configuration
-        for (key, value) in &config.additional_config {
-            producer_config.set(key, value);
-        }
+        let (incoming_tx, incoming_rx) = bounded(MESSAGE_CHANNEL_CAPACITY);
+        let (commit_tx, commit_rx) = bounded(COMMIT_CHANNEL_CAPACITY);
+        let (result_tx, result_rx) = bounded(RESULT_CHANNEL_CAPACITY);
 
-        // Create custom producer context for delivery callbacks
-        let producer_context = EventBusProducerContext;
-
-        let producer: BaseProducer<EventBusProducerContext> = producer_config
-            .create_with_context(producer_context)
-            .expect("Failed to create Kafka producer");
-
-        // Configure default consumer - basic consumer for backward compatibility
-        let mut consumer_config = ClientConfig::new();
-        consumer_config.set("bootstrap.servers", &config.bootstrap_servers);
-
-        // Use unique consumer group for each backend instance to avoid message sharing
-        use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
-        static GROUP_COUNTER: AtomicUsize = AtomicUsize::new(0);
-        let unique_group = GROUP_COUNTER.fetch_add(1, AtomicOrdering::SeqCst);
-        consumer_config.set(
-            "group.id",
-            &format!("bevy_event_bus_default_{}", unique_group),
-        );
-
-        // Set sensible defaults that user can override
-        consumer_config.set("enable.auto.commit", "true");
-        consumer_config.set("session.timeout.ms", "6000");
-        // Default to "latest" for real-time applications (games) - user can override to "earliest"
-        consumer_config.set("auto.offset.reset", "latest");
-
-        if let Some(client_id) = &config.client_id {
-            consumer_config.set("client.id", &format!("{}_default", client_id));
-        }
-
-        // Add any additional configuration (this can override our defaults)
-        for (key, value) in &config.additional_config {
-            consumer_config.set(key, value);
-        }
-
-        let default_consumer: BaseConsumer = consumer_config
-            .create()
-            .expect("Failed to create default Kafka consumer");
+        let inner = KafkaBackendInner {
+            config,
+            producer,
+            consumers: consumers.clone(),
+            incoming_tx,
+            incoming_rx: Mutex::new(Some(incoming_rx)),
+            pending_messages: Mutex::new(VecDeque::new()),
+            commit_tx,
+            commit_rx: Mutex::new(Some(commit_rx)),
+            commit_outcome_tx: result_tx,
+            commit_outcome_rx: Mutex::new(Some(result_rx)),
+            lag_cache: KafkaLagCache::default(),
+            running: Arc::new(AtomicBool::new(false)),
+            consumer_handles: Mutex::new(Vec::new()),
+            commit_handle: Mutex::new(None),
+            lag_handle: Mutex::new(None),
+            dropped: Arc::new(AtomicUsize::new(0)),
+        };
 
         Self {
-            config,
-            producer: Arc::new(producer),
-            default_consumer: Arc::new(default_consumer),
-            consumer_groups: Arc::new(Mutex::new(HashMap::new())),
-            subscriptions: Arc::new(Mutex::new(HashSet::new())),
-            bg_running: Arc::new(AtomicBool::new(false)),
-            sender: None,
-            receiver: None,
-            dropped: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            task_abort: None,
+            inner: Arc::new(inner),
         }
     }
 
-    /// Access to underlying config bootstrap servers (needed for admin topic creation in plugin)
     pub fn bootstrap_servers(&self) -> &str {
-        &self.config.bootstrap_servers
+        self.inner.config.connection.bootstrap_servers()
     }
 
-    /// Get all current subscriptions across all consumer groups
-    pub fn current_subscriptions(&self) -> Vec<String> {
-        self.subscriptions.lock().unwrap().iter().cloned().collect()
-    }
-
-    /// Get all active consumer groups
-    pub fn active_consumer_groups(&self) -> Vec<String> {
-        self.consumer_groups
-            .lock()
-            .unwrap()
-            .keys()
-            .cloned()
+    pub fn configured_topics(&self) -> Vec<String> {
+        self.inner
+            .config
+            .topology
+            .topics()
+            .iter()
+            .map(|spec| spec.name.clone())
             .collect()
     }
-}
 
-impl Clone for KafkaEventBusBackend {
-    fn clone(&self) -> Self {
-        Self {
-            config: self.config.clone(),
-            producer: self.producer.clone(),
-            default_consumer: self.default_consumer.clone(),
-            consumer_groups: self.consumer_groups.clone(),
-            subscriptions: self.subscriptions.clone(),
-            bg_running: self.bg_running.clone(),
-            sender: self.sender.clone(),
-            receiver: None, // receiver cannot be cloned (single consumer side)
-            dropped: self.dropped.clone(),
-            task_abort: None, // task handle not cloned
-        }
+    pub fn take_receiver(&self) -> Option<Receiver<IncomingMessage>> {
+        self.inner.incoming_rx.lock().unwrap().take()
     }
-}
 
-impl KafkaEventBusBackend {
-    pub fn take_receiver(&mut self) -> Option<Receiver<IncomingMessage>> {
-        self.receiver.take()
+    pub fn commit_sender(&self) -> Sender<KafkaCommitRequest> {
+        self.inner.commit_tx.clone()
+    }
+
+    pub fn take_commit_results(&self) -> Option<Receiver<KafkaCommitResult>> {
+        self.inner.commit_outcome_rx.lock().unwrap().take()
+    }
+
+    pub fn lag_cache(&self) -> KafkaLagCache {
+        self.inner.lag_cache.clone()
     }
 
     pub fn dropped_count(&self) -> usize {
-        self.dropped.load(Ordering::Relaxed)
+        self.inner.dropped.load(Ordering::Relaxed)
     }
+
     pub fn poll_producer(&self) {
-        self.producer.poll(Duration::from_millis(0));
+        self.inner.producer.poll(Duration::from_millis(0));
+    }
+
+    pub fn flush_with_timeout(&self, timeout: Duration) -> Result<(), String> {
+        self.inner
+            .producer
+            .flush(timeout)
+            .map_err(|err| err.to_string())
+    }
+
+    fn drain_matching_messages(&self, topic: &str, group: Option<&str>) -> Vec<Vec<u8>> {
+        let mut matches = Vec::new();
+        let mut deferred = VecDeque::new();
+
+        {
+            let mut pending = self.inner.pending_messages.lock().unwrap();
+            while let Some(msg) = pending.pop_front() {
+                if Self::message_matches(&msg, topic, group) {
+                    let payload = msg.payload;
+                    matches.push(payload);
+                } else {
+                    deferred.push_back(msg);
+                }
+            }
+        }
+
+        let receiver_opt = {
+            let mut guard = self.inner.incoming_rx.lock().unwrap();
+            guard.take()
+        };
+
+        if let Some(receiver) = receiver_opt {
+            loop {
+                match receiver.try_recv() {
+                    Ok(msg) => {
+                        let matches_topic = Self::message_matches(&msg, topic, group);
+                        if matches_topic {
+                            let payload = msg.payload;
+                            matches.push(payload);
+                        } else {
+                            deferred.push_back(msg);
+                        }
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => break,
+                }
+            }
+
+            let mut guard = self.inner.incoming_rx.lock().unwrap();
+            *guard = Some(receiver);
+        }
+
+        if !deferred.is_empty() {
+            let mut pending = self.inner.pending_messages.lock().unwrap();
+            while let Some(msg) = deferred.pop_front() {
+                pending.push_back(msg);
+            }
+        }
+
+        matches
+    }
+
+    fn message_matches(message: &IncomingMessage, topic: &str, group: Option<&str>) -> bool {
+        if message.topic != topic {
+            return false;
+        }
+
+        match group {
+            Some(group_id) => message
+                .consumer_group
+                .as_deref()
+                .map(|candidate| candidate == group_id)
+                .unwrap_or(false),
+            None => true,
+        }
+    }
+
+    fn spawn_runtime_tasks(&self) {
+        self.spawn_consumer_tasks();
+        self.spawn_commit_worker();
+        self.spawn_lag_worker();
+    }
+
+    fn spawn_consumer_tasks(&self) {
+        let consumers = self.inner.consumers.lock().unwrap().clone();
+        let running = self.inner.running.clone();
+        let producer = self.inner.producer.clone();
+        let tx = self.inner.incoming_tx.clone();
+        let dropped = self.inner.dropped.clone();
+
+        let mut handles = self.inner.consumer_handles.lock().unwrap();
+        for runtime in consumers.into_values() {
+            let tx_clone = tx.clone();
+            let running_clone = running.clone();
+            let producer_clone = producer.clone();
+            let dropped_clone = dropped.clone();
+            let handle = runtime::runtime().spawn(async move {
+                consumer_loop(
+                    runtime,
+                    tx_clone,
+                    running_clone,
+                    producer_clone,
+                    dropped_clone,
+                )
+                .await;
+            });
+            handles.push(handle);
+        }
+    }
+
+    fn spawn_commit_worker(&self) {
+        let mut guard = self.inner.commit_handle.lock().unwrap();
+        if guard.is_some() {
+            return;
+        }
+
+        let running = self.inner.running.clone();
+        let consumers = self.inner.consumers.clone();
+        let rx = self
+            .inner
+            .commit_rx
+            .lock()
+            .unwrap()
+            .take()
+            .expect("commit receiver already taken");
+        let outcome_tx = self.inner.commit_outcome_tx.clone();
+
+        let handle = runtime::runtime().spawn(async move {
+            while running.load(Ordering::Relaxed) {
+                match rx.try_recv() {
+                    Ok(req) => {
+                        let consumer_opt =
+                            consumers.lock().unwrap().get(&req.consumer_group).cloned();
+                        let result = if let Some(runtime) = consumer_opt {
+                            commit_offset_sync(&runtime, &req)
+                        } else {
+                            Err(format!(
+                                "Consumer group '{}' not found for commit",
+                                req.consumer_group
+                            ))
+                        };
+
+                        let _ = outcome_tx.try_send(KafkaCommitResult {
+                            topic: req.topic,
+                            partition: req.partition,
+                            offset: req.offset,
+                            consumer_group: req.consumer_group,
+                            error: result.err(),
+                        });
+                    }
+                    Err(crossbeam_channel::TryRecvError::Empty) => {
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                    }
+                    Err(crossbeam_channel::TryRecvError::Disconnected) => break,
+                }
+            }
+        });
+
+        *guard = Some(handle);
+    }
+
+    fn spawn_lag_worker(&self) {
+        let mut guard = self.inner.lag_handle.lock().unwrap();
+        if guard.is_some() {
+            return;
+        }
+
+        let running = self.inner.running.clone();
+        let consumers = self.inner.consumers.clone();
+        let cache = self.inner.lag_cache.clone();
+        let interval = self.inner.config.consumer_lag_poll_interval;
+
+        let handle = runtime::runtime().spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            while running.load(Ordering::Relaxed) {
+                ticker.tick().await;
+                let snapshot = consumers.lock().unwrap().clone();
+                for runtime in snapshot.values() {
+                    for topic in &runtime.topics {
+                        match compute_consumer_lag(runtime, topic) {
+                            Ok(lag) => {
+                                cache.update(
+                                    &runtime.group_id,
+                                    topic,
+                                    KafkaLagMeasurement {
+                                        lag,
+                                        last_updated: Instant::now(),
+                                    },
+                                );
+                            }
+                            Err(err) => {
+                                warn!(
+                                    consumer_group = %runtime.group_id,
+                                    topic = %topic,
+                                    error = %err,
+                                    "Failed to refresh consumer lag"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        *guard = Some(handle);
+    }
+
+    fn stop_tasks(&self) {
+        if let Ok(mut handles) = self.inner.consumer_handles.lock() {
+            for handle in handles.drain(..) {
+                handle.abort();
+            }
+        }
+
+        if let Ok(mut guard) = self.inner.commit_handle.lock() {
+            if let Some(handle) = guard.take() {
+                handle.abort();
+            }
+        }
+
+        if let Ok(mut guard) = self.inner.lag_handle.lock() {
+            if let Some(handle) = guard.take() {
+                handle.abort();
+            }
+        }
     }
 }
 
 impl Drop for KafkaEventBusBackend {
     fn drop(&mut self) {
-        // Ensure background thread stops cleanly to avoid late shutdown error spam
-        if self.bg_running.swap(false, Ordering::SeqCst) {
-            if let Some(abort) = self.task_abort.take() {
-                abort.abort();
-            }
+        if self.inner.running.swap(false, Ordering::SeqCst) {
+            self.stop_tasks();
         }
-        // Best-effort flush (ignore errors). Extra polls attempt to drive any pending delivery callbacks.
+
         for _ in 0..10 {
-            self.producer.poll(Duration::from_millis(10));
+            self.inner.producer.poll(Duration::from_millis(10));
         }
-        let _ = self.producer.flush(Duration::from_millis(250));
+        let _ = self.inner.producer.flush(Duration::from_millis(250));
     }
 }
 
@@ -293,724 +484,409 @@ impl EventBusBackend for KafkaEventBusBackend {
     fn clone_box(&self) -> Box<dyn EventBusBackend> {
         Box::new(self.clone())
     }
+
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
+
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
+
     async fn connect(&mut self) -> bool {
-        // Use compare_exchange to atomically check and set - prevents race condition
         if self
-            .bg_running
+            .inner
+            .running
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
             .is_err()
         {
-            debug!("Kafka backend connect() called but background already running");
             return true;
         }
-        info!(
-            "Initializing Kafka backend (lazy connect) for {}",
-            self.config.bootstrap_servers
-        );
-        // Attempt metadata readiness loop (bounded) before spawning background thread to reduce noisy errors.
-        let start = std::time::Instant::now();
-        let deadline = Duration::from_secs(5);
-        let mut attempt: u32 = 0;
-        let mut last_err: Option<String> = None;
-        while start.elapsed() < deadline {
-            attempt += 1;
-            match self
-                .producer
-                .client()
-                .fetch_metadata(None, Duration::from_millis(700))
-            {
-                Ok(md) => {
-                    info!(
-                        brokers = md.brokers().len(),
-                        attempts = attempt,
-                        "Kafka metadata ready pre-spawn"
-                    );
-                    break;
-                }
-                Err(e) => {
-                    let msg = e.to_string();
-                    if last_err.as_ref() != Some(&msg) {
-                        debug!(attempt, err = %msg, "Kafka metadata attempt failed");
-                    }
-                    last_err = Some(msg);
-                    tokio::time::sleep(Duration::from_millis(120)).await;
-                }
-            }
-        }
-        if start.elapsed() >= deadline {
-            warn!(
-                elapsed_ms = start.elapsed().as_millis(),
-                "Proceeding without confirmed metadata (will retry in background)"
-            );
-        }
-        // Re-subscribe to any existing topics
-        let existing = self.subscriptions.lock().unwrap().clone();
-        if !existing.is_empty() {
-            let topics: Vec<&str> = existing.iter().map(|s| s.as_str()).collect();
-            if let Err(e) = self.default_consumer.subscribe(&topics) {
-                error!("Failed to subscribe to topics: {}", e);
-                return false;
-            }
-        }
-        // Spawn background consumer task once (Tokio)
-        let (tx, rx) = bounded::<IncomingMessage>(10_000);
-        self.sender = Some(tx.clone());
-        self.receiver = Some(rx);
-        let consumer = self.default_consumer.clone();
-        let producer = self.producer.clone();
-        let subs = self.subscriptions.clone();
-        let running = self.bg_running.clone();
-        let dropped_counter = self.dropped.clone();
-        let bootstrap = self.config.bootstrap_servers.clone();
-        let rt = bevy_event_bus::runtime::runtime();
-        // spawn_blocking not needed; poll is non-blocking with small timeout, but we use spawn to keep simple
-        let task = rt.spawn(async move {
-            let mut last_err: Option<String> = None;
-            let mut repeated: u32 = 0;
-            let mut error_backoff = Duration::from_millis(100);
-            let max_error = Duration::from_millis(1000);
-            while running.load(Ordering::Relaxed) {
-                // Drive producer delivery callbacks
-                producer.poll(Duration::from_millis(0));
-                match consumer.as_ref().poll(Duration::from_millis(50)) {
-                    None => { /* timeout, loop */ }
-                    Some(Ok(m)) => {
-                        let topic = m.topic().to_string();
-                        { subs.lock().unwrap().insert(topic.clone()); }
-                        if let Some(payload) = m.payload() {
-                            // Extract headers from Kafka message
-                            let mut headers = std::collections::HashMap::new();
-                            if let Some(msg_headers) = m.headers() {
-                                for header in msg_headers.iter() {
-                                    if let Some(value_bytes) = header.value {
-                                        // Convert header value to string (UTF-8 only for now)
-                                        if let Ok(value_str) = String::from_utf8(value_bytes.to_vec()) {
-                                            headers.insert(header.key.to_string(), value_str);
-                                        }
-                                        // Skip non-UTF-8 headers for simplicity
-                                    }
-                                }
-                            }
 
-                            let msg = IncomingMessage {
-                                topic,
-                                partition: m.partition(),
-                                offset: m.offset(),
-                                key: m.key().map(|k| k.to_vec()),
-                                payload: payload.to_vec(),
-                                timestamp: std::time::Instant::now(),
-                                headers,
-                            };
-                            if tx.try_send(msg).is_err() { dropped_counter.fetch_add(1, Ordering::Relaxed); }
-                        }
-                    }
-                    Some(Err(e)) => {
-                        let msg = e.to_string();
-                        if last_err.as_ref() == Some(&msg) {
-                            repeated += 1;
-                            if repeated % 10 == 0 {
-                                warn!(repeats = repeated, err = %msg, bootstrap = %bootstrap, "Repeating Kafka consume error");
-                            }
-                        } else {
-                            error!(err = %msg, bootstrap = %bootstrap, "Background Kafka consume error");
-                            last_err = Some(msg);
-                            repeated = 0;
-                        }
-                        tokio::time::sleep(error_backoff).await;
-                        error_backoff = std::cmp::min(error_backoff * 2, max_error);
-                    }
-                }
-                // Light additional producer progress after consumer activity to reduce tail latency.
-                for _ in 0..2 { producer.poll(Duration::from_millis(0)); }
-            }
-        });
-        self.task_abort = Some(task.abort_handle());
+        self.spawn_runtime_tasks();
         true
     }
+
     async fn disconnect(&mut self) -> bool {
-        info!("Disconnecting from Kafka");
-        self.bg_running.store(false, Ordering::SeqCst);
-        if let Some(abort) = self.task_abort.take() {
-            abort.abort();
+        if !self.inner.running.swap(false, Ordering::SeqCst) {
+            return true;
         }
-        // Nothing special needed for disconnection, Kafka clients clean up on drop
+
+        self.stop_tasks();
         true
     }
+
     fn try_send_serialized(&self, event_json: &[u8], topic: &str) -> bool {
-        tracing::info!(
-            "try_send_serialized called: topic={}, payload_size={}",
-            topic,
-            event_json.len()
-        );
-        let record: BaseRecord<'_, (), [u8]> = BaseRecord::to(topic).payload(event_json);
-        if let Err((e, _)) = self.producer.send(record) {
-            error!("Failed to enqueue message: {}", e);
-            return false;
+        let record = BaseRecord::<(), _>::to(topic).payload(event_json);
+        match self.inner.producer.send(record) {
+            Ok(_) => true,
+            Err((err, _)) => {
+                warn!(target = %topic, error = %err, "Failed to enqueue Kafka message");
+                false
+            }
         }
-        tracing::info!("Message successfully enqueued for topic: {}", topic);
-        // Non-blocking send; delivery progress advanced by background producer polling.
-        true
     }
 
     fn try_send_serialized_with_headers(
         &self,
         event_json: &[u8],
         topic: &str,
-        headers: &std::collections::HashMap<String, String>,
-    ) -> bool {
-        use rdkafka::message::OwnedHeaders;
-
-        let mut record: BaseRecord<'_, (), [u8]> = BaseRecord::to(topic).payload(event_json);
-
-        // Add headers if any
-        if !headers.is_empty() {
-            let mut owned_headers = OwnedHeaders::new();
-            for (key, value) in headers {
-                owned_headers = owned_headers.insert(rdkafka::message::Header {
-                    key,
-                    value: Some(value),
-                });
-            }
-            record = record.headers(owned_headers);
-        }
-
-        if let Err((e, _)) = self.producer.send(record) {
-            debug!("Failed to enqueue message with headers: {}", e);
-            return false;
-        }
-        // Non-blocking send; delivery progress advanced by background producer polling.
-        true
-    }
-    async fn receive_serialized(&self, topic: &str) -> Vec<Vec<u8>> {
-        // Auto-subscribe if not already
-        let mut need_subscribe = false;
-        {
-            let subs = self.subscriptions.lock().unwrap();
-            if !subs.contains(topic) {
-                need_subscribe = true;
-            }
-        }
-        if need_subscribe {
-            // We need a mutable consumer subscribe; safe because subscribe only adds topic list
-            let mut subs_guard = self.subscriptions.lock().unwrap();
-            let mut all: Vec<&str> = subs_guard.iter().map(|s| s.as_str()).collect();
-            all.push(topic);
-            if let Err(e) = self.default_consumer.subscribe(&all) {
-                error!("Failed to auto-subscribe to {}: {}", topic, e);
-                return Vec::new();
-            }
-            subs_guard.insert(topic.to_string());
-            info!("Auto-subscribed to Kafka topic: {}", topic);
-        }
-
-        let mut result = Vec::new();
-        // Fast, non-blocking style receive: perform a small number of short polls (overall <100ms)
-        // to satisfy startup fallback path without stalling frames for idle topics.
-        for i in 0..2 {
-            // at most ~40ms but likely exit on first iteration
-            match self
-                .default_consumer
-                .as_ref()
-                .poll(Duration::from_millis(5))
-            {
-                None => {
-                    break;
-                }
-                Some(Ok(message)) => {
-                    if message.topic() == topic {
-                        if let Some(payload) = message.payload() {
-                            result.push(payload.to_vec());
-                        }
-                    }
-                    // If we got something, allow a second quick poll for possible batch continuation
-                    if i == 0 {
-                        continue;
-                    } else {
-                        break;
-                    }
-                }
-                Some(Err(e)) => {
-                    error!("Error receiving Kafka message: {}", e);
-                    break;
-                }
-            }
-        }
-        result
-    }
-    async fn subscribe(&mut self, topic: &str) -> bool {
-        let mut subscriptions = self.subscriptions.lock().unwrap();
-
-        // Only subscribe if we haven't already
-        if !subscriptions.contains(topic) {
-            // Get current subscriptions
-            let current_topics: Vec<&str> = subscriptions.iter().map(|s| s.as_str()).collect();
-
-            // Add the new topic
-            let mut new_topics = current_topics.clone();
-            new_topics.push(topic);
-
-            // Subscribe to all topics
-            if let Err(e) = self.default_consumer.subscribe(&new_topics) {
-                error!("Failed to subscribe to topic {}: {}", topic, e);
-                return false;
-            }
-
-            // Update subscriptions
-            subscriptions.insert(topic.to_string());
-
-            info!("Subscribed to Kafka topic: {}", topic);
-        }
-
-        true
-    }
-    async fn unsubscribe(&mut self, topic: &str) -> bool {
-        let mut subscriptions = self.subscriptions.lock().unwrap();
-        if subscriptions.remove(topic) {
-            let remaining: Vec<&str> = subscriptions.iter().map(|s| s.as_str()).collect();
-            if remaining.is_empty() {
-                // rdkafka's unsubscribe returns (), so no error handling required
-                self.default_consumer.unsubscribe();
-            } else if let Err(e) = self.default_consumer.subscribe(&remaining) {
-                error!("Failed to update subscriptions: {}", e);
-                return false;
-            }
-            info!("Unsubscribed from Kafka topic: {}", topic);
-        }
-        true
-    }
-
-    /// Send with partition key for message ordering (Kafka-specific implementation)
-    fn try_send_serialized_with_partition_key(
-        &self,
-        event_json: &[u8],
-        topic: &str,
-        key: &str,
-    ) -> bool {
-        let record: BaseRecord<str, [u8]> = BaseRecord::to(topic).payload(event_json).key(key);
-
-        match self.producer.send(record) {
-            Ok(_) => {
-                debug!(
-                    "Event queued for delivery to Kafka topic '{}' with key '{}'",
-                    topic, key
-                );
-                true
-            }
-            Err((e, _)) => {
-                error!(
-                    "Failed to queue event for topic '{}' with key '{}': {}",
-                    topic, key, e
-                );
-                false
-            }
-        }
-    }
-
-    /// Send with both partition key and headers
-    fn try_send_serialized_with_key_and_headers(
-        &self,
-        event_json: &[u8],
-        topic: &str,
-        key: &str,
         headers: &HashMap<String, String>,
     ) -> bool {
-        // Create rdkafka headers
-        let mut rdkafka_headers = rdkafka::message::OwnedHeaders::new();
-        for (key_h, value_h) in headers {
-            rdkafka_headers = rdkafka_headers.insert(rdkafka::message::Header {
-                key: key_h,
-                value: Some(value_h.as_bytes()),
-            });
+        let mut record = BaseRecord::<(), _>::to(topic).payload(event_json);
+        if !headers.is_empty() {
+            let mut kafka_headers = rdkafka::message::OwnedHeaders::new();
+            for (key, value) in headers {
+                kafka_headers = kafka_headers.insert(rdkafka::message::Header {
+                    key,
+                    value: Some(value.as_bytes()),
+                });
+            }
+            record = record.headers(kafka_headers);
         }
 
-        let record: BaseRecord<str, [u8]> = BaseRecord::to(topic)
-            .payload(event_json)
-            .key(key)
-            .headers(rdkafka_headers);
-
-        match self.producer.send(record) {
-            Ok(_) => {
-                debug!(
-                    "Event queued for delivery to Kafka topic '{}' with key '{}' and {} headers",
-                    topic,
-                    key,
-                    headers.len()
-                );
-                true
-            }
-            Err((e, _)) => {
-                error!(
-                    "Failed to queue event for topic '{}' with key '{}' and headers: {}",
-                    topic, key, e
-                );
+        match self.inner.producer.send(record) {
+            Ok(_) => true,
+            Err((err, _)) => {
+                warn!(target = %topic, error = %err, "Failed to enqueue Kafka message with headers");
                 false
             }
         }
     }
 
-    /// Create a consumer group with specific configuration
+    async fn receive_serialized(&self, topic: &str) -> Vec<Vec<u8>> {
+        self.drain_matching_messages(topic, None)
+    }
+
+    async fn subscribe(&mut self, _topic: &str) -> bool {
+        true
+    }
+
+    async fn unsubscribe(&mut self, _topic: &str) -> bool {
+        true
+    }
+
     async fn create_consumer_group(
         &mut self,
-        topics: &[String],
-        group_id: &str,
+        _topics: &[String],
+        _group_id: &str,
     ) -> Result<(), String> {
-        let mut consumer_groups = self.consumer_groups.lock().unwrap();
-
-        // Check if group already exists
-        if consumer_groups.contains_key(group_id) {
-            warn!("Consumer group '{}' already exists", group_id);
-            return Ok(());
-        }
-
-        // Create new consumer group
-        let mut consumer_group = ConsumerGroup::new(&self.config, group_id.to_string(), false)?;
-
-        // Subscribe to topics
-        if !topics.is_empty() {
-            let topic_refs: Vec<&str> = topics.iter().map(|s| s.as_str()).collect();
-            if let Err(e) = consumer_group.consumer.subscribe(&topic_refs) {
-                return Err(format!(
-                    "Failed to subscribe consumer group '{}' to topics: {}",
-                    group_id, e
-                ));
-            }
-            consumer_group.topics.extend(topics.iter().cloned());
-        }
-
-        consumer_groups.insert(group_id.to_string(), consumer_group);
-        info!(
-            "Created consumer group '{}' with topics: {:?}",
-            group_id, topics
-        );
-        Ok(())
+        Err("Dynamic consumer group creation is not supported at runtime".into())
     }
 
-    /// Consume from specific consumer group
     async fn receive_serialized_with_group(&self, topic: &str, group_id: &str) -> Vec<Vec<u8>> {
-        // Check if consumer group exists first
-        let needs_creation = {
-            let consumer_groups = self.consumer_groups.lock().unwrap();
-            !consumer_groups.contains_key(group_id)
-        };
-
-        // Create consumer group if needed - this is a limitation that we can't create from immutable method
-        if needs_creation {
-            warn!(
-                "Consumer group '{}' does not exist. Use create_consumer_group() first.",
-                group_id
-            );
-            return Vec::new();
-        }
-
-        let mut consumer_groups = self.consumer_groups.lock().unwrap();
-        let consumer_group = match consumer_groups.get_mut(group_id) {
-            Some(group) => group,
-            None => {
-                error!("Consumer group '{}' not found", group_id);
-                return Vec::new();
-            }
-        };
-
-        // Auto-subscribe to topic if not already subscribed
-        if !consumer_group.topics.contains(topic) {
-            let mut all_topics: Vec<&str> =
-                consumer_group.topics.iter().map(|s| s.as_str()).collect();
-            all_topics.push(topic);
-
-            if let Err(e) = consumer_group.consumer.subscribe(&all_topics) {
-                error!(
-                    "Failed to subscribe consumer group '{}' to topic '{}': {}",
-                    group_id, topic, e
-                );
-                return Vec::new();
-            }
-
-            consumer_group.topics.insert(topic.to_string());
-            info!(
-                "Auto-subscribed consumer group '{}' to topic '{}'",
-                group_id, topic
-            );
-        }
-
-        let mut result = Vec::new();
-
-        // If no partitions assigned initially, do a longer poll to trigger rebalancing
-        if let Ok(assignment) = consumer_group.consumer.assignment() {
-            if assignment.count() == 0 {
-                // Try a longer poll to allow for partition assignment/rebalancing
-                if let Some(Ok(msg)) = consumer_group.consumer.poll(Duration::from_millis(2000)) {
-                    // For consumer groups subscribed to multiple topics, return all messages
-                    if consumer_group.topics.len() > 1 || msg.topic() == topic {
-                        if let Some(payload) = msg.payload() {
-                            result.push(payload.to_vec());
-                        }
-                    }
-                }
-            }
-        }
-
-        // Poll for messages from this specific consumer group with sufficient timeout for rebalancing
-        for attempt in 0..10 {
-            // More attempts to handle Kafka rebalancing
-            match consumer_group.consumer.poll(Duration::from_millis(200)) {
-                None => {
-                    if attempt < 7 {
-                        // Continue polling for more attempts to handle rebalancing
-                        continue;
-                    } else {
-                        break;
-                    }
-                }
-                Some(Ok(message)) => {
-                    // For consumer groups subscribed to multiple topics, we should return all messages
-                    // The topic parameter can be used for filtering, but we shouldn't drop messages from other topics
-                    // as that would make them lost forever for this consumer group
-                    if consumer_group.topics.len() > 1 || message.topic() == topic {
-                        if let Some(payload) = message.payload() {
-                            result.push(payload.to_vec());
-                        }
-                    }
-                }
-                Some(Err(e)) => {
-                    tracing::error!("Consumer group '{}' poll error: {}", group_id, e);
-                    error!("Error receiving from consumer group '{}': {}", group_id, e);
-                    break;
-                }
-            }
-        }
-
-        tracing::info!(
-            "receive_serialized_with_group finished: topic={}, group_id={}, received_count={}",
-            topic,
-            group_id,
-            result.len()
-        );
-        result
+        self.drain_matching_messages(topic, Some(group_id))
     }
 
-    /// Enable manual offset commits for reliable processing
     async fn enable_manual_commits(&mut self, group_id: &str) -> Result<(), String> {
-        let mut consumer_groups = self.consumer_groups.lock().unwrap();
-
-        // Check if group exists
-        if !consumer_groups.contains_key(group_id) {
-            // Create a new consumer group with manual commits enabled
-            let consumer_group = ConsumerGroup::new(&self.config, group_id.to_string(), true)?;
-            consumer_groups.insert(group_id.to_string(), consumer_group);
-            info!(
-                "Created new consumer group '{}' with manual commits enabled",
-                group_id
-            );
-        } else {
-            // Check if manual commits are already enabled
-            let group = consumer_groups.get(group_id).unwrap();
-            if group.manual_commit_enabled {
-                info!(
-                    "Manual commits already enabled for consumer group '{}'",
-                    group_id
-                );
-                return Ok(());
-            } else {
-                // Need to recreate the consumer with manual commits
-                let topics: Vec<String> = group.topics.iter().cloned().collect();
-                drop(consumer_groups); // Release lock
-
-                // Remove old group and create new one with manual commits
-                self.consumer_groups.lock().unwrap().remove(group_id);
-                let mut new_group = ConsumerGroup::new(&self.config, group_id.to_string(), true)?;
-
-                // Re-subscribe to topics
-                if !topics.is_empty() {
-                    let topic_refs: Vec<&str> = topics.iter().map(|s| s.as_str()).collect();
-                    if let Err(e) = new_group.consumer.subscribe(&topic_refs) {
-                        return Err(format!(
-                            "Failed to re-subscribe consumer group '{}' to topics: {}",
-                            group_id, e
-                        ));
-                    }
-                    new_group.topics.extend(topics);
-                }
-
-                self.consumer_groups
-                    .lock()
-                    .unwrap()
-                    .insert(group_id.to_string(), new_group);
-                info!(
-                    "Reconfigured consumer group '{}' with manual commits enabled",
-                    group_id
-                );
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Manually commit a specific message offset
-    async fn commit_offset(&self, topic: &str, partition: i32, offset: i64) -> Result<(), String> {
-        let consumer_groups = self.consumer_groups.lock().unwrap();
-
-        // Find the consumer group that has this topic
-        let mut found_group = None;
-        for (group_id, group) in consumer_groups.iter() {
-            if group.topics.contains(topic) && group.manual_commit_enabled {
-                found_group = Some((group_id.clone(), &group.consumer));
-                break;
-            }
-        }
-
-        let (group_id, consumer) = match found_group {
-            Some((id, consumer)) => (id, consumer),
-            None => {
-                return Err(format!(
-                    "No consumer group with manual commits enabled found for topic '{}'",
-                    topic
-                ));
-            }
-        };
-
-        // Create TopicPartitionList for the specific offset
-        let mut tpl = TopicPartitionList::new();
-        if let Err(e) = tpl.add_partition_offset(topic, partition, Offset::Offset(offset + 1)) {
-            return Err(format!("Failed to add partition offset: {}", e));
-        }
-
-        // Commit the offset
-        match consumer.commit(&tpl, CommitMode::Sync) {
-            Ok(()) => {
-                debug!(
-                    "Successfully committed offset {} for topic '{}' partition {} in group '{}'",
-                    offset, topic, partition, group_id
-                );
+        let consumers = self.inner.consumers.lock().unwrap();
+        if let Some(runtime) = consumers.get(group_id) {
+            if runtime.manual_commit {
                 Ok(())
+            } else {
+                Err(format!(
+                    "Consumer group '{}' is configured for auto commits",
+                    group_id
+                ))
             }
-            Err(e) => {
-                error!(
-                    "Failed to commit offset {} for topic '{}' partition {} in group '{}': {}",
-                    offset, topic, partition, group_id, e
-                );
-                Err(format!("Commit failed: {}", e))
+        } else {
+            Err(format!("Consumer group '{}' not found", group_id))
+        }
+    }
+
+    async fn commit_offset(&self, topic: &str, partition: i32, offset: i64) -> Result<(), String> {
+        let consumers = self.inner.consumers.lock().unwrap();
+        let runtime = consumers
+            .values()
+            .find(|cg| cg.manual_commit && cg.topics.contains(&topic.to_string()))
+            .cloned()
+            .ok_or_else(|| format!("No manual commit consumer group for topic '{}'", topic))?;
+        drop(consumers);
+
+        let request = KafkaCommitRequest {
+            topic: topic.to_string(),
+            partition,
+            offset,
+            consumer_group: runtime.group_id.clone(),
+        };
+
+        match self.inner.commit_tx.try_send(request.clone()) {
+            Ok(_) => Ok(()),
+            Err(crossbeam_channel::TrySendError::Full(_)) => commit_offset_sync(&runtime, &request),
+            Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+                Err("Kafka commit queue is not available".to_string())
             }
         }
     }
 
-    /// Get consumer lag for monitoring
     async fn get_consumer_lag(&self, topic: &str, group_id: &str) -> Result<i64, String> {
-        use rdkafka::consumer::Consumer;
+        let consumers = self.inner.consumers.lock().unwrap();
+        if let Some(runtime) = consumers.get(group_id) {
+            compute_consumer_lag(runtime, topic)
+        } else {
+            Err(format!("Consumer group '{}' not found", group_id))
+        }
+    }
 
-        let consumer_groups = self.consumer_groups.lock().unwrap();
+    async fn flush(&self) -> Result<(), String> {
+        match self.inner.producer.flush(Duration::from_secs(30)) {
+            Ok(_) => Ok(()),
+            Err(err) => Err(format!("Flush failed: {err}")),
+        }
+    }
+}
 
-        let consumer = match consumer_groups.get(group_id) {
-            Some(group) => &group.consumer,
-            None => {
-                return Err(format!("Consumer group '{}' not found", group_id));
-            }
-        };
+fn build_producer(connection: &KafkaConnectionConfig) -> BaseProducer<EventBusProducerContext> {
+    let mut cfg = ClientConfig::new();
+    cfg.set("bootstrap.servers", connection.bootstrap_servers());
+    cfg.set("message.timeout.ms", connection.timeout_ms().to_string());
 
-        // Get metadata for the topic to find partitions
-        let metadata = match consumer.fetch_metadata(Some(topic), Duration::from_secs(5)) {
-            Ok(md) => md,
-            Err(e) => {
-                return Err(format!(
-                    "Failed to fetch metadata for topic '{}': {}",
-                    topic, e
-                ));
-            }
-        };
+    if let Some(client_id) = connection.client_id() {
+        cfg.set("client.id", client_id);
+    }
 
-        let topic_metadata = match metadata.topics().iter().find(|t| t.name() == topic) {
-            Some(tm) => tm,
-            None => {
-                return Err(format!("Topic '{}' not found in metadata", topic));
-            }
-        };
+    for (key, value) in connection.additional_config() {
+        cfg.set(key, value);
+    }
 
-        let mut total_lag = 0i64;
+    cfg.create_with_context(EventBusProducerContext)
+        .expect("Failed to create Kafka producer")
+}
 
-        // Calculate lag for each partition
-        for partition in topic_metadata.partitions() {
-            let partition_id = partition.id();
+fn ensure_topics(connection: &KafkaConnectionConfig, topology: &KafkaTopologyConfig) {
+    if topology.topics().is_empty() {
+        return;
+    }
 
-            // Get high watermark (latest offset available)
-            let (low, high) =
-                match consumer.fetch_watermarks(topic, partition_id, Duration::from_secs(5)) {
-                    Ok((l, h)) => (l, h),
-                    Err(e) => {
-                        warn!(
-                            "Failed to fetch watermarks for topic '{}' partition {}: {}",
-                            topic, partition_id, e
-                        );
-                        continue;
+    let mut cfg = ClientConfig::new();
+    cfg.set("bootstrap.servers", connection.bootstrap_servers());
+    if let Some(client_id) = connection.client_id() {
+        cfg.set("client.id", client_id);
+    }
+
+    match cfg.create::<AdminClient<DefaultClientContext>>() {
+        Ok(admin) => {
+            let options = AdminOptions::new();
+            let topics: Vec<NewTopic> = topology
+                .topics()
+                .iter()
+                .map(|spec| {
+                    let partitions = spec.partitions.unwrap_or(1);
+                    let replication = spec
+                        .replication
+                        .map(|r| TopicReplication::Fixed(r as i32))
+                        .unwrap_or(TopicReplication::Fixed(1));
+                    NewTopic::new(&spec.name, partitions, replication)
+                })
+                .collect();
+
+            if !topics.is_empty() {
+                if let Err(err) = runtime::block_on(admin.create_topics(topics.iter(), &options)) {
+                    let msg = err.to_string();
+                    if !msg.contains("TopicAlreadyExists") {
+                        warn!(error = %msg, "Topic creation batch failed");
                     }
+                }
+            }
+        }
+        Err(err) => warn!(error = %err, "Failed to create Kafka admin client"),
+    }
+}
+
+fn build_consumers(
+    connection: &KafkaConnectionConfig,
+    topology: &KafkaTopologyConfig,
+) -> HashMap<String, ConsumerRuntime> {
+    let mut map = HashMap::new();
+    for (group_id, spec) in topology.consumer_groups() {
+        let consumer = build_consumer(connection, group_id, spec)
+            .unwrap_or_else(|e| panic!("Failed to build consumer for group {}: {e}", group_id));
+
+        if !spec.topics.is_empty() {
+            let topic_refs: Vec<&str> = spec.topics.iter().map(String::as_str).collect();
+            consumer
+                .subscribe(&topic_refs)
+                .unwrap_or_else(|e| panic!("Failed to subscribe group {}: {e}", group_id));
+        }
+
+        map.insert(
+            group_id.clone(),
+            ConsumerRuntime {
+                consumer: Arc::new(consumer),
+                manual_commit: spec.manual_commits,
+                group_id: group_id.clone(),
+                topics: spec.topics.clone(),
+            },
+        );
+    }
+
+    map
+}
+
+fn build_consumer(
+    connection: &KafkaConnectionConfig,
+    group_id: &str,
+    spec: &KafkaConsumerGroupSpec,
+) -> Result<BaseConsumer, KafkaError> {
+    let mut cfg = ClientConfig::new();
+    cfg.set("bootstrap.servers", connection.bootstrap_servers());
+    cfg.set("group.id", group_id);
+    cfg.set(
+        "enable.auto.commit",
+        if spec.manual_commits { "false" } else { "true" },
+    );
+    cfg.set("session.timeout.ms", "6000");
+    cfg.set(
+        "auto.offset.reset",
+        match spec.initial_offset {
+            KafkaInitialOffset::Earliest => "earliest",
+            KafkaInitialOffset::Latest => "latest",
+            KafkaInitialOffset::None => "none",
+        },
+    );
+    if let Some(client_id) = connection.client_id() {
+        cfg.set("client.id", &format!("{}_{}", client_id, group_id));
+    }
+    for (key, value) in connection.additional_config() {
+        cfg.set(key, value);
+    }
+
+    cfg.create()
+}
+
+async fn consumer_loop(
+    runtime: ConsumerRuntime,
+    tx: Sender<IncomingMessage>,
+    running: Arc<AtomicBool>,
+    producer: Arc<BaseProducer<EventBusProducerContext>>,
+    dropped: Arc<AtomicUsize>,
+) {
+    while running.load(Ordering::Relaxed) {
+        producer.poll(Duration::from_millis(0));
+        match runtime.consumer.poll(Duration::from_millis(50)) {
+            Some(Ok(message)) => {
+                let payload = match message.payload() {
+                    Some(payload) => payload.to_vec(),
+                    None => Vec::new(),
                 };
 
-            // Get committed offset for this consumer group
-            let mut tpl = TopicPartitionList::new();
-            if let Err(e) = tpl.add_partition_offset(topic, partition_id, Offset::Invalid) {
-                warn!("Failed to add partition to TopicPartitionList: {}", e);
-                continue;
-            }
-
-            let committed_offsets = match consumer.committed_offsets(tpl, Duration::from_secs(5)) {
-                Ok(offsets) => offsets,
-                Err(e) => {
-                    warn!(
-                        "Failed to get committed offsets for topic '{}' partition {}: {}",
-                        topic, partition_id, e
-                    );
-                    continue;
+                let key = message.key().map(|k| k.to_vec());
+                let mut headers_map = HashMap::new();
+                if let Some(headers) = message.headers() {
+                    for header in headers.iter() {
+                        if let Some(value) = header.value {
+                            if let Ok(str_value) = String::from_utf8(value.to_vec()) {
+                                headers_map.insert(header.key.to_string(), str_value);
+                            }
+                        }
+                    }
                 }
-            };
 
-            // Calculate lag for this partition
-            if let Some(elem) = committed_offsets.elements().first() {
-                match elem.offset() {
-                    Offset::Offset(committed) => {
-                        let lag = high - committed;
-                        total_lag += lag.max(0); // Don't count negative lag
-                        debug!(
-                            "Partition {} lag: {} (high: {}, committed: {})",
-                            partition_id, lag, high, committed
-                        );
+                let msg = IncomingMessage {
+                    topic: message.topic().to_string(),
+                    partition: message.partition(),
+                    offset: message.offset(),
+                    key,
+                    payload,
+                    timestamp: Instant::now(),
+                    headers: headers_map,
+                    consumer_group: Some(runtime.group_id.clone()),
+                    manual_commit: runtime.manual_commit,
+                };
+
+                let mut pending = msg;
+
+                loop {
+                    match tx.try_send(pending) {
+                        Ok(_) => break,
+                        Err(TrySendError::Full(returned)) => {
+                            if !running.load(Ordering::Relaxed) {
+                                dropped.fetch_add(1, Ordering::Relaxed);
+                                break;
+                            }
+
+                            tokio::time::sleep(Duration::from_millis(2)).await;
+                            pending = returned;
+                        }
+                        Err(TrySendError::Disconnected(returned)) => {
+                            let _ = returned;
+                            dropped.fetch_add(1, Ordering::Relaxed);
+                            break;
+                        }
                     }
-                    _ => {
-                        // No committed offset yet, lag is the total available
-                        let lag = high - low;
-                        total_lag += lag.max(0);
-                        debug!(
-                            "Partition {} no committed offset, lag: {} (high: {}, low: {})",
-                            partition_id, lag, high, low
-                        );
-                    }
+                }
+            }
+            Some(Err(err)) => {
+                warn!("Kafka consumer poll error: {err}");
+            }
+            None => {}
+        }
+    }
+}
+
+fn commit_offset_sync(runtime: &ConsumerRuntime, req: &KafkaCommitRequest) -> Result<(), String> {
+    if !runtime.manual_commit {
+        return Err(format!(
+            "Consumer group '{}' is not configured for manual commits",
+            runtime.group_id
+        ));
+    }
+
+    let mut tpl = TopicPartitionList::new();
+    tpl.add_partition_offset(&req.topic, req.partition, Offset::Offset(req.offset + 1))
+        .map_err(|err| err.to_string())?;
+
+    runtime
+        .consumer
+        .commit(&tpl, CommitMode::Sync)
+        .map_err(|err| err.to_string())
+}
+
+fn compute_consumer_lag(runtime: &ConsumerRuntime, topic: &str) -> Result<i64, String> {
+    let consumer = &runtime.consumer;
+
+    let metadata = consumer
+        .fetch_metadata(Some(topic), Duration::from_secs(5))
+        .map_err(|err| err.to_string())?;
+
+    let topic_metadata = metadata
+        .topics()
+        .iter()
+        .find(|t| t.name() == topic)
+        .ok_or_else(|| format!("Topic '{topic}' not found in metadata"))?;
+
+    let mut total_lag = 0i64;
+
+    for partition in topic_metadata.partitions() {
+        let partition_id = partition.id();
+
+        let (low, high) = consumer
+            .fetch_watermarks(topic, partition_id, Duration::from_secs(5))
+            .map_err(|err| err.to_string())?;
+
+        let mut tpl = TopicPartitionList::new();
+        tpl.add_partition_offset(topic, partition_id, Offset::Invalid)
+            .map_err(|err| err.to_string())?;
+
+        let committed = consumer
+            .committed_offsets(tpl, Duration::from_secs(5))
+            .map_err(|err| err.to_string())?;
+
+        if let Some(elem) = committed.elements().first() {
+            match elem.offset() {
+                Offset::Offset(committed_offset) => {
+                    let lag = high - committed_offset;
+                    total_lag += lag.max(0);
+                }
+                _ => {
+                    let lag = high - low;
+                    total_lag += lag.max(0);
                 }
             }
         }
-
-        debug!(
-            "Total consumer lag for topic '{}' group '{}': {}",
-            topic, group_id, total_lag
-        );
-        Ok(total_lag)
     }
 
-    /// Flush all pending messages (producer-side)
-    async fn flush(&self) -> Result<(), String> {
-        match self.producer.flush(Duration::from_secs(10)) {
-            Ok(_) => {
-                debug!("Successfully flushed all pending Kafka messages");
-                Ok(())
-            }
-            Err(e) => {
-                error!("Failed to flush Kafka producer: {}", e);
-                Err(format!("Flush failed: {}", e))
-            }
-        }
-    }
+    Ok(total_lag)
 }
 
 #[cfg(test)]
@@ -1019,10 +895,7 @@ mod tests {
 
     #[test]
     fn test_producer_context_creation() {
-        // Test that we can create a producer context
         let context = EventBusProducerContext;
-
-        // The context should exist and be ready to use
-        assert_eq!(std::mem::size_of_val(&context), 0); // Empty struct
+        assert_eq!(std::mem::size_of_val(&context), 0);
     }
 }

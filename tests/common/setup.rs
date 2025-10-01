@@ -1,12 +1,10 @@
-//! Test setup utilities. Currently placeholder for docker CLI based Kafka spin-up.
-//! The previous testcontainers-based approach was removed for determinism and reduced flakiness.
-//! TODO: Implement a small helper that:
-//! 1. Invokes `docker run -d -p 9092:9092 bitnami/kafka:latest ...` if a container isn't already running.
-//! 2. Waits for readiness by polling metadata using rdkafka.
-//! 3. Exposes a simple `setup()` returning a configured `KafkaEventBusBackend`.
-//! For now the integration test assumes an external Kafka is available on localhost:9092.
+//! Test setup utilities for integration tests.
+//!
+//! These helpers manage a lightweight Kafka container (when docker is available) and
+//! construct ready-to-use backends with sane defaults for the test suite.
 
-use bevy_event_bus::{KafkaConnection, KafkaEventBusBackend};
+use super::helpers::kafka_backend_config_for_tests;
+use bevy_event_bus::{KafkaEventBusBackend, config::kafka::KafkaTopologyBuilder};
 use once_cell::sync::Lazy;
 use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
 use rdkafka::client::DefaultClientContext;
@@ -17,7 +15,7 @@ use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
 use tracing::{debug, info, info_span, warn};
 
-const DEFAULT_IMAGE: &str = "bitnami/kafka:latest";
+const DEFAULT_IMAGE: &str = "redpandadata/redpanda:v23.3.16";
 const CONTAINER_NAME: &str = "bevy_event_bus_test_kafka";
 
 /// Holds lifecycle data for the ephemeral Kafka container used in tests
@@ -26,6 +24,7 @@ struct ContainerState {
     id: Option<String>,
     bootstrap: Option<String>,
     launched: bool,
+    image: Option<String>,
 }
 
 static CONTAINER_STATE: Lazy<Mutex<ContainerState>> =
@@ -53,7 +52,7 @@ fn ensure_container() -> Option<String> {
         return state.bootstrap.clone();
     }
 
-    let span = info_span!("kafka_container.ensure", image = DEFAULT_IMAGE);
+    let span = info_span!("kafka_container.ensure");
     let _g = span.enter();
 
     // Check existing running container
@@ -79,8 +78,7 @@ fn ensure_container() -> Option<String> {
         }
     }
 
-    // Pull (best effort)
-    let pull_span = info_span!("kafka_container.pull");
+    let pull_span = info_span!("kafka_container.pull", image = DEFAULT_IMAGE);
     {
         let _pg = pull_span.enter();
         let _ = Command::new("docker")
@@ -88,7 +86,7 @@ fn ensure_container() -> Option<String> {
             .status();
     }
 
-    let run_span = info_span!("kafka_container.run");
+    let run_span = info_span!("kafka_container.run", image = DEFAULT_IMAGE);
     let run_start = Instant::now();
     let status = {
         let _rg = run_span.enter();
@@ -101,57 +99,46 @@ fn ensure_container() -> Option<String> {
                 CONTAINER_NAME,
                 "-p",
                 "9092:9092",
-                "-p",
-                "9093:9093",
-                "-e",
-                "KAFKA_ENABLE_KRAFT=yes",
-                "-e",
-                "ALLOW_PLAINTEXT_LISTENER=yes",
-                "-e",
-                "KAFKA_KRAFT_CLUSTER_ID=abcdefghijklmnopqrstuv",
-                "-e",
-                "KAFKA_CFG_NODE_ID=0",
-                "-e",
-                "KAFKA_CFG_PROCESS_ROLES=broker,controller",
-                "-e",
-                "KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@localhost:9093",
-                "-e",
-                "KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093",
-                "-e",
-                "KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092",
-                "-e",
-                "KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT",
-                "-e",
-                "KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER",
-                "-e",
-                "KAFKA_CFG_INTER_BROKER_LISTENER_NAME=PLAINTEXT",
-                "-e",
-                "KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true",
-                "-e",
-                "KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR=1",
-                "-e",
-                "KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1",
-                "-e",
-                "KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR=1",
                 DEFAULT_IMAGE,
+                "start",
+                "--smp",
+                "1",
+                "--memory",
+                "1G",
+                "--reserve-memory",
+                "0M",
+                "--overprovisioned",
+                "--node-id",
+                "0",
+                "--check=false",
+                "--kafka-addr",
+                "PLAINTEXT://0.0.0.0:9092",
+                "--advertise-kafka-addr",
+                "PLAINTEXT://localhost:9092",
             ])
             .output()
             .ok()
     };
-    match status {
-        Some(out) if out.status.success() => {
+
+    if let Some(out) = status {
+        if out.status.success() {
             let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            info!(container_id = %id, took_ms = run_start.elapsed().as_millis(), "Started Kafka container");
+            info!(
+                container_id = %id,
+                image = DEFAULT_IMAGE,
+                took_ms = run_start.elapsed().as_millis(),
+                "Started Kafka-compatible container"
+            );
             state.id = Some(id);
             state.bootstrap = Some("localhost:9092".into());
             state.launched = true;
-            state.bootstrap.clone()
-        }
-        _ => {
-            info!("Failed to start Kafka test container; falling back to external localhost:9092");
-            None
+            state.image = Some(DEFAULT_IMAGE.to_string());
+            return state.bootstrap.clone();
         }
     }
+
+    info!("Failed to start Kafka test container; falling back to external localhost:9092");
+    None
 }
 
 fn wait_ready(bootstrap: &str) -> bool {
@@ -251,10 +238,13 @@ fn wait_metadata(bootstrap: &str, max_wait: Duration) -> (bool, u128) {
 }
 
 pub fn setup() -> (KafkaEventBusBackend, String) {
-    setup_with_offset("earliest")
+    setup_with_offset("earliest", |_| {})
 }
 
-pub fn setup_with_offset(offset: &str) -> (KafkaEventBusBackend, String) {
+pub fn setup_with_offset<F>(offset: &str, configure_topology: F) -> (KafkaEventBusBackend, String)
+where
+    F: FnOnce(&mut KafkaTopologyBuilder),
+{
     let container_bootstrap = ensure_container();
     let bootstrap = container_bootstrap.unwrap_or_else(|| {
         std::env::var("KAFKA_BOOTSTRAP_SERVERS").unwrap_or_else(|_| "localhost:9092".into())
@@ -293,12 +283,14 @@ pub fn setup_with_offset(offset: &str) -> (KafkaEventBusBackend, String) {
     // Set offset configuration
     additional_config.insert("auto.offset.reset".to_string(), offset.to_string());
 
-    let config = KafkaConnection {
-        bootstrap_servers: bootstrap.clone(),
-        client_id: Some(format!("bevy_event_bus_test_client_{}", unique)),
-        timeout_ms: 3000, // modest timeout
-        additional_config,
-    };
+    let mut config = kafka_backend_config_for_tests(
+        &bootstrap,
+        Some(format!("bevy_event_bus_test_client_{}", unique)),
+        configure_topology,
+    );
+    for (key, value) in additional_config {
+        config.connection = config.connection.insert_additional_config(key, value);
+    }
 
     let backend = KafkaEventBusBackend::new(config);
     info!("Kafka test setup complete (ready)");
@@ -432,10 +424,7 @@ where
 {
     let (backend, _bootstrap) = setup();
     let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy_event_bus::EventBusPlugins(
-        backend,
-        bevy_event_bus::PreconfiguredTopics::new(["default_topic"]),
-    ));
+    app.add_plugins(bevy_event_bus::EventBusPlugins(backend));
     customize(&mut app);
     app
 }

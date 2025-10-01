@@ -27,7 +27,7 @@ pub use decoder::{DecodedEvent, DecoderFn, DecoderRegistry, TypedDecoder};
 pub use error::{EventBusDecodeError, EventBusError, EventBusErrorType};
 pub use event::BusEvent;
 pub use plugin::{BackendDownEvent, BackendReadyEvent, BackendStatus};
-pub use plugin::{EventBusPlugin, EventBusPlugins, PreconfiguredTopics};
+pub use plugin::{EventBusPlugin, EventBusPlugins};
 pub use readers::BusEventReader;
 #[cfg(feature = "kafka")]
 pub use readers::{KafkaEventReader, KafkaReaderError};
@@ -42,10 +42,12 @@ pub use writers::{KafkaEventWriter, KafkaWriterError};
 
 // Re-export backends
 #[cfg(feature = "kafka")]
-pub use backends::kafka_backend::{KafkaConnection, KafkaEventBusBackend};
+pub use backends::kafka_backend::KafkaEventBusBackend;
 #[cfg(feature = "kafka")]
 pub use config::kafka::{
-    KafkaConsumerConfig, KafkaEventMetadata, KafkaProducerConfig, UncommittedEvent,
+    KafkaBackendConfig, KafkaConnectionConfig, KafkaConsumerConfig, KafkaConsumerGroupSpec,
+    KafkaEventMetadata, KafkaInitialOffset, KafkaProducerConfig, KafkaTopicSpec,
+    KafkaTopologyConfig, UncommittedEvent,
 };
 
 // Re-export the derive macro
@@ -68,10 +70,12 @@ pub mod prelude {
 
     #[cfg(feature = "kafka")]
     pub use bevy_event_bus::{
-        KafkaConnection, KafkaEventBusBackend, KafkaEventReader, KafkaEventWriter,
-        KafkaReaderError, KafkaWriterError,
+        KafkaEventBusBackend, KafkaEventReader, KafkaEventWriter, KafkaReaderError,
+        KafkaWriterError,
         config::kafka::{
-            KafkaConsumerConfig, KafkaEventMetadata, KafkaProducerConfig, UncommittedEvent,
+            KafkaBackendConfig, KafkaConnectionConfig, KafkaConsumerConfig, KafkaConsumerGroupSpec,
+            KafkaEventMetadata, KafkaInitialOffset, KafkaProducerConfig, KafkaTopicSpec,
+            KafkaTopologyConfig, UncommittedEvent,
         },
     };
 }

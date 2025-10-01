@@ -10,12 +10,13 @@
 //! in a real Kafka environment.
 
 use bevy::prelude::*;
+use bevy_event_bus::EventBusAppExt;
 use bevy_event_bus::prelude::*;
-use bevy_event_bus::{EventBusAppExt, PreconfiguredTopics};
 use serde::{Deserialize, Serialize};
 
+use bevy_event_bus::config::kafka::KafkaTopicSpec;
 use integration_tests::common::helpers::unique_topic;
-use integration_tests::common::setup::setup;
+use integration_tests::common::setup::setup_with_offset;
 
 // Event types for the comprehensive test
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Event)]
@@ -51,16 +52,28 @@ fn test_multi_decoder() {
     let topic_analytics = unique_topic("analytics_events");
 
     // Set up a single app that demonstrates comprehensive many-to-many relationships
-    let (backend, _) = setup();
+    let topic_game_cfg = topic_game.clone();
+    let topic_combat_cfg = topic_combat.clone();
+    let topic_analytics_cfg = topic_analytics.clone();
+    let (backend, _) = setup_with_offset("earliest", move |builder| {
+        builder.add_topic(
+            KafkaTopicSpec::new(topic_game_cfg.clone())
+                .partitions(1)
+                .replication(1),
+        );
+        builder.add_topic(
+            KafkaTopicSpec::new(topic_combat_cfg.clone())
+                .partitions(1)
+                .replication(1),
+        );
+        builder.add_topic(
+            KafkaTopicSpec::new(topic_analytics_cfg.clone())
+                .partitions(1)
+                .replication(1),
+        );
+    });
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins(
-        backend,
-        PreconfiguredTopics::new([
-            topic_game.clone(),
-            topic_combat.clone(),
-            topic_analytics.clone(),
-        ]),
-    ));
+    app.add_plugins(EventBusPlugins(backend));
 
     // Configure comprehensive many-to-many relationships using the new API
 

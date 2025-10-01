@@ -1,23 +1,17 @@
 use bevy::prelude::*;
+use crossbeam_channel::TryRecvError;
+use std::collections::HashMap;
 
-use bevy_event_bus::backends::{EventBusBackend, EventBusBackendResource};
+use bevy_event_bus::backends::{EventBusBackend, EventBusBackendResource, KafkaEventBusBackend};
 use bevy_event_bus::decoder::DecoderRegistry;
 use bevy_event_bus::registration::EVENT_REGISTRY;
 use bevy_event_bus::resources::{
     ConsumerMetrics, DecodedEventBuffer, DrainMetricsEvent, DrainedTopicMetadata,
-    EventBusConsumerConfig, EventMetadata, MessageQueue, ProcessedMessage, TopicDecodedEvents,
+    EventBusConsumerConfig, EventMetadata, KafkaCommitQueue, KafkaCommitResultChannel,
+    KafkaLagCacheResource, MessageQueue, ProcessedMessage, TopicDecodedEvents,
 };
 use bevy_event_bus::runtime::{block_on, ensure_runtime};
 use bevy_event_bus::writers::EventBusErrorQueue;
-
-/// Pre-configured topics resource inserted at plugin construction.
-#[derive(Resource, Debug, Clone)]
-pub struct PreconfiguredTopics(pub Vec<String>);
-impl PreconfiguredTopics {
-    pub fn new<I: Into<String>, T: IntoIterator<Item = I>>(iter: T) -> Self {
-        Self(iter.into_iter().map(Into::into).collect())
-    }
-}
 
 /// Plugin for integrating with external event brokers
 pub struct EventBusPlugin;
@@ -36,7 +30,7 @@ impl Plugin for EventBusPlugin {
 }
 
 /// Plugin bundle that configures everything needed for the event bus
-pub struct EventBusPlugins<B: EventBusBackend>(pub B, pub PreconfiguredTopics);
+pub struct EventBusPlugins<B: EventBusBackend>(pub B);
 
 // -----------------------------------------------------------------------------
 // Backend lifecycle events
@@ -51,6 +45,32 @@ pub struct BackendReadyEvent {
 pub struct BackendDownEvent {
     pub backend: String,
     pub reason: String,
+}
+
+/// Emitted when an asynchronous Kafka manual commit completes.
+#[derive(Event, Debug, Clone)]
+pub struct KafkaCommitResultEvent {
+    pub backend: String,
+    pub consumer_group: String,
+    pub topic: String,
+    pub partition: i32,
+    pub offset: i64,
+    pub error: Option<String>,
+}
+
+/// Tracks aggregate statistics for Kafka commit outcomes so tests or diagnostics can inspect behaviour.
+#[derive(Resource, Debug, Clone, Default)]
+pub struct KafkaCommitResultStats {
+    pub totals: HashMap<(String, String, String), KafkaCommitOutcome>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct KafkaCommitOutcome {
+    pub partition: i32,
+    pub last_offset: i64,
+    pub successes: usize,
+    pub failures: usize,
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug)]
@@ -79,51 +99,9 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
         // Create and add the backend as a resource
         let boxed = self.0.clone_box();
         app.insert_resource(EventBusBackendResource::from_box(boxed));
-        app.insert_resource(self.1.clone());
         app.insert_resource(EventBusErrorQueue::default());
         bevy_event_bus::writers::outbound_bridge::activate_registered_bridges(app);
-        // Pre-create topics and subscribe BEFORE connecting so background consumer starts with full assignment.
-        if let Some(pre) = app.world().get_resource::<PreconfiguredTopics>().cloned() {
-            if let Some(backend_res) = app
-                .world()
-                .get_resource::<EventBusBackendResource>()
-                .cloned()
-            {
-                let mut guard = backend_res.write();
-                if let Some(kafka) = guard
-                    .as_any_mut()
-                    .downcast_mut::<bevy_event_bus::backends::kafka_backend::KafkaEventBusBackend>(
-                ) {
-                    use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
-                    use rdkafka::client::DefaultClientContext;
-                    use rdkafka::config::ClientConfig;
-                    let mut cfg = ClientConfig::new();
-                    cfg.set("bootstrap.servers", kafka.bootstrap_servers());
-                    if let Ok(admin) = cfg.create::<AdminClient<DefaultClientContext>>() {
-                        let opts = AdminOptions::new();
-                        let topics: Vec<NewTopic> = pre
-                            .0
-                            .iter()
-                            .map(|t| NewTopic::new(t, 1, TopicReplication::Fixed(1)))
-                            .collect();
-                        if let Err(e) =
-                            block_on(admin.create_topics(topics.iter().collect::<Vec<_>>(), &opts))
-                        {
-                            let msg = e.to_string();
-                            if !msg.contains("TopicAlreadyExists") {
-                                tracing::warn!(error=%msg, "Topic creation batch failed");
-                            }
-                        }
-                    }
-                }
-                for topic in pre.0.iter() {
-                    if !block_on(guard.subscribe(topic)) {
-                        tracing::warn!(topic = %topic, "Failed to pre-subscribe to topic");
-                    }
-                }
-            }
-        }
-        // Now connect (spawns background task with existing subscriptions) and capture receiver.
+        // Connect backend and capture runtime resources (message queue, commit channels, lag cache).
         if let Some(backend_res) = app
             .world()
             .get_resource::<EventBusBackendResource>()
@@ -132,20 +110,30 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
             let mut guard = backend_res.write();
             let _ = block_on(guard.connect());
 
-            if let Some(kafka) = guard
-                .as_any_mut()
-                .downcast_mut::<bevy_event_bus::backends::kafka_backend::KafkaEventBusBackend>(
-            ) {
+            if let Some(kafka) = guard.as_any_mut().downcast_mut::<KafkaEventBusBackend>() {
                 if let Some(rx) = kafka.take_receiver() {
                     app.world_mut()
                         .insert_resource(MessageQueue { receiver: rx });
                 }
 
+                let commit_sender = kafka.commit_sender();
+                app.world_mut()
+                    .insert_resource(KafkaCommitQueue(commit_sender));
+
+                if let Some(commit_rx) = kafka.take_commit_results() {
+                    app.world_mut().insert_resource(KafkaCommitResultChannel {
+                        receiver: commit_rx,
+                    });
+                }
+
+                app.world_mut()
+                    .insert_resource(KafkaLagCacheResource(kafka.lag_cache()));
+
                 // Inject lifecycle sender into kafka backend by wrapping its background task via a helper channel
                 // (Since backend code owns spawning, we detect readiness here: receiver presence == ready)
                 let (tx, rx_life) = crossbeam_channel::unbounded::<LifecycleMessage>();
                 // Send Ready event now with current subscriptions
-                let subs = kafka.current_subscriptions();
+                let subs = kafka.configured_topics();
                 let _ = tx.send(LifecycleMessage::Ready {
                     backend: "kafka".into(),
                     topics: subs,
@@ -166,6 +154,8 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
         app.init_resource::<EventBusConsumerConfig>();
         app.add_event::<DrainMetricsEvent>();
         app.add_event::<BackendReadyEvent>();
+        app.add_event::<KafkaCommitResultEvent>();
+        app.init_resource::<KafkaCommitResultStats>();
         // MessageQueue will be inserted lazily once backend spawns sender & channel
 
         // Drain system with multi-decoder pipeline
@@ -228,6 +218,8 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                                         topic: msg.topic.clone(),
                                         partition: msg.partition,
                                         offset: msg.offset,
+                                        consumer_group: msg.consumer_group.clone(),
+                                        manual_commit: msg.manual_commit,
                                     },
                                 )),
                             );
@@ -448,5 +440,67 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                 decode_error_writer.write(decode_error);
             }
         }
+        fn kafka_commit_result_dispatch_system(
+            mut commands: Commands,
+            maybe_channel: Option<Res<KafkaCommitResultChannel>>,
+            mut events: EventWriter<KafkaCommitResultEvent>,
+        ) {
+            if let Some(channel) = maybe_channel {
+                loop {
+                    match channel.receiver.try_recv() {
+                        Ok(result) => {
+                            events.write(KafkaCommitResultEvent {
+                                backend: "kafka".into(),
+                                consumer_group: result.consumer_group,
+                                topic: result.topic,
+                                partition: result.partition,
+                                offset: result.offset,
+                                error: result.error,
+                            });
+                        }
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => {
+                            commands.remove_resource::<KafkaCommitResultChannel>();
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        fn kafka_commit_result_stats_system(
+            mut stats: ResMut<KafkaCommitResultStats>,
+            mut events: EventReader<KafkaCommitResultEvent>,
+        ) {
+            for event in events.read() {
+                let key = (
+                    event.backend.clone(),
+                    event.consumer_group.clone(),
+                    event.topic.clone(),
+                );
+                let entry = stats.totals.entry(key).or_default();
+                entry.partition = event.partition;
+                entry.last_offset = event.offset;
+                match &event.error {
+                    Some(err) => {
+                        entry.failures += 1;
+                        entry.last_error = Some(err.clone());
+                    }
+                    None => {
+                        entry.successes += 1;
+                        entry.last_error = None;
+                    }
+                }
+            }
+        }
+
+        app.add_systems(
+            PreUpdate,
+            (
+                kafka_commit_result_dispatch_system,
+                kafka_commit_result_stats_system,
+            )
+                .chain(),
+        );
     }
 }

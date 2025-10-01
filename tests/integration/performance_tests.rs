@@ -7,15 +7,16 @@
 
 use bevy::prelude::*;
 use bevy_event_bus::{
-    EventBusAppExt, EventBusPlugins, KafkaEventReader, KafkaEventWriter, PreconfiguredTopics,
+    EventBusAppExt, EventBusPlugins, KafkaEventReader, KafkaEventWriter,
+    config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec},
 };
 use integration_tests::common::helpers::{
     DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
     unique_topic,
 };
-use integration_tests::common::setup::setup;
+use integration_tests::common::setup::setup_with_offset;
 use serde::{Deserialize, Serialize};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::{
     fs::OpenOptions,
     io::{Read, Write},
@@ -54,8 +55,25 @@ impl PerformanceTestEvent {
 #[ignore]
 #[test]
 fn test_message_throughput() {
-    let (backend, _container) = setup();
     let topic = unique_topic("perf_test");
+    let consumer_group = unique_consumer_group("perf_test_group");
+
+    let topic_for_config = topic.clone();
+    let group_for_config = consumer_group.clone();
+
+    let (backend, _container) = setup_with_offset("earliest", move |builder| {
+        builder
+            .add_topic(
+                KafkaTopicSpec::new(topic_for_config.clone())
+                    .partitions(1)
+                    .replication(1),
+            )
+            .add_consumer_group(
+                group_for_config.clone(),
+                KafkaConsumerGroupSpec::new([topic_for_config.clone()])
+                    .initial_offset(KafkaInitialOffset::Earliest),
+            );
+    });
 
     // Configuration for the performance test
     let message_count = 10_000;
@@ -65,6 +83,7 @@ fn test_message_throughput() {
         "test_message_throughput",
         backend,
         topic,
+        consumer_group,
         message_count,
         payload_size,
     );
@@ -74,8 +93,25 @@ fn test_message_throughput() {
 #[ignore]
 #[test]
 fn test_large_message_throughput() {
-    let (backend, _container) = setup();
     let topic = unique_topic("perf_large_test");
+    let consumer_group = unique_consumer_group("perf_large_test_group");
+
+    let topic_for_config = topic.clone();
+    let group_for_config = consumer_group.clone();
+
+    let (backend, _container) = setup_with_offset("earliest", move |builder| {
+        builder
+            .add_topic(
+                KafkaTopicSpec::new(topic_for_config.clone())
+                    .partitions(1)
+                    .replication(1),
+            )
+            .add_consumer_group(
+                group_for_config.clone(),
+                KafkaConsumerGroupSpec::new([topic_for_config.clone()])
+                    .initial_offset(KafkaInitialOffset::Earliest),
+            );
+    });
 
     // Test with larger messages
     let message_count = 1_000;
@@ -85,6 +121,7 @@ fn test_large_message_throughput() {
         "test_large_message_throughput",
         backend,
         topic,
+        consumer_group,
         message_count,
         payload_size,
     );
@@ -94,8 +131,25 @@ fn test_large_message_throughput() {
 #[ignore]
 #[test]
 fn test_high_volume_small_messages() {
-    let (backend, _container) = setup();
     let topic = unique_topic("perf_small_test");
+    let consumer_group = unique_consumer_group("perf_small_test_group");
+
+    let topic_for_config = topic.clone();
+    let group_for_config = consumer_group.clone();
+
+    let (backend, _container) = setup_with_offset("earliest", move |builder| {
+        builder
+            .add_topic(
+                KafkaTopicSpec::new(topic_for_config.clone())
+                    .partitions(1)
+                    .replication(1),
+            )
+            .add_consumer_group(
+                group_for_config.clone(),
+                KafkaConsumerGroupSpec::new([topic_for_config.clone()])
+                    .initial_offset(KafkaInitialOffset::Earliest),
+            );
+    });
 
     // Test with many small messages
     let message_count = 50_000;
@@ -105,6 +159,7 @@ fn test_high_volume_small_messages() {
         "test_high_volume_small_messages",
         backend,
         topic,
+        consumer_group,
         message_count,
         payload_size,
     );
@@ -115,14 +170,12 @@ fn run_throughput_test(
     test_name: &str,
     backend: impl bevy_event_bus::backends::EventBusBackend + 'static,
     topic: String,
+    consumer_group: String,
     message_count: u64,
     payload_size: usize,
 ) {
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins(
-        backend,
-        PreconfiguredTopics::new([topic.clone()]),
-    ));
+    app.add_plugins(EventBusPlugins(backend));
     app.add_bus_event::<PerformanceTestEvent>(&topic);
 
     #[derive(Resource)]
@@ -137,7 +190,10 @@ fn run_throughput_test(
         test_topic: String,
         consumer_group: String,
         payload_size: usize,
+        producer_flushed: bool,
     }
+
+    let consumer_group_for_state = consumer_group.clone();
 
     app.insert_resource(PerformanceTestState {
         messages_to_send: message_count,
@@ -148,8 +204,9 @@ fn run_throughput_test(
         receive_start_time: None,
         receive_end_time: None,
         test_topic: topic.clone(),
-        consumer_group: unique_consumer_group(&format!("perf_{}", test_name)),
+        consumer_group: consumer_group_for_state,
         payload_size,
+        producer_flushed: false,
     });
 
     // Sending system
@@ -158,6 +215,18 @@ fn run_throughput_test(
             if state.send_end_time.is_none() {
                 state.send_end_time = Some(Instant::now());
                 println!("Finished sending {} messages", state.messages_sent);
+            }
+
+            if !state.producer_flushed {
+                match writer.flush(Duration::from_secs(30)) {
+                    Ok(_) => {
+                        state.producer_flushed = true;
+                        println!("Producer flush completed.");
+                    }
+                    Err(err) => {
+                        println!("Producer flush failed: {err}; will retry next frame");
+                    }
+                }
             }
             return;
         }
@@ -194,16 +263,18 @@ fn run_throughput_test(
         mut state: ResMut<PerformanceTestState>,
         mut reader: KafkaEventReader<PerformanceTestEvent>,
     ) {
-        if state.receive_start_time.is_none() && !state.messages_received.is_empty() {
+        let batch = reader.read(&kafka_consumer_config(
+            DEFAULT_KAFKA_BOOTSTRAP,
+            state.consumer_group.as_str(),
+            [&state.test_topic],
+        ));
+
+        if !batch.is_empty() && state.receive_start_time.is_none() {
             state.receive_start_time = Some(Instant::now());
             println!("Started receiving messages...");
         }
 
-        for wrapper in reader.read(&kafka_consumer_config(
-            DEFAULT_KAFKA_BOOTSTRAP,
-            state.consumer_group.as_str(),
-            [&state.test_topic],
-        )) {
+        for wrapper in batch {
             state.messages_received.push(wrapper.event().clone());
 
             // Check if we've received all messages

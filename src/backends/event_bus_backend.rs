@@ -1,7 +1,50 @@
 use async_trait::async_trait;
 use bevy_event_bus::BusEvent;
+use std::any::Any;
 use std::collections::HashMap;
-use std::fmt::Debug;
+use std::error::Error;
+use std::fmt::{Debug, Display};
+
+/// Error returned when a backend configuration cannot be applied.
+#[derive(Debug, Clone)]
+pub struct BackendConfigError {
+    backend: &'static str,
+    reason: String,
+}
+
+impl BackendConfigError {
+    pub fn new(backend: &'static str, reason: impl Into<String>) -> Self {
+        Self {
+            backend,
+            reason: reason.into(),
+        }
+    }
+
+    pub fn backend(&self) -> &'static str {
+        self.backend
+    }
+
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+}
+
+impl Display for BackendConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Backend '{}' configuration error: {}",
+            self.backend, self.reason
+        )
+    }
+}
+
+impl Error for BackendConfigError {}
+
+/// Trait implemented by backend-specific configuration objects to enable dynamic dispatch.
+pub trait EventBusBackendConfig: Send + Sync + 'static {
+    fn as_any(&self) -> &dyn Any;
+}
 
 /// Trait defining the common interface for event bus backends
 ///
@@ -12,6 +55,12 @@ pub trait EventBusBackend: Send + Sync + 'static + Debug {
     fn clone_box(&self) -> Box<dyn EventBusBackend>;
     fn as_any(&self) -> &dyn std::any::Any;
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
+
+    /// Apply backend-specific configuration prior to connecting.
+    fn configure(&mut self, _config: &dyn EventBusBackendConfig) -> Result<(), BackendConfigError> {
+        let _ = _config;
+        Ok(())
+    }
 
     /// Connect to the backend. Returns true if successful.
     async fn connect(&mut self) -> bool;

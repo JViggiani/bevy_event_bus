@@ -1,19 +1,22 @@
 use bevy::prelude::*;
+use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
 use bevy_event_bus::{
-    EventBusAppExt, EventBusPlugins, KafkaConnection, KafkaEventBusBackend, KafkaEventReader,
+    EventBusAppExt, EventBusBackend, EventBusPlugins, KafkaEventBusBackend, KafkaEventReader,
     KafkaEventWriter,
 };
 use integration_tests::common::events::TestEvent;
 use integration_tests::common::helpers::{
-    DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
-    unique_topic, update_until,
+    DEFAULT_KAFKA_BOOTSTRAP, kafka_backend_config_for_tests, kafka_consumer_config,
+    kafka_producer_config, unique_consumer_group, unique_topic, update_until,
+    wait_for_consumer_group_ready, wait_for_messages_in_group,
 };
-use integration_tests::common::setup::setup;
-use std::collections::HashMap;
+use integration_tests::common::setup::{setup, setup_with_offset};
 
 /// Test that consumers with "earliest" offset receive historical events
 #[test]
 fn offset_configuration_earliest_receives_historical_events() {
+    use std::time::Duration;
+
     let topic = unique_topic("offset_test_earliest");
 
     // Create topic and ensure it's ready before proceeding
@@ -22,104 +25,99 @@ fn offset_configuration_earliest_receives_historical_events() {
         &bootstrap,
         &topic,
         1, // partitions
-        std::time::Duration::from_secs(5),
+        Duration::from_secs(5),
     );
     assert!(topic_ready, "Topic {} not ready within timeout", topic);
 
-    // First, send some events to the topic using a temporary producer
+    // Send historical events using a temporary backend producer
     {
-        let (backend_producer, _bootstrap) = setup();
-        let mut producer_app = App::new();
-        producer_app.add_plugins(EventBusPlugins(
-            backend_producer,
-            bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-        ));
-        producer_app.add_bus_event::<TestEvent>(&topic);
+        let (mut backend_producer, _bootstrap) = setup();
+        assert!(
+            bevy_event_bus::block_on(backend_producer.connect()),
+            "Failed to connect producer backend"
+        );
 
-        let topic_clone = topic.clone();
-        producer_app.add_systems(Update, move |mut w: KafkaEventWriter| {
-            // Send 3 historical events
-            for i in 0..3 {
-                let config = kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&topic_clone]);
-                let _ = w.write(
-                    &config,
-                    TestEvent {
-                        message: format!("historical_{}", i),
-                        value: i,
-                    },
-                );
-            }
-        });
-        producer_app.update(); // Send the historical events
+        for i in 0..3 {
+            let event = TestEvent {
+                message: format!("historical_{}", i),
+                value: i,
+            };
+            let payload = serde_json::to_vec(&event).expect("serialize historical event");
+            assert!(
+                backend_producer.try_send_serialized(&payload, &topic),
+                "Failed to enqueue historical event"
+            );
+        }
+
+        backend_producer
+            .flush_with_timeout(Duration::from_secs(2))
+            .expect("flush historical events");
+        let _ = bevy_event_bus::block_on(backend_producer.disconnect());
     }
 
-    // Test: Consumer with "earliest" should see historical events
-    let mut connection = KafkaConnection::default();
-    connection.bootstrap_servers = bootstrap;
-    // TODO: This should be in KafkaConsumerConfig, but current architecture applies connection-level config to all consumers
-    connection
-        .additional_config
-        .insert("auto.offset.reset".to_string(), "earliest".to_string());
-
-    let backend_earliest = KafkaEventBusBackend::new(connection);
-    let mut earliest_app = App::new();
-    earliest_app.add_plugins(EventBusPlugins(
-        backend_earliest,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
-    earliest_app.add_bus_event::<TestEvent>(&topic);
-
-    #[derive(Resource, Default)]
-    struct CollectedEarliest(Vec<TestEvent>);
-    earliest_app.insert_resource(CollectedEarliest::default());
-
-    let topic_read = topic.clone();
+    // Configure consumer group to start at the earliest offset.
     let consumer_group = unique_consumer_group("earliest_test");
-    earliest_app.add_systems(
-        Update,
-        move |mut r: KafkaEventReader<TestEvent>, mut c: ResMut<CollectedEarliest>| {
-            let config = kafka_consumer_config(
-                DEFAULT_KAFKA_BOOTSTRAP,
-                consumer_group.as_str(),
-                [&topic_read],
-            );
-            for wrapper in r.read(&config) {
-                c.0.push(wrapper.event().clone());
-            }
-        },
-    );
+    let topic_for_config = topic.clone();
+    let consumer_for_config = consumer_group.clone();
 
-    // Should eventually receive the 3 historical events
-    let (ok, _frames) = update_until(&mut earliest_app, 5000, |app| {
-        let c = app.world().resource::<CollectedEarliest>();
-        c.0.len() >= 3
+    let (backend_earliest, _bootstrap_override) = setup_with_offset("earliest", move |builder| {
+        builder
+            .add_topic(
+                KafkaTopicSpec::new(topic_for_config.clone())
+                    .partitions(1)
+                    .replication(1),
+            )
+            .add_consumer_group(
+                consumer_for_config.clone(),
+                KafkaConsumerGroupSpec::new([topic_for_config.clone()])
+                    .initial_offset(KafkaInitialOffset::Earliest),
+            );
     });
 
+    let mut backend = backend_earliest.clone();
     assert!(
-        ok,
-        "Consumer with 'earliest' should receive historical events within timeout"
+        bevy_event_bus::block_on(backend.connect()),
+        "Failed to connect earliest backend"
     );
 
-    let collected = earliest_app.world().resource::<CollectedEarliest>();
+    let ready = bevy_event_bus::block_on(wait_for_consumer_group_ready(
+        &backend,
+        &topic,
+        &consumer_group,
+        10_000,
+    ));
+    assert!(ready, "Earliest consumer group was not ready in time");
+
+    let messages = bevy_event_bus::block_on(wait_for_messages_in_group(
+        &backend,
+        &topic,
+        &consumer_group,
+        3,
+        10_000,
+    ));
+
     assert!(
-        collected.0.len() >= 3,
-        "Consumer with 'earliest' should receive historical events. Got {} events: {:?}",
-        collected.0.len(),
-        collected.0
+        messages.len() >= 3,
+        "Expected at least 3 historical events, got {}",
+        messages.len()
     );
 
-    // Verify we got the historical events
-    let historical_messages: Vec<String> = collected
-        .0
+    let historical_messages: Vec<TestEvent> = messages
         .iter()
-        .map(|e| e.message.clone())
-        .filter(|m| m.starts_with("historical_"))
+        .filter_map(|payload| serde_json::from_slice::<TestEvent>(payload).ok())
         .collect();
+    let historical_count = historical_messages
+        .iter()
+        .filter(|event| event.message.starts_with("historical_"))
+        .count();
+
     assert!(
-        historical_messages.len() >= 3,
-        "Expected at least 3 historical events, got: {:?}",
+        historical_count >= 3,
+        "Consumer with 'earliest' should receive historical events. Got {:?}",
         historical_messages
     );
+
+    let _ = bevy_event_bus::block_on(backend.disconnect());
 }
 
 /// Test that consumers with "latest" offset ignore historical events
@@ -141,10 +139,7 @@ fn offset_configuration_latest_ignores_historical_events() {
     {
         let (backend_producer, _bootstrap) = setup();
         let mut producer_app = App::new();
-        producer_app.add_plugins(EventBusPlugins(
-            backend_producer,
-            bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-        ));
+        producer_app.add_plugins(EventBusPlugins(backend_producer));
         producer_app.add_bus_event::<TestEvent>(&topic);
 
         let topic_clone = topic.clone();
@@ -165,19 +160,30 @@ fn offset_configuration_latest_ignores_historical_events() {
     }
 
     // Create consumer with "latest" offset - should NOT see historical events
-    let mut connection = KafkaConnection::default();
-    connection.bootstrap_servers = bootstrap.clone();
-    // TODO: This should be in KafkaConsumerConfig, but current architecture applies connection-level config to all consumers
-    connection
-        .additional_config
-        .insert("auto.offset.reset".to_string(), "latest".to_string());
+    let consumer_group = unique_consumer_group("latest_test");
+    let topic_for_config = topic.clone();
+    let consumer_for_config = consumer_group.clone();
 
-    let backend_latest = KafkaEventBusBackend::new(connection);
+    let mut latest_config = kafka_backend_config_for_tests(&bootstrap, None, move |builder| {
+        builder
+            .add_topic(
+                KafkaTopicSpec::new(topic_for_config.clone())
+                    .partitions(1)
+                    .replication(1),
+            )
+            .add_consumer_group(
+                consumer_for_config.clone(),
+                KafkaConsumerGroupSpec::new([topic_for_config.clone()])
+                    .initial_offset(KafkaInitialOffset::Latest),
+            );
+    });
+    latest_config.connection = latest_config
+        .connection
+        .insert_additional_config("auto.offset.reset", "latest");
+
+    let backend_latest = KafkaEventBusBackend::new(latest_config);
     let mut latest_app = App::new();
-    latest_app.add_plugins(EventBusPlugins(
-        backend_latest,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
+    latest_app.add_plugins(EventBusPlugins(backend_latest));
     latest_app.add_bus_event::<TestEvent>(&topic);
 
     #[derive(Resource, Default)]
@@ -185,7 +191,6 @@ fn offset_configuration_latest_ignores_historical_events() {
     latest_app.insert_resource(CollectedLatest::default());
 
     let topic_read = topic.clone();
-    let consumer_group = unique_consumer_group("latest_test");
     latest_app.add_systems(
         Update,
         move |mut r: KafkaEventReader<TestEvent>, mut c: ResMut<CollectedLatest>| {
@@ -271,10 +276,7 @@ fn default_offset_configuration_is_latest() {
     {
         let (backend_producer, _bootstrap) = setup();
         let mut producer_app = App::new();
-        producer_app.add_plugins(EventBusPlugins(
-            backend_producer,
-            bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-        ));
+        producer_app.add_plugins(EventBusPlugins(backend_producer));
         producer_app.add_bus_event::<TestEvent>(&topic);
 
         let topic_clone = topic.clone();
@@ -291,20 +293,30 @@ fn default_offset_configuration_is_latest() {
         producer_app.update();
     }
 
-    // Consumer with default config (no additional_config specified) - should use "latest" behavior
-    let config = KafkaConnection {
-        bootstrap_servers: bootstrap,
-        client_id: None,
-        timeout_ms: 5000,
-        additional_config: HashMap::new(), // No overrides - use defaults
-    };
+    // Consumer with default config (no overrides) - should use "latest" behavior
+    let consumer_group = unique_consumer_group("default_offset");
+    let topic_for_config = topic.clone();
+    let consumer_for_config = consumer_group.clone();
 
-    let backend = KafkaEventBusBackend::new(config);
-    let mut app = App::new();
-    app.add_plugins(EventBusPlugins(
-        backend,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
+    let backend = KafkaEventBusBackend::new(kafka_backend_config_for_tests(
+        &bootstrap,
+        None,
+        move |builder| {
+            builder
+                .add_topic(
+                    KafkaTopicSpec::new(topic_for_config.clone())
+                        .partitions(1)
+                        .replication(1),
+                )
+                .add_consumer_group(
+                    consumer_for_config.clone(),
+                    KafkaConsumerGroupSpec::new([topic_for_config.clone()])
+                        .initial_offset(KafkaInitialOffset::Latest),
+                );
+        },
     ));
+    let mut app = App::new();
+    app.add_plugins(EventBusPlugins(backend));
     app.add_bus_event::<TestEvent>(&topic);
 
     #[derive(Resource, Default)]
@@ -312,7 +324,6 @@ fn default_offset_configuration_is_latest() {
     app.insert_resource(Collected::default());
 
     let topic_read = topic.clone();
-    let consumer_group = unique_consumer_group("default_offset");
     app.add_systems(
         Update,
         move |mut r: KafkaEventReader<TestEvent>, mut c: ResMut<Collected>| {

@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
 use bevy_event_bus::{
     EventBusAppExt, EventBusPlugins, EventWrapper, KafkaEventReader, KafkaEventWriter,
 };
@@ -7,7 +8,7 @@ use integration_tests::common::helpers::{
     DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
     unique_topic, update_until, wait_for_events,
 };
-use integration_tests::common::setup::setup;
+use integration_tests::common::setup::setup_with_offset;
 use tracing::{info, info_span};
 
 /// Test that validates Kafka metadata propagation with real broker interaction
@@ -21,26 +22,43 @@ use tracing::{info, info_span};
 fn kafka_metadata_end_to_end_validation() {
     let _span = info_span!("kafka_metadata_validation").entered();
 
-    let (backend_w, _b1) = setup();
-    let (backend_r, _b2) = setup();
     let topic = unique_topic("kafka_metadata_test");
+    let consumer_group = unique_consumer_group("kafka_metadata_validation_reader");
+
+    let topic_for_writer = topic.clone();
+    let (backend_w, _b1) = setup_with_offset("earliest", move |builder| {
+        builder.add_topic(
+            KafkaTopicSpec::new(topic_for_writer.clone())
+                .partitions(1)
+                .replication(1),
+        );
+    });
+
+    let topic_for_reader = topic.clone();
+    let consumer_group_for_reader = consumer_group.clone();
+    let (backend_r, _b2) = setup_with_offset("earliest", move |builder| {
+        builder.add_topic(
+            KafkaTopicSpec::new(topic_for_reader.clone())
+                .partitions(1)
+                .replication(1),
+        );
+        builder.add_consumer_group(
+            consumer_group_for_reader.clone(),
+            KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
+                .initial_offset(KafkaInitialOffset::Earliest),
+        );
+    });
 
     info!("Testing Kafka metadata validation with topic: {}", topic);
 
     // Writer app
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(
-        backend_w,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
+    writer.add_plugins(EventBusPlugins(backend_w));
     writer.add_bus_event::<TestEvent>(&topic);
 
     // Reader app - receives events and validates metadata
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(
-        backend_r,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
+    reader.add_plugins(EventBusPlugins(backend_r));
     reader.add_bus_event::<TestEvent>(&topic);
 
     #[derive(Resource, Default)]
@@ -53,9 +71,7 @@ fn kafka_metadata_end_to_end_validation() {
 
     reader.insert_resource(ReceivedEventsWithMetadata::default());
     reader.insert_resource(Topic(topic.clone()));
-    reader.insert_resource(ConsumerGroup(unique_consumer_group(
-        "kafka_metadata_validation_reader",
-    )));
+    reader.insert_resource(ConsumerGroup(consumer_group));
 
     fn reader_system(
         mut r: KafkaEventReader<TestEvent>,
@@ -230,10 +246,46 @@ fn kafka_metadata_end_to_end_validation() {
 fn kafka_metadata_topic_isolation() {
     let _span = info_span!("kafka_metadata_topic_isolation").entered();
 
-    let (backend_w, _b1) = setup();
-    let (backend_r, _b2) = setup();
     let topic_a = unique_topic("isolation_test_a");
     let topic_b = unique_topic("isolation_test_b");
+    let consumer_group = unique_consumer_group("kafka_metadata_isolation");
+
+    let topic_a_for_writer = topic_a.clone();
+    let topic_b_for_writer = topic_b.clone();
+    let (backend_w, _b1) = setup_with_offset("earliest", move |builder| {
+        builder.add_topic(
+            KafkaTopicSpec::new(topic_a_for_writer.clone())
+                .partitions(1)
+                .replication(1),
+        );
+        builder.add_topic(
+            KafkaTopicSpec::new(topic_b_for_writer.clone())
+                .partitions(1)
+                .replication(1),
+        );
+    });
+
+    let topic_a_for_reader = topic_a.clone();
+    let topic_b_for_reader = topic_b.clone();
+    let consumer_group_for_reader = consumer_group.clone();
+    let (backend_r, _b2) = setup_with_offset("earliest", move |builder| {
+        builder.add_topic(
+            KafkaTopicSpec::new(topic_a_for_reader.clone())
+                .partitions(1)
+                .replication(1),
+        );
+        builder.add_topic(
+            KafkaTopicSpec::new(topic_b_for_reader.clone())
+                .partitions(1)
+                .replication(1),
+        );
+        let topics_for_group = vec![topic_a_for_reader.clone(), topic_b_for_reader.clone()];
+        builder.add_consumer_group(
+            consumer_group_for_reader.clone(),
+            KafkaConsumerGroupSpec::new(topics_for_group)
+                .initial_offset(KafkaInitialOffset::Earliest),
+        );
+    });
 
     info!(
         "Testing metadata isolation between topics: {} and {}",
@@ -242,19 +294,13 @@ fn kafka_metadata_topic_isolation() {
 
     // Writer app
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(
-        backend_w,
-        bevy_event_bus::PreconfiguredTopics::new([topic_a.clone(), topic_b.clone()]),
-    ));
+    writer.add_plugins(EventBusPlugins(backend_w));
     writer.add_bus_event::<TestEvent>(&topic_a);
     writer.add_bus_event::<TestEvent>(&topic_b);
 
     // Reader app
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(
-        backend_r,
-        bevy_event_bus::PreconfiguredTopics::new([topic_a.clone(), topic_b.clone()]),
-    ));
+    reader.add_plugins(EventBusPlugins(backend_r));
     reader.add_bus_event::<TestEvent>(&topic_a);
     reader.add_bus_event::<TestEvent>(&topic_b);
 
@@ -278,9 +324,7 @@ fn kafka_metadata_topic_isolation() {
         topic_a: topic_a.clone(),
         topic_b: topic_b.clone(),
     });
-    reader.insert_resource(ConsumerGroup(unique_consumer_group(
-        "kafka_metadata_isolation",
-    )));
+    reader.insert_resource(ConsumerGroup(consumer_group));
 
     fn reader_system_isolation(
         mut r: KafkaEventReader<TestEvent>,
@@ -412,9 +456,32 @@ fn kafka_metadata_topic_isolation() {
 fn kafka_metadata_consistency_under_load() {
     let _span = info_span!("kafka_metadata_consistency").entered();
 
-    let (backend_w, _b1) = setup();
-    let (backend_r, _b2) = setup();
     let topic = unique_topic("consistency_test");
+    let consumer_group = unique_consumer_group("kafka_metadata_consistency");
+
+    let topic_for_writer = topic.clone();
+    let (backend_w, _b1) = setup_with_offset("earliest", move |builder| {
+        builder.add_topic(
+            KafkaTopicSpec::new(topic_for_writer.clone())
+                .partitions(1)
+                .replication(1),
+        );
+    });
+
+    let topic_for_reader = topic.clone();
+    let consumer_group_for_reader = consumer_group.clone();
+    let (backend_r, _b2) = setup_with_offset("earliest", move |builder| {
+        builder.add_topic(
+            KafkaTopicSpec::new(topic_for_reader.clone())
+                .partitions(1)
+                .replication(1),
+        );
+        builder.add_consumer_group(
+            consumer_group_for_reader.clone(),
+            KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
+                .initial_offset(KafkaInitialOffset::Earliest),
+        );
+    });
 
     info!(
         "Testing metadata consistency under load with topic: {}",
@@ -423,18 +490,12 @@ fn kafka_metadata_consistency_under_load() {
 
     // Writer app
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(
-        backend_w,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
+    writer.add_plugins(EventBusPlugins(backend_w));
     writer.add_bus_event::<TestEvent>(&topic);
 
     // Reader app
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(
-        backend_r,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
+    reader.add_plugins(EventBusPlugins(backend_r));
     reader.add_bus_event::<TestEvent>(&topic);
 
     #[derive(Resource, Default)]
@@ -447,9 +508,7 @@ fn kafka_metadata_consistency_under_load() {
 
     reader.insert_resource(ReceivedEventsWithMetadata::default());
     reader.insert_resource(Topic(topic.clone()));
-    reader.insert_resource(ConsumerGroup(unique_consumer_group(
-        "kafka_metadata_consistency",
-    )));
+    reader.insert_resource(ConsumerGroup(consumer_group));
 
     fn reader_system_consistency(
         mut r: KafkaEventReader<TestEvent>,

@@ -44,6 +44,8 @@ fn unlimited_buffer_gathers() {
                     topic: topic.clone(),
                     partition: 0,
                     offset: i as i64,
+                    consumer_group: Some(consumer_group.clone()),
+                    manual_commit: false,
                 })),
             };
             entry.push(ProcessedMessage { payload, metadata });
@@ -92,6 +94,8 @@ fn frame_limit_respected() {
                     topic: topic.clone(),
                     partition: 0,
                     offset: i as i64,
+                    consumer_group: Some(consumer_group.clone()),
+                    manual_commit: false,
                 })),
             };
             entry.push(ProcessedMessage { payload, metadata });
@@ -132,6 +136,8 @@ fn drain_metrics_emitted_and_updated() {
                     topic: "m".to_string(),
                     partition: 0,
                     offset: i as i64,
+                    consumer_group: None,
+                    manual_commit: false,
                 })),
             };
             entry.push(ProcessedMessage { payload, metadata });

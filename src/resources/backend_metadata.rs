@@ -31,6 +31,8 @@ pub struct KafkaMetadata {
     pub topic: String,
     pub partition: i32,
     pub offset: i64,
+    pub consumer_group: Option<String>,
+    pub manual_commit: bool,
 }
 
 impl BackendMetadata for KafkaMetadata {

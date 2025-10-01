@@ -1,8 +1,9 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
 use bevy::prelude::*;
 
-use bevy_event_bus::backends::{EventBusBackend, EventBusBackendResource};
+use bevy_event_bus::backends::{EventBusBackend, EventBusBackendResource, KafkaEventBusBackend};
 use bevy_event_bus::config::{EventBusConfig, kafka::KafkaProducerConfig};
 use bevy_event_bus::{BusEvent, EventBusError, EventBusErrorType, runtime};
 
@@ -122,13 +123,20 @@ impl<'w> KafkaEventWriter<'w> {
     }
 
     /// Flush all pending messages in the Kafka producer.
-    pub fn flush(&mut self) -> Result<(), KafkaWriterError> {
+    pub fn flush(&mut self, timeout: Duration) -> Result<(), KafkaWriterError> {
         let backend_res = self
             .backend
             .as_ref()
             .ok_or(KafkaWriterError::BackendUnavailable)?;
-        let backend = backend_res.read();
-        runtime::block_on(backend.flush()).map_err(KafkaWriterError::backend)
+        let mut backend = backend_res.write();
+
+        if let Some(kafka) = backend.as_any_mut().downcast_mut::<KafkaEventBusBackend>() {
+            kafka
+                .flush_with_timeout(timeout)
+                .map_err(KafkaWriterError::backend)
+        } else {
+            runtime::block_on(backend.flush()).map_err(KafkaWriterError::backend)
+        }
     }
 
     fn write_with_headers_internal<T: BusEvent + Event, C: EventBusConfig>(

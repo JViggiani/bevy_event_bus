@@ -1,7 +1,232 @@
 //! Kafka-specific configuration objects for type-safe backend inference
 
 use super::{EventBusConfig, Kafka, ProcessingLimits};
-use std::collections::HashMap;
+use crate::backends::event_bus_backend::EventBusBackendConfig;
+use std::any::Any;
+use std::collections::{HashMap, HashSet};
+use std::time::Duration;
+
+/// Connection configuration for Kafka backend initialization
+#[derive(Clone, Debug)]
+pub struct KafkaConnectionConfig {
+    bootstrap_servers: String,
+    client_id: Option<String>,
+    timeout_ms: i32,
+    additional_config: HashMap<String, String>,
+}
+
+impl KafkaConnectionConfig {
+    /// Create a new connection configuration with required bootstrap servers.
+    pub fn new(bootstrap_servers: impl Into<String>) -> Self {
+        Self {
+            bootstrap_servers: bootstrap_servers.into(),
+            client_id: None,
+            timeout_ms: 10_000,
+            additional_config: HashMap::new(),
+        }
+    }
+
+    /// Builder-style setter for client id.
+    pub fn set_client_id(mut self, client_id: impl Into<String>) -> Self {
+        self.client_id = Some(client_id.into());
+        self
+    }
+
+    /// Builder-style setter for timeout in milliseconds.
+    pub fn set_timeout_ms(mut self, timeout_ms: i32) -> Self {
+        self.timeout_ms = timeout_ms;
+        self
+    }
+
+    /// Builder-style setter for additional key/value configuration pairs.
+    pub fn insert_additional_config<K, V>(mut self, key: K, value: V) -> Self
+    where
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.additional_config.insert(key.into(), value.into());
+        self
+    }
+
+    pub fn bootstrap_servers(&self) -> &str {
+        &self.bootstrap_servers
+    }
+
+    pub fn client_id(&self) -> Option<&str> {
+        self.client_id.as_deref()
+    }
+
+    pub fn timeout_ms(&self) -> i32 {
+        self.timeout_ms
+    }
+
+    pub fn additional_config(&self) -> &HashMap<String, String> {
+        &self.additional_config
+    }
+}
+
+impl Default for KafkaConnectionConfig {
+    fn default() -> Self {
+        Self::new("localhost:9092")
+    }
+}
+
+/// Controls the topics, consumer groups and behaviour that the backend prepares at startup.
+#[derive(Clone, Debug, Default)]
+pub struct KafkaTopologyConfig {
+    topics: Vec<KafkaTopicSpec>,
+    consumer_groups: HashMap<String, KafkaConsumerGroupSpec>,
+}
+
+impl KafkaTopologyConfig {
+    pub fn new(
+        topics: Vec<KafkaTopicSpec>,
+        consumer_groups: HashMap<String, KafkaConsumerGroupSpec>,
+    ) -> Self {
+        Self {
+            topics,
+            consumer_groups,
+        }
+    }
+
+    pub fn builder() -> KafkaTopologyBuilder {
+        KafkaTopologyBuilder::default()
+    }
+
+    pub fn topics(&self) -> &[KafkaTopicSpec] {
+        &self.topics
+    }
+
+    pub fn consumer_groups(&self) -> &HashMap<String, KafkaConsumerGroupSpec> {
+        &self.consumer_groups
+    }
+
+    pub fn topic_names(&self) -> HashSet<String> {
+        self.topics.iter().map(|t| t.name.clone()).collect()
+    }
+}
+
+#[derive(Default)]
+pub struct KafkaTopologyBuilder {
+    topics: Vec<KafkaTopicSpec>,
+    consumer_groups: HashMap<String, KafkaConsumerGroupSpec>,
+}
+
+impl KafkaTopologyBuilder {
+    pub fn add_topic(&mut self, topic: KafkaTopicSpec) -> &mut Self {
+        self.topics.push(topic);
+        self
+    }
+
+    pub fn add_topics<T: IntoIterator<Item = KafkaTopicSpec>>(&mut self, topics: T) -> &mut Self {
+        self.topics.extend(topics);
+        self
+    }
+
+    pub fn add_consumer_group(
+        &mut self,
+        id: impl Into<String>,
+        spec: KafkaConsumerGroupSpec,
+    ) -> &mut Self {
+        self.consumer_groups.insert(id.into(), spec);
+        self
+    }
+
+    pub fn build(self) -> KafkaTopologyConfig {
+        KafkaTopologyConfig::new(self.topics, self.consumer_groups)
+    }
+}
+
+/// Topic configuration used when provisioning Kafka at startup.
+#[derive(Clone, Debug)]
+pub struct KafkaTopicSpec {
+    pub name: String,
+    pub partitions: Option<i32>,
+    pub replication: Option<i16>,
+}
+
+impl KafkaTopicSpec {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            partitions: None,
+            replication: None,
+        }
+    }
+
+    pub fn partitions(mut self, partitions: i32) -> Self {
+        self.partitions = Some(partitions);
+        self
+    }
+
+    pub fn replication(mut self, replication: i16) -> Self {
+        self.replication = Some(replication);
+        self
+    }
+}
+
+/// Enumeration describing how consumers should position when starting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KafkaInitialOffset {
+    Earliest,
+    Latest,
+    None,
+}
+
+#[derive(Clone, Debug)]
+pub struct KafkaConsumerGroupSpec {
+    pub topics: Vec<String>,
+    pub manual_commits: bool,
+    pub initial_offset: KafkaInitialOffset,
+}
+
+impl KafkaConsumerGroupSpec {
+    pub fn new<T: IntoIterator<Item = impl Into<String>>>(topics: T) -> Self {
+        Self {
+            topics: topics.into_iter().map(Into::into).collect(),
+            manual_commits: false,
+            initial_offset: KafkaInitialOffset::Latest,
+        }
+    }
+
+    pub fn manual_commits(mut self, manual: bool) -> Self {
+        self.manual_commits = manual;
+        self
+    }
+
+    pub fn initial_offset(mut self, offset: KafkaInitialOffset) -> Self {
+        self.initial_offset = offset;
+        self
+    }
+}
+
+/// Aggregate configuration consumed by the Kafka backend during construction.
+#[derive(Clone, Debug)]
+pub struct KafkaBackendConfig {
+    pub connection: KafkaConnectionConfig,
+    pub topology: KafkaTopologyConfig,
+    pub consumer_lag_poll_interval: Duration,
+}
+
+impl KafkaBackendConfig {
+    pub fn new(
+        connection: KafkaConnectionConfig,
+        topology: KafkaTopologyConfig,
+        consumer_lag_poll_interval: Duration,
+    ) -> Self {
+        Self {
+            connection,
+            topology,
+            consumer_lag_poll_interval,
+        }
+    }
+}
+
+impl EventBusBackendConfig for KafkaBackendConfig {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
 
 /// Configuration for Kafka consumers with production-ready options
 #[derive(Clone, Debug)]

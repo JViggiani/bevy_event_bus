@@ -1,14 +1,14 @@
 use bevy::prelude::*;
+use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
 use bevy_event_bus::{
     EventBusAppExt, EventBusPlugins, EventWrapper, KafkaEventReader, KafkaEventWriter,
-    PreconfiguredTopics,
 };
 use integration_tests::common::events::TestEvent;
 use integration_tests::common::helpers::{
     kafka_consumer_config, kafka_producer_config, run_app_updates, unique_consumer_group,
     unique_topic, wait_for_events,
 };
-use integration_tests::common::setup::setup;
+use integration_tests::common::setup::setup_with_offset;
 use tracing::{info, info_span};
 use tracing_subscriber::EnvFilter;
 
@@ -82,17 +82,36 @@ fn external_bus_events_flow_from_both_writers() {
 
     let _span = info_span!("dual_writer_bridge_test").entered();
 
-    let (backend_writer, bootstrap_w) = setup();
-    let (backend_reader, bootstrap_r) = setup();
-
     let topic = unique_topic("dual-writer");
+    let consumer_group = unique_consumer_group("dual-writer-group");
+
+    let topic_for_writer = topic.clone();
+    let (backend_writer, bootstrap_w) = setup_with_offset("earliest", move |builder| {
+        builder.add_topic(
+            KafkaTopicSpec::new(topic_for_writer.clone())
+                .partitions(1)
+                .replication(1),
+        );
+    });
+
+    let topic_for_reader = topic.clone();
+    let group_for_reader = consumer_group.clone();
+    let (backend_reader, bootstrap_r) = setup_with_offset("earliest", move |builder| {
+        builder.add_topic(
+            KafkaTopicSpec::new(topic_for_reader.clone())
+                .partitions(1)
+                .replication(1),
+        );
+        builder.add_consumer_group(
+            group_for_reader.clone(),
+            KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
+                .initial_offset(KafkaInitialOffset::Earliest),
+        );
+    });
 
     // Writer app configuration
     let mut writer_app = App::new();
-    writer_app.add_plugins(EventBusPlugins(
-        backend_writer,
-        PreconfiguredTopics::new([topic.clone()]),
-    ));
+    writer_app.add_plugins(EventBusPlugins(backend_writer));
     writer_app.add_bus_event::<TestEvent>(&topic);
     writer_app.insert_resource(WriterState {
         bootstrap: bootstrap_w,
@@ -106,15 +125,12 @@ fn external_bus_events_flow_from_both_writers() {
 
     // Reader app configuration
     let mut reader_app = App::new();
-    reader_app.add_plugins(EventBusPlugins(
-        backend_reader,
-        PreconfiguredTopics::new([topic.clone()]),
-    ));
+    reader_app.add_plugins(EventBusPlugins(backend_reader));
     reader_app.add_bus_event::<TestEvent>(&topic);
     reader_app.insert_resource(ReaderState {
         bootstrap: bootstrap_r,
         topic: topic.clone(),
-        consumer_group: unique_consumer_group("dual-writer-group"),
+        consumer_group: consumer_group,
     });
     reader_app.insert_resource(CapturedEvents::default());
     reader_app.add_systems(Update, capture_wrapped_events);

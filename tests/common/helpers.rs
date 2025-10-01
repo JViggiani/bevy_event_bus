@@ -1,7 +1,9 @@
 use bevy::prelude::*;
 use bevy_event_bus::backends::EventBusBackend;
-use bevy_event_bus::{KafkaConnection, KafkaConsumerConfig, KafkaProducerConfig};
-use std::collections::HashMap;
+use bevy_event_bus::config::kafka::KafkaTopologyBuilder;
+use bevy_event_bus::{
+    KafkaBackendConfig, KafkaConnectionConfig, KafkaConsumerConfig, KafkaProducerConfig,
+};
 use std::process;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -31,17 +33,25 @@ where
     KafkaConsumerConfig::new(bootstrap_servers, consumer_group, topics)
 }
 
-/// Build a baseline `KafkaConnection` frequently used in integration tests.
-pub fn kafka_connection_for_tests(
+/// Build a `KafkaBackendConfig` for tests with customizable topology.
+pub fn kafka_backend_config_for_tests<F>(
     bootstrap_servers: &str,
     client_id: Option<String>,
-) -> KafkaConnection {
-    KafkaConnection {
-        bootstrap_servers: bootstrap_servers.to_string(),
-        client_id,
-        timeout_ms: 5000,
-        additional_config: HashMap::new(),
+    configure_topology: F,
+) -> KafkaBackendConfig
+where
+    F: FnOnce(&mut KafkaTopologyBuilder),
+{
+    let mut connection = KafkaConnectionConfig::new(bootstrap_servers);
+    if let Some(id) = client_id {
+        connection = connection.set_client_id(id);
     }
+    connection = connection.set_timeout_ms(5000);
+
+    let mut builder = KafkaTopologyBuilder::default();
+    configure_topology(&mut builder);
+
+    KafkaBackendConfig::new(connection, builder.build(), Duration::from_secs(1))
 }
 
 fn next_unique_suffix() -> String {
@@ -137,23 +147,6 @@ where
     false
 }
 
-/// Wait for backend to be ready by checking if it can send a test message.
-pub async fn wait_for_backend_ready<B>(backend: &B, topic: &str, timeout_ms: u64) -> bool
-where
-    B: EventBusBackend,
-{
-    wait_for_condition(
-        || {
-            let test_msg = b"backend_ready_test";
-            async move { backend.try_send_serialized(test_msg, topic) }
-        },
-        timeout_ms,
-        50,  // Start with 50ms delay
-        500, // Max 500ms delay
-    )
-    .await
-}
-
 /// Wait for consumer group to be ready by checking if it can receive messages.
 pub async fn wait_for_consumer_group_ready<B>(
     backend: &B,
@@ -164,12 +157,14 @@ pub async fn wait_for_consumer_group_ready<B>(
 where
     B: EventBusBackend,
 {
+    let topic = topic.to_string();
+    let group_id = group_id.to_string();
+
     wait_for_condition(
-        || async move {
-            // Try to receive - if consumer group is ready, this should not error
-            // Even if empty, a ready consumer group will return an empty vec
-            let result = backend.receive_serialized_with_group(topic, group_id).await;
-            !result.is_empty() || true // Accept empty results as "ready"
+        || {
+            let topic = topic.clone();
+            let group_id = group_id.clone();
+            async move { backend.get_consumer_lag(&topic, &group_id).await.is_ok() }
         },
         timeout_ms,
         100,  // Start with 100ms delay
@@ -225,40 +220,5 @@ pub fn run_app_updates(app: &mut App, iterations: u32) {
         app.update();
         // Yield to prevent busy waiting without a fixed delay
         std::thread::yield_now();
-    }
-}
-
-/// Helper to setup a Kafka backend and consumer group with proper synchronization
-pub async fn setup_kafka_consumer_group<B>(backend: &mut B, topics: &[String], group_id: &str)
-where
-    B: EventBusBackend,
-{
-    // Connect the backend to Kafka
-    let connect_result = backend.connect().await;
-    assert!(connect_result, "Failed to connect to Kafka");
-
-    // Send dummy messages to ensure topics exist in Kafka
-    let dummy_message = b"topic_creation_dummy";
-    for topic in topics {
-        backend.try_send_serialized(dummy_message, topic);
-    }
-
-    // Wait for backend to be ready for the first topic
-    if !topics.is_empty() {
-        let backend_ready = wait_for_backend_ready(backend, &topics[0], 5000).await;
-        assert!(backend_ready, "Backend not ready within timeout");
-    }
-
-    // Create consumer group after topics exist
-    backend
-        .create_consumer_group(topics, group_id)
-        .await
-        .unwrap();
-
-    // Wait for consumer group to be ready
-    if !topics.is_empty() {
-        let consumer_ready =
-            wait_for_consumer_group_ready(backend, &topics[0], group_id, 10000).await;
-        assert!(consumer_ready, "Consumer group not ready within timeout");
     }
 }

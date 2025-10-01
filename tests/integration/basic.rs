@@ -1,11 +1,12 @@
 use bevy::prelude::*;
+use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
 use bevy_event_bus::{EventBusAppExt, EventBusPlugins, KafkaEventReader, KafkaEventWriter};
 use integration_tests::common::TestEvent;
 use integration_tests::common::helpers::{
     DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
     unique_topic, update_until,
 };
-use integration_tests::common::setup::setup;
+use integration_tests::common::setup::setup_with_offset;
 use tracing::{info, info_span};
 use tracing_subscriber::EnvFilter;
 
@@ -23,23 +24,40 @@ fn test_basic_kafka_event_bus() {
     let _tg = total_span.enter();
     let setup_start = std::time::Instant::now();
     let topic = unique_topic("bevy-event-bus-test");
+    let consumer_group = unique_consumer_group("basic_reader_group");
+
+    let topic_for_writer = topic.clone();
+    let (backend_writer, _bootstrap_writer) = setup_with_offset("earliest", move |builder| {
+        builder.add_topic(
+            KafkaTopicSpec::new(topic_for_writer.clone())
+                .partitions(1)
+                .replication(1),
+        );
+    });
+
+    let topic_for_reader = topic.clone();
+    let group_for_reader = consumer_group.clone();
+    let (backend_reader, _bootstrap_reader) = setup_with_offset("earliest", move |builder| {
+        builder.add_topic(
+            KafkaTopicSpec::new(topic_for_reader.clone())
+                .partitions(1)
+                .replication(1),
+        );
+        builder.add_consumer_group(
+            group_for_reader.clone(),
+            KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
+                .initial_offset(KafkaInitialOffset::Earliest),
+        );
+    });
+
     info!(
         setup_total_ms = setup_start.elapsed().as_millis(),
         "Setup complete"
     );
 
-    // Broker is assured ready by setup(); proceed.
-
-    // Create separate backends for writer and reader to simulate separate machines
-    let (backend_writer, _bootstrap_writer) = setup();
-    let (backend_reader, _bootstrap_reader) = setup();
-
     // Writer app
     let mut writer_app = App::new();
-    writer_app.add_plugins(EventBusPlugins(
-        backend_writer,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
+    writer_app.add_plugins(EventBusPlugins(backend_writer));
 
     // Register bus event to enable KafkaEventWriter error handling
     writer_app.add_bus_event::<TestEvent>(&topic);
@@ -66,10 +84,7 @@ fn test_basic_kafka_event_bus() {
 
     // Reader app (separate consumer group with separate backend)
     let mut reader_app = App::new();
-    reader_app.add_plugins(EventBusPlugins(
-        backend_reader,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-    ));
+    reader_app.add_plugins(EventBusPlugins(backend_reader));
 
     // Register bus event for reading
     reader_app.add_bus_event::<TestEvent>(&topic);
@@ -81,7 +96,6 @@ fn test_basic_kafka_event_bus() {
     struct Topic(String);
     #[derive(Resource, Clone)]
     struct ConsumerGroup(String);
-    let consumer_group = unique_consumer_group("basic_reader_group");
     reader_app.insert_resource(Topic(topic.clone()));
     reader_app.insert_resource(ConsumerGroup(consumer_group));
 

@@ -3,7 +3,7 @@ use bevy::prelude::*;
 use bevy_event_bus::backends::EventBusBackendResource;
 use bevy_event_bus::{
     EventBusAppExt, EventBusError, EventBusErrorQueue, EventBusErrorType, EventBusPlugin,
-    EventBusPlugins, KafkaEventWriter, PreconfiguredTopics,
+    EventBusPlugins, KafkaEventWriter,
 };
 use integration_tests::common::events::TestEvent;
 use integration_tests::common::helpers::{
@@ -18,10 +18,7 @@ struct InternalSeen(usize);
 fn writer_does_not_emit_bevy_events() {
     let mut app = App::new();
 
-    app.add_plugins(EventBusPlugins(
-        MockEventBusBackend::new(),
-        PreconfiguredTopics::new(Vec::<String>::new()),
-    ));
+    app.add_plugins(EventBusPlugins(MockEventBusBackend::new()));
 
     let topic = unique_topic("external_only");
     app.add_bus_event::<TestEvent>(&topic);

@@ -1,13 +1,14 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use bevy::prelude::*;
 
-use bevy_event_bus::backends::EventBusBackendResource;
+use bevy_event_bus::backends::KafkaCommitRequest;
 use bevy_event_bus::config::{EventBusConfig, kafka::KafkaConsumerConfig};
-use bevy_event_bus::resources::{DrainedTopicMetadata, EventWrapper};
-use bevy_event_bus::{BusEvent, runtime};
-
-use super::BusEventReader;
+use bevy_event_bus::resources::{
+    DrainedTopicMetadata, EventWrapper, KafkaCommitQueue, KafkaLagCacheResource,
+};
+use bevy_event_bus::{BusEvent, readers::BusEventReader};
+use crossbeam_channel::TrySendError;
 
 /// Errors that can occur when working with the Kafka-specific reader.
 #[derive(Debug)]
@@ -18,14 +19,16 @@ pub enum KafkaReaderError {
     MissingKafkaMetadata,
     /// Manual commit operations were requested while auto-commit is still enabled.
     ManualCommitDisabled,
+    /// Manual commit operations could not be queued because the queue is unavailable.
+    CommitQueueUnavailable,
+    /// Manual commit operations could not be queued because the queue is full.
+    CommitQueueFull,
+    /// The event is missing consumer group metadata necessary for manual commits.
+    MissingConsumerGroup,
+    /// Lag information is not yet available for the requested group/topic.
+    LagDataUnavailable,
     /// Backend responded with an error message.
     BackendFailure(String),
-}
-
-impl KafkaReaderError {
-    fn backend(err: String) -> Self {
-        Self::BackendFailure(err)
-    }
 }
 
 impl std::fmt::Display for KafkaReaderError {
@@ -39,6 +42,18 @@ impl std::fmt::Display for KafkaReaderError {
             }
             KafkaReaderError::ManualCommitDisabled => {
                 write!(f, "manual commits requested while auto-commit is enabled")
+            }
+            KafkaReaderError::CommitQueueUnavailable => {
+                write!(f, "commit queue unavailable; backend not ready")
+            }
+            KafkaReaderError::CommitQueueFull => {
+                write!(f, "commit queue is full; retry next frame")
+            }
+            KafkaReaderError::MissingConsumerGroup => {
+                write!(f, "event is missing consumer group metadata")
+            }
+            KafkaReaderError::LagDataUnavailable => {
+                write!(f, "consumer lag data is not currently available")
             }
             KafkaReaderError::BackendFailure(msg) => write!(f, "backend failure: {msg}"),
         }
@@ -54,8 +69,8 @@ pub struct KafkaEventReader<'w, 's, T: BusEvent + Event> {
     wrapped_events: Local<'s, Vec<EventWrapper<T>>>,
     metadata_drained: Option<ResMut<'w, DrainedTopicMetadata>>,
     metadata_offsets: Local<'s, HashMap<String, usize>>,
-    backend: Option<Res<'w, EventBusBackendResource>>,
-    manual_commit_groups: Local<'s, HashSet<String>>,
+    commit_queue: Option<Res<'w, KafkaCommitQueue>>,
+    lag_cache: Option<Res<'w, KafkaLagCacheResource>>,
 }
 
 impl<'w, 's, T: BusEvent + Event> KafkaEventReader<'w, 's, T> {
@@ -63,11 +78,6 @@ impl<'w, 's, T: BusEvent + Event> KafkaEventReader<'w, 's, T> {
     /// (auto commit disabled) the reader ensures the backend has manual commit mode enabled
     /// for the consumer group before returning events.
     pub fn read(&mut self, config: &KafkaConsumerConfig) -> Vec<EventWrapper<T>> {
-        if !config.is_auto_commit_enabled() {
-            if let Err(err) = self.ensure_manual_commit_group(config) {
-                tracing::error!("failed to enable manual commit mode: {err}");
-            }
-        }
         self.read_internal(config)
     }
 
@@ -87,18 +97,28 @@ impl<'w, 's, T: BusEvent + Event> KafkaEventReader<'w, 's, T> {
             .kafka_metadata()
             .ok_or(KafkaReaderError::MissingKafkaMetadata)?;
 
-        let backend_res = self
-            .backend
-            .as_ref()
-            .ok_or(KafkaReaderError::BackendUnavailable)?;
+        let consumer_group = metadata
+            .consumer_group
+            .clone()
+            .ok_or(KafkaReaderError::MissingConsumerGroup)?;
 
-        let backend = backend_res.read();
-        runtime::block_on(backend.commit_offset(
-            &metadata.topic,
-            metadata.partition,
-            metadata.offset,
-        ))
-        .map_err(KafkaReaderError::backend)
+        let queue = self
+            .commit_queue
+            .as_ref()
+            .ok_or(KafkaReaderError::CommitQueueUnavailable)?;
+
+        let request = KafkaCommitRequest {
+            topic: metadata.topic.clone(),
+            partition: metadata.partition,
+            offset: metadata.offset,
+            consumer_group,
+        };
+
+        match queue.0.try_send(request) {
+            Ok(_) => Ok(()),
+            Err(TrySendError::Full(_)) => Err(KafkaReaderError::CommitQueueFull),
+            Err(TrySendError::Disconnected(_)) => Err(KafkaReaderError::CommitQueueUnavailable),
+        }
     }
 
     /// Fetch consumer lag per topic for the supplied configuration.
@@ -106,18 +126,24 @@ impl<'w, 's, T: BusEvent + Event> KafkaEventReader<'w, 's, T> {
         &self,
         config: &KafkaConsumerConfig,
     ) -> Result<HashMap<String, i64>, KafkaReaderError> {
-        let backend_res = self
-            .backend
+        let lag_cache = self
+            .lag_cache
             .as_ref()
-            .ok_or(KafkaReaderError::BackendUnavailable)?;
-        let backend = backend_res.read();
+            .ok_or(KafkaReaderError::LagDataUnavailable)?;
+
+        let snapshot = lag_cache.0.snapshot_for_group(config.get_consumer_group());
+
+        if snapshot.is_empty() {
+            return Err(KafkaReaderError::LagDataUnavailable);
+        }
 
         let mut per_topic = HashMap::new();
         for topic in config.topics() {
-            let lag =
-                runtime::block_on(backend.get_consumer_lag(topic, config.get_consumer_group()))
-                    .map_err(KafkaReaderError::backend)?;
-            per_topic.insert(topic.clone(), lag);
+            if let Some(measurement) = snapshot.get(topic) {
+                per_topic.insert(topic.clone(), measurement.lag);
+            } else {
+                return Err(KafkaReaderError::LagDataUnavailable);
+            }
         }
 
         Ok(per_topic)
@@ -157,27 +183,6 @@ impl<'w, 's, T: BusEvent + Event> KafkaEventReader<'w, 's, T> {
         }
 
         all_events
-    }
-
-    fn ensure_manual_commit_group(
-        &mut self,
-        config: &KafkaConsumerConfig,
-    ) -> Result<(), KafkaReaderError> {
-        let group_id = config.get_consumer_group().to_string();
-        if self.manual_commit_groups.contains(&group_id) {
-            return Ok(());
-        }
-
-        let backend_res = self
-            .backend
-            .as_ref()
-            .ok_or(KafkaReaderError::BackendUnavailable)?;
-
-        let mut backend = backend_res.write();
-        runtime::block_on(backend.enable_manual_commits(&group_id))
-            .map_err(KafkaReaderError::backend)?;
-        self.manual_commit_groups.insert(group_id);
-        Ok(())
     }
 }
 

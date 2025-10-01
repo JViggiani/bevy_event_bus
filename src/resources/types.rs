@@ -1,9 +1,13 @@
 use bevy::prelude::*;
 use bevy_event_bus::BusEvent;
 use bevy_event_bus::resources::backend_metadata::EventMetadata;
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{Receiver, Sender};
 use std::collections::HashMap;
 use std::time::Instant;
+
+use bevy_event_bus::backends::kafka_backend::{
+    KafkaCommitRequest, KafkaCommitResult, KafkaLagCache,
+};
 
 /// Raw incoming message captured by background consumer task
 #[derive(Debug, Clone)]
@@ -15,6 +19,8 @@ pub struct IncomingMessage {
     pub payload: Vec<u8>,
     pub timestamp: Instant,
     pub headers: HashMap<String, String>,
+    pub consumer_group: Option<String>,
+    pub manual_commit: bool,
 }
 
 impl EventMetadata {
@@ -88,6 +94,20 @@ pub struct MessageQueue {
     pub receiver: Receiver<IncomingMessage>,
 }
 
+/// Channel used by `KafkaEventReader` to enqueue manual commit requests handled in the background.
+#[derive(Resource, Clone)]
+pub struct KafkaCommitQueue(pub Sender<KafkaCommitRequest>);
+
+/// Channel delivering results of commit attempts back to the main thread for event dispatching.
+#[derive(Resource)]
+pub struct KafkaCommitResultChannel {
+    pub receiver: Receiver<KafkaCommitResult>,
+}
+
+/// Shared cache containing the latest per-topic consumer lag measurements.
+#[derive(Resource, Clone)]
+pub struct KafkaLagCacheResource(pub KafkaLagCache);
+
 /// Pre-processed message with payload and metadata already converted for efficient reading
 #[derive(Clone, Debug)]
 pub struct ProcessedMessage {
@@ -151,6 +171,8 @@ mod tests {
             topic: "test_topic".to_string(),
             partition: 0,
             offset: 42,
+            consumer_group: Some("group_a".to_string()),
+            manual_commit: false,
         };
         metadata.backend_specific = Some(Box::new(kafka_metadata));
 
@@ -176,6 +198,8 @@ mod tests {
                 topic: "events_topic".to_string(),
                 partition: 1,
                 offset: 456,
+                consumer_group: Some("group_b".to_string()),
+                manual_commit: true,
             })),
         );
 
@@ -201,6 +225,8 @@ mod tests {
             topic: "kafka_topic".to_string(),
             partition: 1,
             offset: 100,
+            consumer_group: Some("group_c".to_string()),
+            manual_commit: true,
         };
 
         let metadata = EventMetadata::new(

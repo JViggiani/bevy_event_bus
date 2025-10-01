@@ -1,16 +1,17 @@
 use std::collections::HashMap;
 
 use bevy::prelude::*;
+use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
 use bevy_event_bus::{
     EventBusAppExt, EventBusPlugins, KafkaConsumerConfig, KafkaEventBusBackend, KafkaEventReader,
     KafkaEventWriter, KafkaProducerConfig,
 };
 use integration_tests::common::events::TestEvent;
 use integration_tests::common::helpers::{
-    DEFAULT_KAFKA_BOOTSTRAP, kafka_connection_for_tests, kafka_consumer_config,
+    DEFAULT_KAFKA_BOOTSTRAP, kafka_backend_config_for_tests, kafka_consumer_config,
     kafka_producer_config, run_app_updates, unique_consumer_group, unique_topic, update_until,
 };
-use integration_tests::common::setup::setup;
+use integration_tests::common::setup::{setup, setup_with_offset};
 
 #[derive(Resource, Default)]
 struct Collected(Vec<TestEvent>);
@@ -19,18 +20,37 @@ struct Collected(Vec<TestEvent>);
 #[test]
 fn configuration_with_readers_writers_works() {
     let topic = unique_topic("config_test");
+    let consumer_group = unique_consumer_group("config_reader_group");
 
     // Create separate backends for writer and reader to simulate separate machines
-    let (backend_writer, _bootstrap_writer) = setup();
-    let (backend_reader, _bootstrap_reader) = setup();
+    let topic_for_writer = topic.clone();
+    let (backend_writer, _bootstrap_writer) = setup_with_offset("earliest", move |builder| {
+        builder.add_topic(
+            KafkaTopicSpec::new(topic_for_writer.clone())
+                .partitions(1)
+                .replication(1),
+        );
+    });
+
+    let topic_for_reader = topic.clone();
+    let group_for_reader = consumer_group.clone();
+    let (backend_reader, _bootstrap_reader) = setup_with_offset("earliest", move |builder| {
+        builder.add_topic(
+            KafkaTopicSpec::new(topic_for_reader.clone())
+                .partitions(1)
+                .replication(1),
+        );
+        builder.add_consumer_group(
+            group_for_reader.clone(),
+            KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
+                .initial_offset(KafkaInitialOffset::Earliest),
+        );
+    });
 
     // Producer app
     let mut producer_app = {
         let mut app = App::new();
-        app.add_plugins(EventBusPlugins(
-            backend_writer,
-            bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-        ));
+        app.add_plugins(EventBusPlugins(backend_writer));
         app.add_bus_event::<TestEvent>(&topic);
 
         // Producer system using configuration
@@ -55,20 +75,20 @@ fn configuration_with_readers_writers_works() {
     // Consumer app
     let mut consumer_app = {
         let mut app = App::new();
-        app.add_plugins(EventBusPlugins(
-            backend_reader,
-            bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
-        ));
+        app.add_plugins(EventBusPlugins(backend_reader));
         app.add_bus_event::<TestEvent>(&topic);
 
         // Consumer system using configuration
         let topic_clone = topic.clone();
-        let consumer_group = unique_consumer_group("config_reader_group");
+        let consumer_group_clone = consumer_group.clone();
         let consumer_system =
             move |mut reader: KafkaEventReader<TestEvent>, mut collected: ResMut<Collected>| {
                 // Read using configuration
-                let config =
-                    kafka_consumer_config(DEFAULT_KAFKA_BOOTSTRAP, &consumer_group, [&topic_clone]);
+                let config = kafka_consumer_config(
+                    DEFAULT_KAFKA_BOOTSTRAP,
+                    &consumer_group_clone,
+                    [&topic_clone],
+                );
                 let events = reader.read(&config);
                 for wrapper in events {
                     collected.0.push(wrapper.event().clone());
@@ -114,13 +134,30 @@ fn configuration_with_readers_writers_works() {
 fn kafka_specific_methods_work() {
     let topic = unique_topic("kafka_methods");
     let (_backend, bootstrap) = setup();
+    let consumer_group = unique_consumer_group("kafka_methods");
 
-    let backend = KafkaEventBusBackend::new(kafka_connection_for_tests(&bootstrap, None));
-    let mut app = App::new();
-    app.add_plugins(EventBusPlugins(
-        backend,
-        bevy_event_bus::PreconfiguredTopics::new([topic.clone()]),
+    let topic_for_config = topic.clone();
+    let consumer_for_config = consumer_group.clone();
+
+    let backend = KafkaEventBusBackend::new(kafka_backend_config_for_tests(
+        &bootstrap,
+        None,
+        move |builder| {
+            builder
+                .add_topic(
+                    KafkaTopicSpec::new(topic_for_config.clone())
+                        .partitions(1)
+                        .replication(1),
+                )
+                .add_consumer_group(
+                    consumer_for_config.clone(),
+                    KafkaConsumerGroupSpec::new([topic_for_config.clone()])
+                        .initial_offset(KafkaInitialOffset::Earliest),
+                );
+        },
     ));
+    let mut app = App::new();
+    app.add_plugins(EventBusPlugins(backend));
     app.add_bus_event::<TestEvent>(&topic);
 
     let kafka_producer_config =
@@ -129,7 +166,7 @@ fn kafka_specific_methods_work() {
             .acks("all");
 
     let kafka_consumer_config =
-        kafka_consumer_config(DEFAULT_KAFKA_BOOTSTRAP, "test_kafka_methods", [&topic]);
+        kafka_consumer_config(DEFAULT_KAFKA_BOOTSTRAP, consumer_group.clone(), [&topic]);
 
     #[derive(Resource)]
     struct TestConfigs {
@@ -166,7 +203,7 @@ fn kafka_specific_methods_work() {
             ]),
         );
 
-        let _flush_result = writer.flush();
+        let _flush_result = writer.flush(std::time::Duration::from_secs(1));
     }
 
     // Reader system that uses Kafka-specific read methods
