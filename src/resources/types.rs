@@ -287,7 +287,7 @@ pub struct TypeErasedEvent {
     pub metadata: EventMetadata,
 
     /// Name of the decoder that produced this event (for debugging)
-    pub decoder_name: String,
+    pub decoder_name: &'static str,
 }
 
 impl TopicDecodedEvents {
@@ -300,7 +300,7 @@ impl TopicDecodedEvents {
         &mut self,
         event: T,
         metadata: EventMetadata,
-        decoder_name: String,
+        decoder_name: &'static str,
     ) {
         let type_id = std::any::TypeId::of::<T>();
         let type_erased = TypeErasedEvent {

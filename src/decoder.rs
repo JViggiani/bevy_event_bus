@@ -65,7 +65,7 @@ pub struct DecoderRegistry {
     topic_decoders: HashMap<String, Vec<Box<dyn DecoderFn>>>,
 
     /// Statistics for decoder performance and success rates
-    decoder_stats: HashMap<String, DecoderStats>,
+    decoder_stats: HashMap<&'static str, DecoderStats>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -117,10 +117,7 @@ impl DecoderRegistry {
         if let Some(decoders) = self.topic_decoders.get(topic) {
             for decoder in decoders {
                 let decoder_name = decoder.name();
-                let stats = self
-                    .decoder_stats
-                    .entry(decoder_name.to_string())
-                    .or_default();
+                let stats = self.decoder_stats.entry(decoder_name).or_default();
                 stats.attempts += 1;
 
                 match decoder.decode(data) {
@@ -129,7 +126,7 @@ impl DecoderRegistry {
                         results.push(DecodedEvent {
                             event: event_any,
                             type_id: decoder.type_id(),
-                            decoder_name: decoder_name.to_string(),
+                            decoder_name,
                         });
                         tracing::trace!(
                             topic = %topic,
@@ -153,7 +150,7 @@ impl DecoderRegistry {
     }
 
     /// Get decoder statistics for debugging/monitoring
-    pub fn get_stats(&self) -> &HashMap<String, DecoderStats> {
+    pub fn get_stats(&self) -> &HashMap<&'static str, DecoderStats> {
         &self.decoder_stats
     }
 
@@ -181,7 +178,7 @@ pub struct DecodedEvent {
     /// TypeId to identify the event type
     pub type_id: TypeId,
     /// Name of the decoder that produced this result
-    pub decoder_name: String,
+    pub decoder_name: &'static str,
 }
 
 impl DecodedEvent {

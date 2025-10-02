@@ -66,6 +66,25 @@ impl<'w> KafkaEventWriter<'w> {
             runtime::block_on(backend.flush()).map_err(KafkaWriterError::backend)
         }
     }
+
+    fn resolve_send_options<'a, C>(config: &'a C) -> SendOptions<'a>
+    where
+        C: EventBusConfig + Any,
+    {
+        let mut options = SendOptions::default();
+        if let Some(kafka_config) = (config as &dyn Any).downcast_ref::<KafkaProducerConfig>() {
+            if let Some(key) = kafka_config.get_partition_key() {
+                options = options.partition_key(key);
+            }
+
+            let headers = kafka_config.get_headers();
+            if !headers.is_empty() {
+                options = options.headers(headers);
+            }
+        }
+
+        options
+    }
 }
 
 impl<'w, T> BusEventWriter<T> for KafkaEventWriter<'w>
@@ -76,22 +95,45 @@ where
     where
         C: EventBusConfig + Any,
     {
-        let mut base_options = SendOptions::default();
-        if let Some(kafka_config) = (config as &dyn Any).downcast_ref::<KafkaProducerConfig>() {
-            if let Some(key) = kafka_config.get_partition_key() {
-                base_options = base_options.partition_key(key);
-            }
+        let base_options = Self::resolve_send_options(config);
 
-            let headers = kafka_config.get_headers();
-            if !headers.is_empty() {
-                base_options = base_options.headers(headers);
+        if let Some(backend_res) = &self.backend {
+            let backend = backend_res.read();
+            for topic in config.topics() {
+                if !backend.try_send(&event, topic, base_options) {
+                    let error_event = EventBusError::immediate(
+                        topic.clone(),
+                        EventBusErrorType::Other,
+                        "Failed to send to external backend".to_string(),
+                        event.clone(),
+                    );
+                    self.error_queue.add_error(error_event);
+                }
+            }
+        } else {
+            for topic in config.topics() {
+                let error_event = EventBusError::immediate(
+                    topic.clone(),
+                    EventBusErrorType::NotConfigured,
+                    "No event bus backend configured".to_string(),
+                    event.clone(),
+                );
+                self.error_queue.add_error(error_event);
             }
         }
+    }
 
-        for topic in config.topics() {
-            match &self.backend {
-                Some(backend_res) => {
-                    let backend = backend_res.read();
+    fn write_batch<C, I>(&mut self, config: &C, events: I)
+    where
+        C: EventBusConfig + Any,
+        I: IntoIterator<Item = T>,
+    {
+        let base_options = Self::resolve_send_options(config);
+
+        if let Some(backend_res) = &self.backend {
+            let backend = backend_res.read();
+            for event in events.into_iter() {
+                for topic in config.topics() {
                     if !backend.try_send(&event, topic, base_options) {
                         let error_event = EventBusError::immediate(
                             topic.clone(),
@@ -102,7 +144,10 @@ where
                         self.error_queue.add_error(error_event);
                     }
                 }
-                None => {
+            }
+        } else {
+            for event in events.into_iter() {
+                for topic in config.topics() {
                     let error_event = EventBusError::immediate(
                         topic.clone(),
                         EventBusErrorType::NotConfigured,
@@ -110,55 +155,6 @@ where
                         event.clone(),
                     );
                     self.error_queue.add_error(error_event);
-                }
-            }
-        }
-    }
-
-    fn write_batch<C, I>(&mut self, config: &C, events: I)
-    where
-        C: EventBusConfig + Any,
-        I: IntoIterator<Item = T>,
-    {
-        let events: Vec<_> = events.into_iter().collect();
-        let mut base_options = SendOptions::default();
-        if let Some(kafka_config) = (config as &dyn Any).downcast_ref::<KafkaProducerConfig>() {
-            if let Some(key) = kafka_config.get_partition_key() {
-                base_options = base_options.partition_key(key);
-            }
-
-            let headers = kafka_config.get_headers();
-            if !headers.is_empty() {
-                base_options = base_options.headers(headers);
-            }
-        }
-
-        for topic in config.topics() {
-            match &self.backend {
-                Some(backend_res) => {
-                    let backend = backend_res.read();
-                    for event in &events {
-                        if !backend.try_send(event, topic, base_options) {
-                            let error_event = EventBusError::immediate(
-                                topic.clone(),
-                                EventBusErrorType::Other,
-                                "Failed to send to external backend".to_string(),
-                                event.clone(),
-                            );
-                            self.error_queue.add_error(error_event);
-                        }
-                    }
-                }
-                None => {
-                    for event in &events {
-                        let error_event = EventBusError::immediate(
-                            topic.clone(),
-                            EventBusErrorType::NotConfigured,
-                            "No event bus backend configured".to_string(),
-                            event.clone(),
-                        );
-                        self.error_queue.add_error(error_event);
-                    }
                 }
             }
         }

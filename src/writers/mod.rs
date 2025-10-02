@@ -28,14 +28,6 @@ impl EventBusErrorQueue {
         }
     }
 
-    pub fn flush_errors(&self, world: &mut World) {
-        if let Ok(mut pending) = self.pending_errors.lock() {
-            for error_fn in pending.drain(..) {
-                error_fn(world);
-            }
-        }
-    }
-
     pub fn drain_pending(&self) -> Vec<Box<dyn Fn(&mut World) + Send + Sync>> {
         if let Ok(mut pending) = self.pending_errors.lock() {
             std::mem::take(&mut *pending)
