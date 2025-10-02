@@ -1,13 +1,12 @@
 use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
+use bevy_event_bus::config::kafka::KafkaConsumerConfig;
 use bevy_event_bus::{ConsumerMetrics, DrainMetricsEvent};
 use bevy_event_bus::{
     DrainedTopicMetadata, EventBusConsumerConfig, EventMetadata, KafkaEventReader, KafkaMetadata,
     ProcessedMessage,
 };
-use integration_tests::common::helpers::{
-    DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, unique_consumer_group, unique_topic,
-};
+use integration_tests::common::helpers::{unique_consumer_group, unique_topic};
 use integration_tests::common::setup::build_basic_app_simple;
 use serde::{Deserialize, Serialize};
 
@@ -58,10 +57,9 @@ fn unlimited_buffer_gathers() {
         .world_mut()
         .run_system_once(move |mut r: KafkaEventReader<TestMsg>| {
             let mut collected = Vec::new();
-            let config = kafka_consumer_config(
-                DEFAULT_KAFKA_BOOTSTRAP,
-                consumer_group_for_reader.as_str(),
-                [topic_for_reader.as_str()],
+            let config = KafkaConsumerConfig::new(
+                consumer_group_for_reader.clone(),
+                [topic_for_reader.clone()],
             );
             for wrapper in r.read(&config) {
                 collected.push(wrapper.event().clone());
@@ -107,10 +105,9 @@ fn frame_limit_respected() {
     let _ = app
         .world_mut()
         .run_system_once(move |mut r: KafkaEventReader<TestMsg>| {
-            let config = kafka_consumer_config(
-                DEFAULT_KAFKA_BOOTSTRAP,
-                consumer_group_for_reader.as_str(),
-                [topic_for_reader.as_str()],
+            let config = KafkaConsumerConfig::new(
+                consumer_group_for_reader.clone(),
+                [topic_for_reader.clone()],
             );
             let count = r.read(&config).len();
             assert_eq!(count, 10);

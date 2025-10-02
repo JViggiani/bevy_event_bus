@@ -1,11 +1,11 @@
 use bevy::prelude::*;
-use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
+use bevy_event_bus::config::kafka::{
+    KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
+    KafkaTopicSpec,
+};
 use bevy_event_bus::{EventBusPlugins, KafkaEventReader, KafkaEventWriter};
 use integration_tests::common::events::{TestEvent, UserLoginEvent};
-use integration_tests::common::helpers::{
-    DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
-    unique_topic, update_until,
-};
+use integration_tests::common::helpers::{unique_consumer_group, unique_topic, update_until};
 use integration_tests::common::setup::setup;
 
 #[test]
@@ -60,11 +60,8 @@ fn single_topic_multiple_types_same_frame() {
     reader.add_systems(
         Update,
         move |mut r1: KafkaEventReader<TestEvent>, mut a: ResMut<CollectedA>| {
-            for wrapper in r1.read(&kafka_consumer_config(
-                DEFAULT_KAFKA_BOOTSTRAP,
-                consumer_group_for_test.as_str(),
-                [&tr_a],
-            )) {
+            let config = KafkaConsumerConfig::new(consumer_group_for_test.as_str(), [&tr_a]);
+            for wrapper in r1.read(&config) {
                 a.0.push(wrapper.event().clone());
             }
         },
@@ -73,11 +70,8 @@ fn single_topic_multiple_types_same_frame() {
     reader.add_systems(
         Update,
         move |mut r2: KafkaEventReader<UserLoginEvent>, mut b: ResMut<CollectedB>| {
-            for wrapper in r2.read(&kafka_consumer_config(
-                DEFAULT_KAFKA_BOOTSTRAP,
-                consumer_group_for_login.as_str(),
-                [&tr_b],
-            )) {
+            let config = KafkaConsumerConfig::new(consumer_group_for_login.as_str(), [&tr_b]);
+            for wrapper in r2.read(&config) {
                 b.0.push(wrapper.event().clone());
             }
         },
@@ -92,15 +86,16 @@ fn single_topic_multiple_types_same_frame() {
                 *started = true;
                 return;
             }
+            let config = KafkaProducerConfig::new([tclone.clone()]);
             let _ = w1.write(
-                &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&tclone]),
+                &config,
                 TestEvent {
                     message: "hello".into(),
                     value: 42,
                 },
             );
             let _ = w2.write(
-                &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&tclone]),
+                &config,
                 UserLoginEvent {
                     user_id: "u1".into(),
                     timestamp: 1,
@@ -177,11 +172,8 @@ fn single_topic_multiple_types_interleaved_frames() {
     reader.add_systems(
         Update,
         move |mut r1: KafkaEventReader<TestEvent>, mut a: ResMut<CollectedA>| {
-            for wrapper in r1.read(&kafka_consumer_config(
-                DEFAULT_KAFKA_BOOTSTRAP,
-                consumer_group2_for_test.as_str(),
-                [&tr_a2],
-            )) {
+            let config = KafkaConsumerConfig::new(consumer_group2_for_test.as_str(), [&tr_a2]);
+            for wrapper in r1.read(&config) {
                 a.0.push(wrapper.event().clone());
             }
         },
@@ -190,11 +182,8 @@ fn single_topic_multiple_types_interleaved_frames() {
     reader.add_systems(
         Update,
         move |mut r2: KafkaEventReader<UserLoginEvent>, mut b: ResMut<CollectedB>| {
-            for wrapper in r2.read(&kafka_consumer_config(
-                DEFAULT_KAFKA_BOOTSTRAP,
-                consumer_group2_for_login.as_str(),
-                [&tr_b2],
-            )) {
+            let config = KafkaConsumerConfig::new(consumer_group2_for_login.as_str(), [&tr_b2]);
+            for wrapper in r2.read(&config) {
                 b.0.push(wrapper.event().clone());
             }
         },
@@ -208,9 +197,10 @@ fn single_topic_multiple_types_interleaved_frames() {
     writer.add_systems(
         Update,
         move |mut w1: KafkaEventWriter, mut w2: KafkaEventWriter, mut c: ResMut<Counter>| {
+            let config = KafkaProducerConfig::new([tclone.clone()]);
             if c.0 % 2 == 0 {
                 let _ = w1.write(
-                    &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&tclone]),
+                    &config,
                     TestEvent {
                         message: format!("m{}", c.0),
                         value: c.0 as i32,
@@ -218,7 +208,7 @@ fn single_topic_multiple_types_interleaved_frames() {
                 );
             } else {
                 let _ = w2.write(
-                    &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&tclone]),
+                    &config,
                     UserLoginEvent {
                         user_id: format!("u{}", c.0),
                         timestamp: c.0 as u64,

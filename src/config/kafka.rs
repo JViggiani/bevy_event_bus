@@ -2,9 +2,7 @@
 
 use super::{EventBusConfig, Kafka, ProcessingLimits};
 use crate::{
-    BusEvent,
-    EventBusError,
-    backends::event_bus_backend::EventBusBackendConfig,
+    BusEvent, EventBusError, backends::event_bus_backend::EventBusBackendConfig,
     decoder::DecoderRegistry,
 };
 use bevy::prelude::{App, Event};
@@ -298,7 +296,6 @@ impl EventBusBackendConfig for KafkaBackendConfig {
 /// Configuration for Kafka consumers with production-ready options
 #[derive(Clone, Debug)]
 pub struct KafkaConsumerConfig {
-    bootstrap_servers: String,
     consumer_group: String,
     topics: Vec<String>,
     auto_offset_reset: String,
@@ -311,17 +308,12 @@ pub struct KafkaConsumerConfig {
 
 impl KafkaConsumerConfig {
     /// Create a new Kafka consumer configuration
-    pub fn new<I, T>(
-        bootstrap_servers: impl Into<String>,
-        consumer_group: impl Into<String>,
-        topics: I,
-    ) -> Self
+    pub fn new<I, T>(consumer_group: impl Into<String>, topics: I) -> Self
     where
         I: IntoIterator<Item = T>,
         T: Into<String>,
     {
         Self {
-            bootstrap_servers: bootstrap_servers.into(),
             consumer_group: consumer_group.into(),
             topics: topics.into_iter().map(Into::into).collect(),
             auto_offset_reset: "latest".to_string(),
@@ -336,12 +328,6 @@ impl KafkaConsumerConfig {
     /// Set the consumer group for this configuration
     pub fn consumer_group(mut self, group: impl Into<String>) -> Self {
         self.consumer_group = group.into();
-        self
-    }
-
-    /// Set the Kafka bootstrap servers
-    pub fn bootstrap_servers(mut self, servers: impl Into<String>) -> Self {
-        self.bootstrap_servers = servers.into();
         self
     }
 
@@ -425,11 +411,6 @@ impl KafkaConsumerConfig {
         &self.auto_offset_reset
     }
 
-    /// Get bootstrap servers
-    pub fn get_bootstrap_servers(&self) -> &str {
-        &self.bootstrap_servers
-    }
-
     /// Get consumer group
     pub fn get_consumer_group(&self) -> &str {
         &self.consumer_group
@@ -451,7 +432,6 @@ impl EventBusConfig for KafkaConsumerConfig {
 /// Configuration for Kafka producers with production-ready options
 #[derive(Clone, Debug)]
 pub struct KafkaProducerConfig {
-    bootstrap_servers: String,
     topics: Vec<String>,
     acks: String,
     retries: u32,
@@ -464,13 +444,12 @@ pub struct KafkaProducerConfig {
 
 impl KafkaProducerConfig {
     /// Create a new Kafka producer configuration
-    pub fn new<I, T>(bootstrap_servers: impl Into<String>, topics: I) -> Self
+    pub fn new<I, T>(topics: I) -> Self
     where
         I: IntoIterator<Item = T>,
         T: Into<String>,
     {
         Self {
-            bootstrap_servers: bootstrap_servers.into(),
             topics: topics.into_iter().map(Into::into).collect(),
             acks: "1".to_string(), // Wait for leader acknowledgment
             retries: 3,
@@ -480,12 +459,6 @@ impl KafkaProducerConfig {
             request_timeout_ms: 30000,
             additional_config: HashMap::new(),
         }
-    }
-
-    /// Set the Kafka bootstrap servers
-    pub fn bootstrap_servers(mut self, servers: impl Into<String>) -> Self {
-        self.bootstrap_servers = servers.into();
-        self
     }
 
     /// Set the topics this producer will write to
@@ -578,16 +551,11 @@ impl KafkaProducerConfig {
     pub fn get_additional_config(&self) -> &HashMap<String, String> {
         &self.additional_config
     }
-
-    /// Get bootstrap servers
-    pub fn get_bootstrap_servers(&self) -> &str {
-        &self.bootstrap_servers
-    }
 }
 
 impl Default for KafkaProducerConfig {
     fn default() -> Self {
-        Self::new("localhost:9092", Vec::<String>::new())
+        Self::new(Vec::<String>::new())
     }
 }
 

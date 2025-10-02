@@ -19,7 +19,6 @@ impl Plugin for EventBusPlugin {
     fn build(&self, app: &mut App) {
         // Register core error events
         app.add_event::<bevy_event_bus::EventBusDecodeError>();
-
     }
 }
 

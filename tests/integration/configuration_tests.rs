@@ -3,13 +3,13 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
 use bevy_event_bus::{
-    EventBusPlugins, KafkaConsumerConfig, KafkaEventBusBackend, KafkaEventReader,
-    KafkaEventWriter, KafkaProducerConfig,
+    EventBusPlugins, KafkaConsumerConfig, KafkaEventBusBackend, KafkaEventReader, KafkaEventWriter,
+    KafkaProducerConfig,
 };
 use integration_tests::common::events::TestEvent;
 use integration_tests::common::helpers::{
-    DEFAULT_KAFKA_BOOTSTRAP, kafka_backend_config_for_tests, kafka_consumer_config,
-    kafka_producer_config, run_app_updates, unique_consumer_group, unique_topic, update_until,
+    kafka_backend_config_for_tests, run_app_updates, unique_consumer_group, unique_topic,
+    update_until,
 };
 use integration_tests::common::setup::setup;
 
@@ -58,8 +58,7 @@ fn configuration_with_readers_writers_works() {
         let topic_clone = topic.clone();
         let producer_system = move |mut writer: KafkaEventWriter| {
             // Write using configuration - producers specify topics
-            let config = kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&topic_clone])
-                .compression_type("none");
+            let config = KafkaProducerConfig::new([topic_clone.clone()]).compression_type("none");
             writer.write(
                 &config,
                 TestEvent {
@@ -84,11 +83,7 @@ fn configuration_with_readers_writers_works() {
         let consumer_system =
             move |mut reader: KafkaEventReader<TestEvent>, mut collected: ResMut<Collected>| {
                 // Read using configuration
-                let config = kafka_consumer_config(
-                    DEFAULT_KAFKA_BOOTSTRAP,
-                    &consumer_group_clone,
-                    [&topic_clone],
-                );
+                let config = KafkaConsumerConfig::new(consumer_group_clone.clone(), [&topic_clone]);
                 let events = reader.read(&config);
                 for wrapper in events {
                     collected.0.push(wrapper.event().clone());
@@ -160,13 +155,11 @@ fn kafka_specific_methods_work() {
     let mut app = App::new();
     app.add_plugins(EventBusPlugins(backend));
 
-    let kafka_producer_config =
-        kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, Vec::<String>::new())
-            .compression_type("none")
-            .acks("all");
+    let kafka_producer_config = KafkaProducerConfig::new(Vec::<String>::new())
+        .compression_type("none")
+        .acks("all");
 
-    let kafka_consumer_config =
-        kafka_consumer_config(DEFAULT_KAFKA_BOOTSTRAP, consumer_group.clone(), [&topic]);
+    let kafka_consumer_config = KafkaConsumerConfig::new(consumer_group.clone(), [&topic]);
 
     #[derive(Resource)]
     struct TestConfigs {
@@ -225,11 +218,10 @@ fn kafka_specific_methods_work() {
 #[test]
 fn builder_pattern_works() {
     // Test that we can build consumer config
-    let consumer_config =
-        kafka_consumer_config(DEFAULT_KAFKA_BOOTSTRAP, "test_group", ["topic1", "topic2"])
-            .auto_offset_reset("earliest")
-            .enable_auto_commit(false)
-            .session_timeout_ms(6000);
+    let consumer_config = KafkaConsumerConfig::new("test_group", ["topic1", "topic2"])
+        .auto_offset_reset("earliest")
+        .enable_auto_commit(false)
+        .session_timeout_ms(6000);
 
     // Test that trait methods work using explicit syntax
     use bevy_event_bus::EventBusConfig;
@@ -241,7 +233,7 @@ fn builder_pattern_works() {
     assert_eq!(consumer_config.get_session_timeout_ms(), 6000);
 
     // Test that we can build producer config
-    let producer_config = kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, Vec::<String>::new())
+    let producer_config = KafkaProducerConfig::new(Vec::<String>::new())
         .compression_type("gzip")
         .acks("all")
         .retries(3)
@@ -262,8 +254,7 @@ fn clean_system_signatures() {
 
     fn clean_producer_system(mut writer: KafkaEventWriter) {
         // Configuration can be injected from resource or built inline
-        let config = kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, Vec::<String>::new())
-            .compression_type("none");
+        let config = KafkaProducerConfig::new(Vec::<String>::new()).compression_type("none");
         writer.write(
             &config,
             TestEvent {
@@ -275,7 +266,7 @@ fn clean_system_signatures() {
 
     fn clean_consumer_system(mut reader: KafkaEventReader<TestEvent>) {
         // Using inline configuration
-        let config = kafka_consumer_config(DEFAULT_KAFKA_BOOTSTRAP, "clean_group", ["clean_test"]);
+        let config = KafkaConsumerConfig::new("clean_group", ["clean_test"]);
         let _events = reader.read(&config);
     }
 

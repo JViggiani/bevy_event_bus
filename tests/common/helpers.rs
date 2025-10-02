@@ -1,37 +1,10 @@
 use bevy::prelude::*;
 use bevy_event_bus::backends::EventBusBackend;
 use bevy_event_bus::config::kafka::KafkaTopologyBuilder;
-use bevy_event_bus::{
-    KafkaBackendConfig, KafkaConnectionConfig, KafkaConsumerConfig, KafkaProducerConfig,
-};
+use bevy_event_bus::{KafkaBackendConfig, KafkaConnectionConfig};
 use std::process;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-
-/// Default bootstrap servers used across tests when a specific endpoint is not required.
-pub const DEFAULT_KAFKA_BOOTSTRAP: &str = "localhost:9092";
-
-/// Construct a `KafkaProducerConfig` using common defaults for tests.
-pub fn kafka_producer_config<I, T>(bootstrap_servers: &str, topics: I) -> KafkaProducerConfig
-where
-    I: IntoIterator<Item = T>,
-    T: Into<String>,
-{
-    KafkaProducerConfig::new(bootstrap_servers, topics)
-}
-
-/// Construct a `KafkaConsumerConfig` using common defaults for tests.
-pub fn kafka_consumer_config<I, T>(
-    bootstrap_servers: &str,
-    consumer_group: impl Into<String>,
-    topics: I,
-) -> KafkaConsumerConfig
-where
-    I: IntoIterator<Item = T>,
-    T: Into<String>,
-{
-    KafkaConsumerConfig::new(bootstrap_servers, consumer_group, topics)
-}
 
 /// Build a `KafkaBackendConfig` for tests with customizable topology.
 pub fn kafka_backend_config_for_tests<F>(

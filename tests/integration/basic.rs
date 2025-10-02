@@ -1,11 +1,11 @@
 use bevy::prelude::*;
-use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
+use bevy_event_bus::config::kafka::{
+    KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
+    KafkaTopicSpec,
+};
 use bevy_event_bus::{EventBusPlugins, KafkaEventReader, KafkaEventWriter};
 use integration_tests::common::TestEvent;
-use integration_tests::common::helpers::{
-    DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
-    unique_topic, update_until,
-};
+use integration_tests::common::helpers::{unique_consumer_group, unique_topic, update_until};
 use integration_tests::common::setup::setup;
 use tracing::{info, info_span};
 use tracing_subscriber::EnvFilter;
@@ -71,7 +71,7 @@ fn test_basic_kafka_event_bus() {
     writer_app.insert_resource(ToSend(event_to_send.clone(), topic.clone()));
 
     fn writer_system(mut w: KafkaEventWriter, data: Res<ToSend>) {
-        let config = kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&data.1]);
+        let config = KafkaProducerConfig::new([data.1.clone()]);
         let _ = w.write(&config, data.0.clone());
     }
     writer_app.add_systems(Update, writer_system);
@@ -101,7 +101,7 @@ fn test_basic_kafka_event_bus() {
         group: Res<ConsumerGroup>,
         mut collected: ResMut<Collected>,
     ) {
-        let config = kafka_consumer_config(DEFAULT_KAFKA_BOOTSTRAP, group.0.as_str(), [&topic.0]);
+        let config = KafkaConsumerConfig::new(group.0.clone(), [topic.0.clone()]);
         for wrapper in r.read(&config) {
             collected.0.push(wrapper.event().clone());
         }

@@ -12,12 +12,10 @@
 //! - Error retry mechanisms
 
 use bevy::prelude::*;
-use bevy_event_bus::config::kafka::KafkaTopologyEventBinding;
+use bevy_event_bus::config::kafka::{KafkaProducerConfig, KafkaTopologyEventBinding};
 use bevy_event_bus::{EventBusError, EventBusPlugins, KafkaEventWriter};
 use integration_tests::common::MockEventBusBackend;
-use integration_tests::common::helpers::{
-    DEFAULT_KAFKA_BOOTSTRAP, kafka_producer_config, unique_topic,
-};
+use integration_tests::common::helpers::unique_topic;
 use serde::{Deserialize, Serialize};
 
 // Event types for various test scenarios
@@ -83,6 +81,7 @@ fn test_delivery_error_handling() {
         Update,
         move |mut state: ResMut<ErrorTestState>, mut writer: KafkaEventWriter| {
             if !state.test_completed {
+                let config = KafkaProducerConfig::new([topic_clone.clone()]);
                 for i in 0..3 {
                     let test_event = TestErrorEvent {
                         id: i,
@@ -92,8 +91,6 @@ fn test_delivery_error_handling() {
                     state.messages_sent += 1;
 
                     // Fire-and-forget write - delivery failures will appear as error events
-                    let config =
-                        kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [topic_clone.clone()]);
                     writer.write(&config, test_event);
                 }
 
@@ -185,8 +182,7 @@ fn test_multiple_event_types_error_handling() {
     // Register all event types through topology bindings (includes error events)
     KafkaTopologyEventBinding::new::<PlayerEvent>(vec![player_topic.clone()]).apply(&mut app);
     KafkaTopologyEventBinding::new::<CombatEvent>(vec![combat_topic.clone()]).apply(&mut app);
-    KafkaTopologyEventBinding::new::<AnalyticsEvent>(vec![analytics_topic.clone()])
-        .apply(&mut app);
+    KafkaTopologyEventBinding::new::<AnalyticsEvent>(vec![analytics_topic.clone()]).apply(&mut app);
 
     #[derive(Resource, Default)]
     struct MultiEventTestState {
@@ -206,15 +202,15 @@ fn test_multiple_event_types_error_handling() {
               mut combat_writer: KafkaEventWriter,
               mut analytics_writer: KafkaEventWriter| {
             if !state.test_completed {
+                let player_config = KafkaProducerConfig::new([player_topic_clone.clone()]);
+                let combat_config = KafkaProducerConfig::new([combat_topic_clone.clone()]);
+                let analytics_config = KafkaProducerConfig::new([analytics_topic_clone.clone()]);
                 // Player event
                 let player_event = PlayerEvent {
                     player_id: 123,
                     action: "login".to_string(),
                 };
-                player_writer.write(
-                    &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [player_topic_clone.clone()]),
-                    player_event,
-                );
+                player_writer.write(&player_config, player_event);
 
                 // Combat event
                 let combat_event = CombatEvent {
@@ -222,10 +218,7 @@ fn test_multiple_event_types_error_handling() {
                     target_id: 789,
                     damage: 100,
                 };
-                combat_writer.write(
-                    &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [combat_topic_clone.clone()]),
-                    combat_event,
-                );
+                combat_writer.write(&combat_config, combat_event);
 
                 // Analytics event
                 let analytics_event = AnalyticsEvent {
@@ -233,13 +226,7 @@ fn test_multiple_event_types_error_handling() {
                     user_id: 123,
                     timestamp: 1234567890,
                 };
-                analytics_writer.write(
-                    &kafka_producer_config(
-                        DEFAULT_KAFKA_BOOTSTRAP,
-                        [analytics_topic_clone.clone()],
-                    ),
-                    analytics_event,
-                );
+                analytics_writer.write(&analytics_config, analytics_event);
 
                 state.test_completed = true;
             }
@@ -352,6 +339,8 @@ fn test_centralized_error_handling() {
         Update,
         move |mut state: ResMut<CentralizedErrorTestState>, mut writer: KafkaEventWriter| {
             if !state.test_completed {
+                let working_config = KafkaProducerConfig::new([working_topic_clone.clone()]);
+                let failing_config = KafkaProducerConfig::new([failing_topic_clone.clone()]);
                 // Send to working topic
                 for i in 0..3 {
                     let event = TestEvent {
@@ -359,13 +348,7 @@ fn test_centralized_error_handling() {
                         message: format!("Working event {}", i),
                     };
                     state.events_sent += 1;
-                    writer.write(
-                        &kafka_producer_config(
-                            DEFAULT_KAFKA_BOOTSTRAP,
-                            [working_topic_clone.clone()],
-                        ),
-                        event,
-                    );
+                    writer.write(&working_config, event);
                 }
 
                 // Send to failing topic
@@ -375,13 +358,7 @@ fn test_centralized_error_handling() {
                         message: format!("Failing event {}", i),
                     };
                     state.events_sent += 1;
-                    writer.write(
-                        &kafka_producer_config(
-                            DEFAULT_KAFKA_BOOTSTRAP,
-                            [failing_topic_clone.clone()],
-                        ),
-                        event,
-                    );
+                    writer.write(&failing_config, event);
                 }
 
                 state.test_completed = true;
@@ -487,6 +464,7 @@ fn test_batch_operation_error_handling() {
                 let num_batches = 3;
 
                 state.events_per_batch = events_per_batch;
+                let config = KafkaProducerConfig::new([topic_clone.clone()]);
 
                 for batch in 0..num_batches {
                     state.batch_operations += 1;
@@ -497,10 +475,7 @@ fn test_batch_operation_error_handling() {
                             id: batch * events_per_batch + event_in_batch,
                             message: format!("Batch {} Event {}", batch, event_in_batch),
                         };
-                        writer.write(
-                            &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [topic_clone.clone()]),
-                            event,
-                        );
+                        writer.write(&config, event);
                     }
                 }
 
@@ -607,16 +582,14 @@ fn test_error_retry_mechanism() {
         move |mut state: ResMut<RetryTestState>, mut writer: KafkaEventWriter| {
             if !state.initial_send_complete {
                 // Send initial events
+                let config = KafkaProducerConfig::new([topic_clone1.clone()]);
                 for i in 0..3 {
                     let event = TestEvent {
                         id: i,
                         message: format!("Initial event {}", i),
                     };
                     state.initial_events_sent += 1;
-                    writer.write(
-                        &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [topic_clone1.clone()]),
-                        event,
-                    );
+                    writer.write(&config, event);
                 }
                 state.initial_send_complete = true;
             }
@@ -629,6 +602,7 @@ fn test_error_retry_mechanism() {
         move |mut errors: EventReader<EventBusError<TestEvent>>,
               mut state: ResMut<RetryTestState>,
               mut writer: KafkaEventWriter| {
+            let retry_config = KafkaProducerConfig::new([topic_clone2.clone()]);
             for error in errors.read() {
                 state.errors_received.push(error.clone());
 
@@ -654,10 +628,7 @@ fn test_error_retry_mechanism() {
                         };
 
                         // Retry the event (will still fail in this test since mock backend is configured to fail)
-                        writer.write(
-                            &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [topic_clone2.clone()]),
-                            retry_event,
-                        );
+                        writer.write(&retry_config, retry_event);
                     }
                 }
             }

@@ -1,11 +1,11 @@
 use bevy::prelude::*;
-use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
+use bevy_event_bus::config::kafka::{
+    KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
+    KafkaTopicSpec,
+};
 use bevy_event_bus::{EventBusPlugins, KafkaEventReader, KafkaEventWriter};
 use integration_tests::common::events::TestEvent;
-use integration_tests::common::helpers::{
-    DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
-    unique_topic, wait_for_events,
-};
+use integration_tests::common::helpers::{unique_consumer_group, unique_topic, wait_for_events};
 use integration_tests::common::setup::setup;
 
 #[test]
@@ -54,9 +54,10 @@ fn per_topic_order_preserved() {
                 *started = true;
                 return;
             }
+            let config = KafkaProducerConfig::new([tclone.clone()]);
             for i in 0..10 {
                 let _ = w.write(
-                    &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&tclone]),
+                    &config,
                     TestEvent {
                         message: format!("msg-{i}"),
                         value: i,
@@ -75,11 +76,8 @@ fn per_topic_order_preserved() {
     reader.add_systems(
         Update,
         move |mut r: KafkaEventReader<TestEvent>, mut c: ResMut<Collected>| {
-            for wrapper in r.read(&kafka_consumer_config(
-                DEFAULT_KAFKA_BOOTSTRAP,
-                consumer_group.as_str(),
-                [&tr],
-            )) {
+            let config = KafkaConsumerConfig::new(consumer_group.as_str(), [&tr]);
+            for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
             }
         },
@@ -160,16 +158,18 @@ fn cross_topic_interleave_each_ordered() {
                 *started = true;
                 return;
             }
+            let config_t1 = KafkaProducerConfig::new([t1c.clone()]);
+            let config_t2 = KafkaProducerConfig::new([t2c.clone()]);
             for i in 0..5 {
                 let _ = w.write(
-                    &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&t1c]),
+                    &config_t1,
                     TestEvent {
                         message: format!("A{i}"),
                         value: i,
                     },
                 );
                 let _ = w.write(
-                    &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&t2c]),
+                    &config_t2,
                     TestEvent {
                         message: format!("B{i}"),
                         value: i,
@@ -194,18 +194,12 @@ fn cross_topic_interleave_each_ordered() {
         move |mut r: KafkaEventReader<TestEvent>,
               mut c1: ResMut<CollectedT1>,
               mut c2: ResMut<CollectedT2>| {
-            for wrapper in r.read(&kafka_consumer_config(
-                DEFAULT_KAFKA_BOOTSTRAP,
-                consumer_group.as_str(),
-                [&ta],
-            )) {
+            let config_a = KafkaConsumerConfig::new(consumer_group.as_str(), [&ta]);
+            for wrapper in r.read(&config_a) {
                 c1.0.push(wrapper.event().clone());
             }
-            for wrapper in r.read(&kafka_consumer_config(
-                DEFAULT_KAFKA_BOOTSTRAP,
-                consumer_group.as_str(),
-                [&tb],
-            )) {
+            let config_b = KafkaConsumerConfig::new(consumer_group.as_str(), [&tb]);
+            for wrapper in r.read(&config_b) {
                 c2.0.push(wrapper.event().clone());
             }
         },

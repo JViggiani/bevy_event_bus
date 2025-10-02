@@ -1,13 +1,11 @@
 use bevy::prelude::*;
-use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
-use bevy_event_bus::{
-    EventBusConsumerConfig, EventBusPlugins, KafkaEventReader, KafkaEventWriter,
+use bevy_event_bus::config::kafka::{
+    KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
+    KafkaTopicSpec,
 };
+use bevy_event_bus::{EventBusConsumerConfig, EventBusPlugins, KafkaEventReader, KafkaEventWriter};
 use integration_tests::common::events::TestEvent;
-use integration_tests::common::helpers::{
-    DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
-    unique_topic, update_until,
-};
+use integration_tests::common::helpers::{unique_consumer_group, unique_topic, update_until};
 use integration_tests::common::setup::setup;
 
 #[test]
@@ -17,12 +15,13 @@ fn frame_limit_spreads_drain() {
 
     let topic_for_writer = topic.clone();
     let (backend_w, _b1) = setup("earliest", move |builder| {
-        builder.add_topic(
-            KafkaTopicSpec::new(topic_for_writer.clone())
-                .partitions(1)
-                .replication(1),
-        )
-        .add_event_single::<TestEvent>(topic_for_writer.clone());
+        builder
+            .add_topic(
+                KafkaTopicSpec::new(topic_for_writer.clone())
+                    .partitions(1)
+                    .replication(1),
+            )
+            .add_event_single::<TestEvent>(topic_for_writer.clone());
     });
 
     let topic_for_reader = topic.clone();
@@ -48,9 +47,10 @@ fn frame_limit_spreads_drain() {
     reader.add_plugins(EventBusPlugins(backend_r));
     let tclone = topic.clone();
     writer.add_systems(Update, move |mut w: KafkaEventWriter| {
+        let config = KafkaProducerConfig::new([tclone.clone()]);
         for i in 0..15 {
             let _ = w.write(
-                &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&tclone]),
+                &config,
                 TestEvent {
                     message: format!("v{i}"),
                     value: i,
@@ -71,11 +71,8 @@ fn frame_limit_spreads_drain() {
     reader.add_systems(
         Update,
         move |mut r: KafkaEventReader<TestEvent>, mut c: ResMut<Collected>| {
-            for wrapper in r.read(&kafka_consumer_config(
-                DEFAULT_KAFKA_BOOTSTRAP,
-                consumer_group.as_str(),
-                [&tr],
-            )) {
+            let config = KafkaConsumerConfig::new(consumer_group.as_str(), [&tr]);
+            for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
             }
         },

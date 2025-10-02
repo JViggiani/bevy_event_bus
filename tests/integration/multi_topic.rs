@@ -1,11 +1,11 @@
 use bevy::prelude::*;
-use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
+use bevy_event_bus::config::kafka::{
+    KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
+    KafkaTopicSpec,
+};
 use bevy_event_bus::{EventBusPlugins, KafkaEventReader, KafkaEventWriter};
 use integration_tests::common::events::TestEvent;
-use integration_tests::common::helpers::{
-    DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
-    unique_topic, update_until,
-};
+use integration_tests::common::helpers::{unique_consumer_group, unique_topic, update_until};
 use integration_tests::common::setup::setup;
 
 #[test]
@@ -17,18 +17,20 @@ fn multi_topic_isolation() {
     let topic_a_writer = topic_a.clone();
     let topic_b_writer = topic_b.clone();
     let (backend_w, _b1) = setup("earliest", move |builder| {
-        builder.add_topic(
-            KafkaTopicSpec::new(topic_a_writer.clone())
-                .partitions(1)
-                .replication(1),
-        )
-        .add_event_single::<TestEvent>(topic_a_writer.clone());
-        builder.add_topic(
-            KafkaTopicSpec::new(topic_b_writer.clone())
-                .partitions(1)
-                .replication(1),
-        )
-        .add_event_single::<TestEvent>(topic_b_writer.clone());
+        builder
+            .add_topic(
+                KafkaTopicSpec::new(topic_a_writer.clone())
+                    .partitions(1)
+                    .replication(1),
+            )
+            .add_event_single::<TestEvent>(topic_a_writer.clone());
+        builder
+            .add_topic(
+                KafkaTopicSpec::new(topic_b_writer.clone())
+                    .partitions(1)
+                    .replication(1),
+            )
+            .add_event_single::<TestEvent>(topic_b_writer.clone());
     });
 
     let topic_a_reader = topic_a.clone();
@@ -64,15 +66,17 @@ fn multi_topic_isolation() {
     let ta = topic_a.clone();
     let tb = topic_b.clone();
     writer.add_systems(Update, move |mut w: KafkaEventWriter| {
+        let config_a = KafkaProducerConfig::new([ta.clone()]);
         let _ = w.write(
-            &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&ta]),
+            &config_a,
             TestEvent {
                 message: "A1".into(),
                 value: 1,
             },
         );
+        let config_b = KafkaProducerConfig::new([tb.clone()]);
         let _ = w.write(
-            &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&tb]),
+            &config_b,
             TestEvent {
                 message: "B1".into(),
                 value: 2,
@@ -90,18 +94,12 @@ fn multi_topic_isolation() {
     reader.add_systems(
         Update,
         move |mut r: KafkaEventReader<TestEvent>, mut col: ResMut<Collected>| {
-            for wrapper in r.read(&kafka_consumer_config(
-                DEFAULT_KAFKA_BOOTSTRAP,
-                consumer_group_clone.as_str(),
-                [&ta_r],
-            )) {
+            let config_a = KafkaConsumerConfig::new(consumer_group_clone.as_str(), [&ta_r]);
+            for wrapper in r.read(&config_a) {
                 col.0.push(wrapper.event().clone());
             }
-            for wrapper in r.read(&kafka_consumer_config(
-                DEFAULT_KAFKA_BOOTSTRAP,
-                consumer_group_clone.as_str(),
-                [&tb_r],
-            )) {
+            let config_b = KafkaConsumerConfig::new(consumer_group_clone.as_str(), [&tb_r]);
+            for wrapper in r.read(&config_b) {
                 col.0.push(wrapper.event().clone());
             }
         },

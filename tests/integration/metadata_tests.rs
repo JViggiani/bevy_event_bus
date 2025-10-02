@@ -1,10 +1,12 @@
 use bevy::prelude::*;
-use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
+use bevy_event_bus::config::kafka::{
+    KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
+    KafkaTopicSpec,
+};
 use bevy_event_bus::{EventBusPlugins, EventWrapper, KafkaEventReader, KafkaEventWriter};
 use integration_tests::common::events::TestEvent;
 use integration_tests::common::helpers::{
-    DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, run_app_updates,
-    unique_consumer_group, unique_topic, wait_for_events,
+    run_app_updates, unique_consumer_group, unique_topic, wait_for_events,
 };
 use integration_tests::common::setup::setup;
 use std::collections::HashMap;
@@ -68,10 +70,8 @@ fn metadata_propagation_from_kafka_to_bevy() {
         move |mut w: KafkaEventWriter, mut sent: Local<bool>| {
             if !*sent {
                 *sent = true;
-                let _ = w.write(
-                    &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&topic_clone]),
-                    test_event.clone(),
-                );
+                let config = KafkaProducerConfig::new([topic_clone.clone()]);
+                let _ = w.write(&config, test_event.clone());
             }
         },
     );
@@ -84,11 +84,8 @@ fn metadata_propagation_from_kafka_to_bevy() {
     reader.add_systems(
         Update,
         move |mut r: KafkaEventReader<TestEvent>, mut events: ResMut<ReceivedEvents>| {
-            for wrapper in r.read(&kafka_consumer_config(
-                DEFAULT_KAFKA_BOOTSTRAP,
-                consumer_group.as_str(),
-                [&tr],
-            )) {
+            let config = KafkaConsumerConfig::new(consumer_group.as_str(), [&tr]);
+            for wrapper in r.read(&config) {
                 events.0.push(wrapper.clone());
             }
         },
@@ -153,12 +150,13 @@ fn header_forwarding_producer_to_consumer() {
 
     let topic_for_writer = topic.clone();
     let (backend_w, _b1) = setup("earliest", move |builder| {
-        builder.add_topic(
-            KafkaTopicSpec::new(topic_for_writer.clone())
-                .partitions(1)
-                .replication(1),
-        )
-        .add_event_single::<TestEvent>(topic_for_writer.clone());
+        builder
+            .add_topic(
+                KafkaTopicSpec::new(topic_for_writer.clone())
+                    .partitions(1)
+                    .replication(1),
+            )
+            .add_event_single::<TestEvent>(topic_for_writer.clone());
     });
 
     let topic_for_reader = topic.clone();
@@ -202,11 +200,8 @@ fn header_forwarding_producer_to_consumer() {
         move |mut w: KafkaEventWriter, mut sent: Local<bool>| {
             if !*sent {
                 *sent = true;
-                let _ = w.write_with_headers(
-                    &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&topic_clone]),
-                    test_event.clone(),
-                    headers.clone(),
-                );
+                let config = KafkaProducerConfig::new([topic_clone.clone()]);
+                let _ = w.write_with_headers(&config, test_event.clone(), headers.clone());
             }
         },
     );
@@ -220,11 +215,8 @@ fn header_forwarding_producer_to_consumer() {
     reader.add_systems(
         Update,
         move |mut r: KafkaEventReader<TestEvent>, mut events: ResMut<ReceivedEvents>| {
-            for wrapper in r.read(&kafka_consumer_config(
-                DEFAULT_KAFKA_BOOTSTRAP,
-                consumer_group_clone.as_str(),
-                [&tr],
-            )) {
+            let config = KafkaConsumerConfig::new(consumer_group_clone.as_str(), [&tr]);
+            for wrapper in r.read(&config) {
                 events.0.push(wrapper.clone());
             }
         },
@@ -294,11 +286,12 @@ fn timestamp_accuracy_for_latency_measurement() {
     let (backend_r, _b2) = setup("earliest", move |builder| {
         builder.add_topic(topic_spec(&topic_for_reader));
         let topics_for_reader = vec![topic_for_reader.clone()];
-        builder.add_consumer_group(
-            consumer_group_for_reader.clone(),
-            group_spec(&topics_for_reader, KafkaInitialOffset::Earliest),
-        )
-        .add_event_single::<TestEvent>(topic_for_reader.clone());
+        builder
+            .add_consumer_group(
+                consumer_group_for_reader.clone(),
+                group_spec(&topics_for_reader, KafkaInitialOffset::Earliest),
+            )
+            .add_event_single::<TestEvent>(topic_for_reader.clone());
     });
 
     let mut writer = App::new();
@@ -320,10 +313,8 @@ fn timestamp_accuracy_for_latency_measurement() {
                     message: "timestamp test".to_string(),
                     value: 999,
                 };
-                let _ = w.write(
-                    &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&topic_clone]),
-                    event,
-                );
+                let config = KafkaProducerConfig::new([topic_clone.clone()]);
+                let _ = w.write(&config, event);
             }
         },
     );
@@ -336,11 +327,8 @@ fn timestamp_accuracy_for_latency_measurement() {
     reader.add_systems(
         Update,
         move |mut r: KafkaEventReader<TestEvent>, mut events: ResMut<ReceivedEvents>| {
-            for wrapper in r.read(&kafka_consumer_config(
-                DEFAULT_KAFKA_BOOTSTRAP,
-                consumer_group.as_str(),
-                [&tr],
-            )) {
+            let config = KafkaConsumerConfig::new(consumer_group.as_str(), [&tr]);
+            for wrapper in r.read(&config) {
                 events.0.push(wrapper.clone());
             }
         },
@@ -442,15 +430,13 @@ fn mixed_metadata_and_regular_reading() {
         move |mut w: KafkaEventWriter, mut sent: Local<bool>| {
             if !*sent {
                 *sent = true;
+                let config = KafkaProducerConfig::new([topic_clone.clone()]);
                 for i in 0..3 {
                     let event = TestEvent {
                         message: format!("mixed-{}", i),
                         value: i,
                     };
-                    let _ = w.write(
-                        &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&topic_clone]),
-                        event,
-                    );
+                    let _ = w.write(&config, event);
                 }
             }
         },
@@ -470,11 +456,8 @@ fn mixed_metadata_and_regular_reading() {
     regular_reader.add_systems(
         Update,
         move |mut r: KafkaEventReader<TestEvent>, mut events: ResMut<RegularEvents>| {
-            for wrapper in r.read(&kafka_consumer_config(
-                DEFAULT_KAFKA_BOOTSTRAP,
-                regular_group.as_str(),
-                [&tr1],
-            )) {
+            let config = KafkaConsumerConfig::new(regular_group.as_str(), [&tr1]);
+            for wrapper in r.read(&config) {
                 events.0.push(wrapper.event().clone());
             }
         },
@@ -484,11 +467,8 @@ fn mixed_metadata_and_regular_reading() {
     metadata_reader.add_systems(
         Update,
         move |mut r: KafkaEventReader<TestEvent>, mut events: ResMut<MetadataEvents>| {
-            for wrapper in r.read(&kafka_consumer_config(
-                DEFAULT_KAFKA_BOOTSTRAP,
-                metadata_group.as_str(),
-                [&tr2],
-            )) {
+            let config = KafkaConsumerConfig::new(metadata_group.as_str(), [&tr2]);
+            for wrapper in r.read(&config) {
                 events.0.push(wrapper.clone());
             }
         },

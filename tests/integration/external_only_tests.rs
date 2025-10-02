@@ -1,15 +1,13 @@
 use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
 use bevy_event_bus::backends::EventBusBackendResource;
-use bevy_event_bus::config::kafka::KafkaTopologyEventBinding;
+use bevy_event_bus::config::kafka::{KafkaProducerConfig, KafkaTopologyEventBinding};
 use bevy_event_bus::{
     EventBusError, EventBusErrorQueue, EventBusErrorType, EventBusPlugin, EventBusPlugins,
     KafkaEventWriter,
 };
 use integration_tests::common::events::TestEvent;
-use integration_tests::common::helpers::{
-    DEFAULT_KAFKA_BOOTSTRAP, kafka_producer_config, unique_topic,
-};
+use integration_tests::common::helpers::unique_topic;
 use integration_tests::common::mock_backend::MockEventBusBackend;
 
 #[derive(Resource, Default)]
@@ -31,8 +29,9 @@ fn writer_does_not_emit_bevy_events() {
         move |mut writer: KafkaEventWriter, mut fired: Local<bool>| {
             if !*fired {
                 *fired = true;
+                let config = KafkaProducerConfig::new([topic_for_writer.clone()]);
                 writer.write(
-                    &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&topic_for_writer]),
+                    &config,
                     TestEvent {
                         message: "no-internal-bridge".to_string(),
                         value: 7,
@@ -78,8 +77,9 @@ fn writer_queues_not_configured_error_when_backend_missing() {
     // Drive the writer once
     app.world_mut()
         .run_system_once(|mut writer: KafkaEventWriter| {
+            let config = KafkaProducerConfig::new([unique_topic("missing_backend")]);
             writer.write(
-                &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [unique_topic("missing_backend")]),
+                &config,
                 TestEvent {
                     message: "should-error".to_string(),
                     value: 99,

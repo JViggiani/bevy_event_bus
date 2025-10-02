@@ -70,15 +70,9 @@ fn test_multi_decoder() {
                 .partitions(1)
                 .replication(1),
         );
-        builder.add_event::<PlayerMove>([
-            topic_game_cfg.clone(),
-            topic_combat_cfg.clone(),
-        ]);
+        builder.add_event::<PlayerMove>([topic_game_cfg.clone(), topic_combat_cfg.clone()]);
         builder.add_event_single::<PlayerAttack>(topic_combat_cfg.clone());
-        builder.add_event::<GameStateUpdate>([
-            topic_game_cfg.clone(),
-            topic_analytics_cfg.clone(),
-        ]);
+        builder.add_event::<GameStateUpdate>([topic_game_cfg.clone(), topic_analytics_cfg.clone()]);
     });
     let mut app = App::new();
     app.add_plugins(EventBusPlugins(backend));

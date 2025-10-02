@@ -1,12 +1,14 @@
 use bevy::prelude::*;
-use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
+use bevy_event_bus::config::kafka::{
+    KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
+    KafkaTopicSpec,
+};
 use bevy_event_bus::{
     EventBusBackend, EventBusPlugins, KafkaEventBusBackend, KafkaEventReader, KafkaEventWriter,
 };
 use integration_tests::common::events::TestEvent;
 use integration_tests::common::helpers::{
-    DEFAULT_KAFKA_BOOTSTRAP, kafka_backend_config_for_tests, kafka_consumer_config,
-    kafka_producer_config, unique_consumer_group, unique_topic, update_until,
+    kafka_backend_config_for_tests, unique_consumer_group, unique_topic, update_until,
     wait_for_consumer_group_ready, wait_for_messages_in_group,
 };
 use integration_tests::common::setup::setup;
@@ -153,8 +155,8 @@ fn offset_configuration_latest_ignores_historical_events() {
         let topic_clone = topic.clone();
         producer_app.add_systems(Update, move |mut w: KafkaEventWriter| {
             // Send 3 historical events that the latest consumer should NOT see
+            let config = KafkaProducerConfig::new([topic_clone.clone()]);
             for i in 0..3 {
-                let config = kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&topic_clone]);
                 let _ = w.write(
                     &config,
                     TestEvent {
@@ -202,11 +204,7 @@ fn offset_configuration_latest_ignores_historical_events() {
     latest_app.add_systems(
         Update,
         move |mut r: KafkaEventReader<TestEvent>, mut c: ResMut<CollectedLatest>| {
-            let config = kafka_consumer_config(
-                DEFAULT_KAFKA_BOOTSTRAP,
-                consumer_group.as_str(),
-                [&topic_read],
-            );
+            let config = KafkaConsumerConfig::new(consumer_group.clone(), [&topic_read]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
             }
@@ -217,7 +215,7 @@ fn offset_configuration_latest_ignores_historical_events() {
     let topic_send = topic.clone();
     latest_app.add_systems(Update, move |mut w: KafkaEventWriter| {
         // Send new event after consumer is established
-        let config = kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&topic_send]);
+        let config = KafkaProducerConfig::new([topic_send.clone()]);
         let _ = w.write(
             &config,
             TestEvent {
@@ -297,7 +295,7 @@ fn default_offset_configuration_is_latest() {
 
         let topic_clone = topic.clone();
         producer_app.add_systems(Update, move |mut w: KafkaEventWriter| {
-            let config = kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&topic_clone]);
+            let config = KafkaProducerConfig::new([topic_clone.clone()]);
             let _ = w.write(
                 &config,
                 TestEvent {
@@ -342,11 +340,7 @@ fn default_offset_configuration_is_latest() {
     app.add_systems(
         Update,
         move |mut r: KafkaEventReader<TestEvent>, mut c: ResMut<Collected>| {
-            let config = kafka_consumer_config(
-                DEFAULT_KAFKA_BOOTSTRAP,
-                consumer_group.as_str(),
-                [&topic_read],
-            );
+            let config = KafkaConsumerConfig::new(consumer_group.clone(), [&topic_read]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
             }

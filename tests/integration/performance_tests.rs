@@ -8,12 +8,12 @@
 use bevy::prelude::*;
 use bevy_event_bus::{
     EventBusPlugins, KafkaEventReader, KafkaEventWriter,
-    config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec},
+    config::kafka::{
+        KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
+        KafkaTopicSpec,
+    },
 };
-use integration_tests::common::helpers::{
-    DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
-    unique_topic,
-};
+use integration_tests::common::helpers::{unique_consumer_group, unique_topic};
 use integration_tests::common::setup::setup;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
@@ -243,6 +243,7 @@ fn run_throughput_test(
 
         // Send messages in batches for better performance
         let batch_size = 100;
+        let config = KafkaProducerConfig::new([state.test_topic.clone()]);
         for _ in 0..batch_size {
             if state.messages_sent >= state.messages_to_send {
                 break;
@@ -255,10 +256,7 @@ fn run_throughput_test(
             );
 
             // Fire-and-forget write - no Result to handle
-            writer.write(
-                &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&state.test_topic]),
-                event,
-            );
+            writer.write(&config, event);
             state.messages_sent += 1;
         }
     }
@@ -268,11 +266,8 @@ fn run_throughput_test(
         mut state: ResMut<PerformanceTestState>,
         mut reader: KafkaEventReader<PerformanceTestEvent>,
     ) {
-        let batch = reader.read(&kafka_consumer_config(
-            DEFAULT_KAFKA_BOOTSTRAP,
-            state.consumer_group.as_str(),
-            [&state.test_topic],
-        ));
+        let config = KafkaConsumerConfig::new(state.consumer_group.clone(), [&state.test_topic]);
+        let batch = reader.read(&config);
 
         if !batch.is_empty() && state.receive_start_time.is_none() {
             state.receive_start_time = Some(Instant::now());
@@ -496,7 +491,8 @@ fn ensure_performance_csv_schema(path: &Path) -> std::io::Result<()> {
     }
 
     let header_matches = lines[0].trim() == PERFORMANCE_CSV_HEADER.trim();
-    let header_contains = lines[0].contains("test_name") && lines[0].contains("send_rate_delta_per_sec");
+    let header_contains =
+        lines[0].contains("test_name") && lines[0].contains("send_rate_delta_per_sec");
     if header_matches || header_contains {
         return Ok(());
     }

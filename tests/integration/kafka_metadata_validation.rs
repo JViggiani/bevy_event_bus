@@ -1,10 +1,12 @@
 use bevy::prelude::*;
-use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
+use bevy_event_bus::config::kafka::{
+    KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
+    KafkaTopicSpec,
+};
 use bevy_event_bus::{EventBusPlugins, EventWrapper, KafkaEventReader, KafkaEventWriter};
 use integration_tests::common::events::TestEvent;
 use integration_tests::common::helpers::{
-    DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
-    unique_topic, update_until, wait_for_events,
+    unique_consumer_group, unique_topic, update_until, wait_for_events,
 };
 use integration_tests::common::setup::setup;
 use tracing::{info, info_span};
@@ -25,12 +27,13 @@ fn kafka_metadata_end_to_end_validation() {
 
     let topic_for_writer = topic.clone();
     let (backend_w, _b1) = setup("earliest", move |builder| {
-        builder.add_topic(
-            KafkaTopicSpec::new(topic_for_writer.clone())
-                .partitions(1)
-                .replication(1),
-        )
-        .add_event_single::<TestEvent>(topic_for_writer.clone());
+        builder
+            .add_topic(
+                KafkaTopicSpec::new(topic_for_writer.clone())
+                    .partitions(1)
+                    .replication(1),
+            )
+            .add_event_single::<TestEvent>(topic_for_writer.clone());
     });
 
     let topic_for_reader = topic.clone();
@@ -77,11 +80,8 @@ fn kafka_metadata_end_to_end_validation() {
         group: Res<ConsumerGroup>,
         mut events: ResMut<ReceivedEventsWithMetadata>,
     ) {
-        for event_wrapper in r.read(&kafka_consumer_config(
-            DEFAULT_KAFKA_BOOTSTRAP,
-            group.0.as_str(),
-            [&topic.0],
-        )) {
+        let config = KafkaConsumerConfig::new(group.0.clone(), [&topic.0]);
+        for event_wrapper in r.read(&config) {
             events.0.push(event_wrapper.clone());
         }
     }
@@ -119,11 +119,9 @@ fn kafka_metadata_end_to_end_validation() {
 
     fn writer_system(mut w: KafkaEventWriter, mut data: ResMut<TestData>) {
         if !data.sent {
+            let config = KafkaProducerConfig::new([data.topic.clone()]);
             for test_event in &data.test_cases {
-                let _ = w.write(
-                    &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&data.topic]),
-                    test_event.clone(),
-                );
+                let _ = w.write(&config, test_event.clone());
             }
             data.sent = true;
             info!("Sent {} test events", data.test_cases.len());
@@ -251,18 +249,20 @@ fn kafka_metadata_topic_isolation() {
     let topic_a_for_writer = topic_a.clone();
     let topic_b_for_writer = topic_b.clone();
     let (backend_w, _b1) = setup("earliest", move |builder| {
-        builder.add_topic(
-            KafkaTopicSpec::new(topic_a_for_writer.clone())
-                .partitions(1)
-                .replication(1),
-        )
-        .add_event_single::<TestEvent>(topic_a_for_writer.clone());
-        builder.add_topic(
-            KafkaTopicSpec::new(topic_b_for_writer.clone())
-                .partitions(1)
-                .replication(1),
-        )
-        .add_event_single::<TestEvent>(topic_b_for_writer.clone());
+        builder
+            .add_topic(
+                KafkaTopicSpec::new(topic_a_for_writer.clone())
+                    .partitions(1)
+                    .replication(1),
+            )
+            .add_event_single::<TestEvent>(topic_a_for_writer.clone());
+        builder
+            .add_topic(
+                KafkaTopicSpec::new(topic_b_for_writer.clone())
+                    .partitions(1)
+                    .replication(1),
+            )
+            .add_event_single::<TestEvent>(topic_b_for_writer.clone());
     });
 
     let topic_a_for_reader = topic_a.clone();
@@ -332,20 +332,14 @@ fn kafka_metadata_topic_isolation() {
         mut events: ResMut<ReceivedEvents>,
     ) {
         // Read from topic A
-        for event_wrapper in r.read(&kafka_consumer_config(
-            DEFAULT_KAFKA_BOOTSTRAP,
-            group.0.as_str(),
-            [&topics.topic_a],
-        )) {
+        let config_a = KafkaConsumerConfig::new(group.0.clone(), [&topics.topic_a]);
+        for event_wrapper in r.read(&config_a) {
             events.topic_a.push(event_wrapper.clone());
         }
 
         // Read from topic B
-        for event_wrapper in r.read(&kafka_consumer_config(
-            DEFAULT_KAFKA_BOOTSTRAP,
-            group.0.as_str(),
-            [&topics.topic_b],
-        )) {
+        let config_b = KafkaConsumerConfig::new(group.0.clone(), [&topics.topic_b]);
+        for event_wrapper in r.read(&config_b) {
             events.topic_b.push(event_wrapper.clone());
         }
     }
@@ -377,14 +371,10 @@ fn kafka_metadata_topic_isolation() {
                 value: 2000,
             };
 
-            let _ = w.write(
-                &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&data.topic_a]),
-                event_a,
-            );
-            let _ = w.write(
-                &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&data.topic_b]),
-                event_b,
-            );
+            let config_a = KafkaProducerConfig::new([data.topic_a.clone()]);
+            let _ = w.write(&config_a, event_a);
+            let config_b = KafkaProducerConfig::new([data.topic_b.clone()]);
+            let _ = w.write(&config_b, event_b);
             data.sent = true;
 
             info!("Sent events to both topics");
@@ -460,12 +450,13 @@ fn kafka_metadata_consistency_under_load() {
 
     let topic_for_writer = topic.clone();
     let (backend_w, _b1) = setup("earliest", move |builder| {
-        builder.add_topic(
-            KafkaTopicSpec::new(topic_for_writer.clone())
-                .partitions(1)
-                .replication(1),
-        )
-        .add_event_single::<TestEvent>(topic_for_writer.clone());
+        builder
+            .add_topic(
+                KafkaTopicSpec::new(topic_for_writer.clone())
+                    .partitions(1)
+                    .replication(1),
+            )
+            .add_event_single::<TestEvent>(topic_for_writer.clone());
     });
 
     let topic_for_reader = topic.clone();
@@ -516,11 +507,8 @@ fn kafka_metadata_consistency_under_load() {
         group: Res<ConsumerGroup>,
         mut events: ResMut<ReceivedEventsWithMetadata>,
     ) {
-        for event_wrapper in r.read(&kafka_consumer_config(
-            DEFAULT_KAFKA_BOOTSTRAP,
-            group.0.as_str(),
-            [&topic.0],
-        )) {
+        let config = KafkaConsumerConfig::new(group.0.clone(), [&topic.0]);
+        for event_wrapper in r.read(&config) {
             events.0.push(event_wrapper.clone());
         }
     }
@@ -544,16 +532,14 @@ fn kafka_metadata_consistency_under_load() {
 
     fn writer_system_consistency(mut w: KafkaEventWriter, mut data: ResMut<ConsistencyTestData>) {
         if !data.sent {
+            let config = KafkaProducerConfig::new([data.topic.clone()]);
             for batch in 0..NUM_BATCHES {
                 for i in 0..BATCH_SIZE {
                     let event = TestEvent {
                         message: format!("batch_{}_event_{}", batch, i),
                         value: (batch * BATCH_SIZE + i) as i32,
                     };
-                    let _ = w.write(
-                        &kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, [&data.topic]),
-                        event,
-                    );
+                    let _ = w.write(&config, event);
                 }
             }
             data.sent = true;

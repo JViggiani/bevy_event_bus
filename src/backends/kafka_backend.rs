@@ -27,7 +27,7 @@ use bevy_event_bus::{
     EventBusBackend,
     config::kafka::{
         KafkaBackendConfig, KafkaConnectionConfig, KafkaConsumerGroupSpec, KafkaInitialOffset,
-    KafkaTopologyConfig,
+        KafkaTopologyConfig,
     },
     resources::IncomingMessage,
     runtime,

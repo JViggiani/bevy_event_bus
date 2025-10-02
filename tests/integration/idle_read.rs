@@ -1,10 +1,10 @@
 use bevy::prelude::*;
-use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
+use bevy_event_bus::config::kafka::{
+    KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec,
+};
 use bevy_event_bus::{EventBusPlugins, KafkaEventReader};
 use integration_tests::common::events::TestEvent;
-use integration_tests::common::helpers::{
-    DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, unique_consumer_group, unique_topic,
-};
+use integration_tests::common::helpers::{unique_consumer_group, unique_topic};
 use integration_tests::common::setup::setup;
 
 // Test that repeatedly reading an empty topic does not hang or block frames.
@@ -39,11 +39,8 @@ fn idle_empty_topic_poll_does_not_block() {
         Update,
         move |mut r: KafkaEventReader<TestEvent>, mut ticks: ResMut<Ticks>| {
             // Try reading every frame; should be instant (reader fallback/drained path fast)
-            for _ in r.read(&kafka_consumer_config(
-                DEFAULT_KAFKA_BOOTSTRAP,
-                consumer_group.as_str(),
-                [&topic_read],
-            )) { /* none expected */ }
+            let config = KafkaConsumerConfig::new(consumer_group.as_str(), [&topic_read]);
+            for _ in r.read(&config) { /* none expected */ }
             ticks.0 += 1;
         },
     );

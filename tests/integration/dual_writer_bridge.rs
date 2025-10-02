@@ -1,10 +1,12 @@
 use bevy::prelude::*;
-use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
+use bevy_event_bus::config::kafka::{
+    KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
+    KafkaTopicSpec,
+};
 use bevy_event_bus::{EventBusPlugins, EventWrapper, KafkaEventReader, KafkaEventWriter};
 use integration_tests::common::events::TestEvent;
 use integration_tests::common::helpers::{
-    kafka_consumer_config, kafka_producer_config, run_app_updates, unique_consumer_group,
-    unique_topic, wait_for_events,
+    run_app_updates, unique_consumer_group, unique_topic, wait_for_events,
 };
 use integration_tests::common::setup::setup;
 use tracing::{info, info_span};
@@ -12,7 +14,6 @@ use tracing_subscriber::EnvFilter;
 
 #[derive(Resource)]
 struct WriterState {
-    bootstrap: String,
     topic: String,
     dispatched: bool,
 }
@@ -38,17 +39,14 @@ fn dual_writer_emitter(
         message: "event-bus-writer".to_string(),
         value: 2,
     };
-    bus_writer.write(
-        &kafka_producer_config(&state.bootstrap, [state.topic.clone()]),
-        bus_event,
-    );
+    let config = KafkaProducerConfig::new([state.topic.clone()]);
+    bus_writer.write(&config, bus_event);
 
     info!(topic = %state.topic, "Dispatched events via both writers");
 }
 
 #[derive(Resource)]
 struct ReaderState {
-    bootstrap: String,
     topic: String,
     consumer_group: String,
 }
@@ -61,11 +59,8 @@ fn capture_wrapped_events(
     state: Res<ReaderState>,
     mut captured: ResMut<CapturedEvents>,
 ) {
-    for wrapper in reader.read(&kafka_consumer_config(
-        &state.bootstrap,
-        &state.consumer_group,
-        [&state.topic],
-    )) {
+    let config = KafkaConsumerConfig::new(state.consumer_group.clone(), [&state.topic]);
+    for wrapper in reader.read(&config) {
         captured.0.push(wrapper.clone());
     }
 }
@@ -84,7 +79,7 @@ fn external_bus_events_flow_from_both_writers() {
     let consumer_group = unique_consumer_group("dual-writer-group");
 
     let topic_for_writer = topic.clone();
-    let (backend_writer, bootstrap_w) = setup("earliest", move |builder| {
+    let (backend_writer, _bootstrap_w) = setup("earliest", move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic_for_writer.clone())
@@ -96,7 +91,7 @@ fn external_bus_events_flow_from_both_writers() {
 
     let topic_for_reader = topic.clone();
     let group_for_reader = consumer_group.clone();
-    let (backend_reader, bootstrap_r) = setup("earliest", move |builder| {
+    let (backend_reader, _bootstrap_r) = setup("earliest", move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_for_reader.clone())
                 .partitions(1)
@@ -115,7 +110,6 @@ fn external_bus_events_flow_from_both_writers() {
     let mut writer_app = App::new();
     writer_app.add_plugins(EventBusPlugins(backend_writer));
     writer_app.insert_resource(WriterState {
-        bootstrap: bootstrap_w,
         topic: topic.clone(),
         dispatched: false,
     });
@@ -128,7 +122,6 @@ fn external_bus_events_flow_from_both_writers() {
     let mut reader_app = App::new();
     reader_app.add_plugins(EventBusPlugins(backend_reader));
     reader_app.insert_resource(ReaderState {
-        bootstrap: bootstrap_r,
         topic: topic.clone(),
         consumer_group: consumer_group,
     });
