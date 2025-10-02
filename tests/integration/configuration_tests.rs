@@ -175,25 +175,25 @@ fn kafka_specific_methods_work() {
     // Writer system that uses Kafka-specific write methods
     fn test_kafka_write_methods(mut writer: KafkaEventWriter, configs: Res<TestConfigs>) {
         // Test Kafka-specific write methods
-        let _metadata = writer.write_with_key(
-            &configs.producer,
+        let config_with_key = configs.producer.clone().partition_key("partition_key");
+        writer.write(
+            &config_with_key,
             TestEvent {
                 message: "key_test".to_string(),
                 value: 1,
             },
-            "partition_key",
         );
 
-        let _metadata = writer.write_with_headers(
-            &configs.producer,
+        let config_with_headers = configs.producer.clone().headers_map(HashMap::from([
+            ("header1".to_string(), "value1".to_string()),
+            ("header2".to_string(), "value2".to_string()),
+        ]));
+        writer.write(
+            &config_with_headers,
             TestEvent {
                 message: "headers_test".to_string(),
                 value: 2,
             },
-            HashMap::from([
-                ("header1".to_string(), "value1".to_string()),
-                ("header2".to_string(), "value2".to_string()),
-            ]),
         );
 
         let _flush_result = writer.flush(std::time::Duration::from_secs(1));

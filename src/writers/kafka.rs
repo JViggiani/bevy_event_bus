@@ -1,9 +1,11 @@
-use std::collections::HashMap;
+use std::any::Any;
 use std::time::Duration;
 
 use bevy::prelude::*;
 
-use bevy_event_bus::backends::{EventBusBackend, EventBusBackendResource, KafkaEventBusBackend};
+use bevy_event_bus::backends::{
+    EventBusBackendResource, KafkaEventBusBackend, event_bus_backend::SendOptions,
+};
 use bevy_event_bus::config::{EventBusConfig, kafka::KafkaProducerConfig};
 use bevy_event_bus::{BusEvent, EventBusError, EventBusErrorType, runtime};
 
@@ -50,78 +52,6 @@ impl<'w> KafkaEventWriter<'w> {
         <Self as BusEventWriter<T>>::write(self, config, event);
     }
 
-    /// Write an event with a partition key to preserve ordering semantics.
-    pub fn write_with_key<T: BusEvent + Event>(
-        &mut self,
-        config: &KafkaProducerConfig,
-        event: T,
-        key: &str,
-    ) {
-        if let Some(backend_res) = self.backend.as_ref() {
-            let backend = backend_res.read();
-            for topic in config.topics() {
-                if !(**backend).try_send_with_partition_key(&event, topic, key) {
-                    let error_event = EventBusError::immediate(
-                        topic.clone(),
-                        EventBusErrorType::Other,
-                        "Failed to send Kafka message with partition key".to_string(),
-                        event.clone(),
-                    );
-                    self.error_queue.add_error(error_event);
-                }
-            }
-        } else {
-            for topic in config.topics() {
-                let error_event = EventBusError::immediate(
-                    topic.clone(),
-                    EventBusErrorType::NotConfigured,
-                    "No event bus backend configured".to_string(),
-                    event.clone(),
-                );
-                self.error_queue.add_error(error_event);
-            }
-        }
-    }
-
-    /// Write an event with custom headers using Kafka-specific delivery semantics.
-    pub fn write_with_headers<T: BusEvent + Event, C: EventBusConfig>(
-        &mut self,
-        config: &C,
-        event: T,
-        headers: HashMap<String, String>,
-    ) {
-        self.write_with_headers_internal(config, event, headers, |backend, topic, evt, hdrs| {
-            backend.try_send_with_headers(evt, topic, hdrs)
-        });
-    }
-
-    /// Convenience helper that accepts borrowed header pairs, converting them into owned strings.
-    pub fn write_with_headers_kafka<T: BusEvent + Event>(
-        &mut self,
-        config: &KafkaProducerConfig,
-        event: T,
-        headers: &[(&str, &str)],
-    ) {
-        let headers_map: HashMap<String, String> = headers
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-        self.write_with_headers(config, event, headers_map);
-    }
-
-    /// Write an event with both partition key and headers.
-    pub fn write_with_key_and_headers<T: BusEvent + Event>(
-        &mut self,
-        config: &KafkaProducerConfig,
-        event: T,
-        key: &str,
-        headers: HashMap<String, String>,
-    ) {
-        self.write_with_headers_internal(config, event, headers, |backend, topic, evt, hdrs| {
-            backend.try_send_with_key_and_headers(evt, topic, key, hdrs)
-        });
-    }
-
     /// Flush all pending messages in the Kafka producer.
     pub fn flush(&mut self, timeout: Duration) -> Result<(), KafkaWriterError> {
         let backend_res = self
@@ -131,46 +61,9 @@ impl<'w> KafkaEventWriter<'w> {
         let mut backend = backend_res.write();
 
         if let Some(kafka) = backend.as_any_mut().downcast_mut::<KafkaEventBusBackend>() {
-            kafka
-                .flush_with_timeout(timeout)
-                .map_err(KafkaWriterError::backend)
+            kafka.flush(timeout).map_err(KafkaWriterError::backend)
         } else {
             runtime::block_on(backend.flush()).map_err(KafkaWriterError::backend)
-        }
-    }
-
-    fn write_with_headers_internal<T: BusEvent + Event, C: EventBusConfig>(
-        &mut self,
-        config: &C,
-        event: T,
-        headers: HashMap<String, String>,
-        send: impl Fn(&dyn EventBusBackend, &str, &T, &HashMap<String, String>) -> bool,
-    ) {
-        for topic in config.topics() {
-            match &self.backend {
-                Some(backend_res) => {
-                    let backend_guard = backend_res.read();
-                    let backend = &**backend_guard;
-                    if !send(backend, topic, &event, &headers) {
-                        let error_event = EventBusError::immediate(
-                            topic.clone(),
-                            EventBusErrorType::Other,
-                            "Failed to send to external backend with headers".to_string(),
-                            event.clone(),
-                        );
-                        self.error_queue.add_error(error_event);
-                    }
-                }
-                None => {
-                    let error_event = EventBusError::immediate(
-                        topic.clone(),
-                        EventBusErrorType::NotConfigured,
-                        "No event bus backend configured".to_string(),
-                        event.clone(),
-                    );
-                    self.error_queue.add_error(error_event);
-                }
-            }
         }
     }
 }
@@ -179,12 +72,27 @@ impl<'w, T> BusEventWriter<T> for KafkaEventWriter<'w>
 where
     T: BusEvent + Event,
 {
-    fn write<C: EventBusConfig>(&mut self, config: &C, event: T) {
+    fn write<C>(&mut self, config: &C, event: T)
+    where
+        C: EventBusConfig + Any,
+    {
+        let mut base_options = SendOptions::default();
+        if let Some(kafka_config) = (config as &dyn Any).downcast_ref::<KafkaProducerConfig>() {
+            if let Some(key) = kafka_config.get_partition_key() {
+                base_options = base_options.partition_key(key);
+            }
+
+            let headers = kafka_config.get_headers();
+            if !headers.is_empty() {
+                base_options = base_options.headers(headers);
+            }
+        }
+
         for topic in config.topics() {
             match &self.backend {
                 Some(backend_res) => {
                     let backend = backend_res.read();
-                    if !(**backend).try_send(&event, topic) {
+                    if !backend.try_send(&event, topic, base_options) {
                         let error_event = EventBusError::immediate(
                             topic.clone(),
                             EventBusErrorType::Other,
@@ -209,17 +117,28 @@ where
 
     fn write_batch<C, I>(&mut self, config: &C, events: I)
     where
-        C: EventBusConfig,
+        C: EventBusConfig + Any,
         I: IntoIterator<Item = T>,
     {
         let events: Vec<_> = events.into_iter().collect();
+        let mut base_options = SendOptions::default();
+        if let Some(kafka_config) = (config as &dyn Any).downcast_ref::<KafkaProducerConfig>() {
+            if let Some(key) = kafka_config.get_partition_key() {
+                base_options = base_options.partition_key(key);
+            }
+
+            let headers = kafka_config.get_headers();
+            if !headers.is_empty() {
+                base_options = base_options.headers(headers);
+            }
+        }
 
         for topic in config.topics() {
             match &self.backend {
                 Some(backend_res) => {
                     let backend = backend_res.read();
                     for event in &events {
-                        if !(**backend).try_send(event, topic) {
+                        if !backend.try_send(event, topic, base_options) {
                             let error_event = EventBusError::immediate(
                                 topic.clone(),
                                 EventBusErrorType::Other,

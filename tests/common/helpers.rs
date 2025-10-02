@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use bevy_event_bus::backends::EventBusBackend;
+use bevy_event_bus::backends::event_bus_backend::ReceiveOptions;
 use bevy_event_bus::config::kafka::KafkaTopologyBuilder;
 use bevy_event_bus::{KafkaBackendConfig, KafkaConnectionConfig};
 use std::process;
@@ -161,7 +162,9 @@ where
     let mut last_count = 0;
 
     loop {
-        let messages = backend.receive_serialized_with_group(topic, group_id).await;
+        let messages = backend
+            .receive_serialized(topic, ReceiveOptions::new().consumer_group(group_id))
+            .await;
         let count = messages.len();
 
         if count != last_count {

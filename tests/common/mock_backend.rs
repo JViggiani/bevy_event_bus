@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use bevy_event_bus::EventBusBackend;
-use std::collections::HashMap;
+use bevy_event_bus::backends::event_bus_backend::{ReceiveOptions, SendOptions};
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
 
@@ -53,7 +53,12 @@ impl EventBusBackend for MockEventBusBackend {
         true
     }
 
-    fn try_send_serialized(&self, _event_json: &[u8], topic: &str) -> bool {
+    fn try_send_serialized(
+        &self,
+        _event_json: &[u8],
+        topic: &str,
+        _options: SendOptions<'_>,
+    ) -> bool {
         // Check if we should simulate a failure for this topic
         if self.should_fail(topic) {
             return false; // Simulate failure
@@ -63,17 +68,7 @@ impl EventBusBackend for MockEventBusBackend {
         true
     }
 
-    fn try_send_serialized_with_headers(
-        &self,
-        event_json: &[u8],
-        topic: &str,
-        _headers: &HashMap<String, String>,
-    ) -> bool {
-        // Delegate to the main send method
-        self.try_send_serialized(event_json, topic)
-    }
-
-    async fn receive_serialized(&self, _topic: &str) -> Vec<Vec<u8>> {
+    async fn receive_serialized(&self, _topic: &str, _options: ReceiveOptions<'_>) -> Vec<Vec<u8>> {
         // Mock backend doesn't actually store/receive messages for this test
         Vec::new()
     }

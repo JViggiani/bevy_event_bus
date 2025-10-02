@@ -1,5 +1,7 @@
 use async_trait::async_trait;
-use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded};
+use crossbeam_channel::{
+    Receiver, RecvTimeoutError, SendTimeoutError, Sender, TryRecvError, TrySendError, bounded,
+};
 use rdkafka::{
     ClientContext, Offset, TopicPartitionList,
     admin::{AdminClient, AdminOptions, NewTopic, TopicReplication},
@@ -7,7 +9,7 @@ use rdkafka::{
     config::ClientConfig,
     consumer::{BaseConsumer, CommitMode, Consumer},
     error::KafkaError,
-    message::{Headers, Message},
+    message::{Header, Headers, Message, OwnedHeaders},
     producer::{BaseProducer, BaseRecord, DeliveryResult, Producer, ProducerContext},
 };
 use std::{
@@ -24,7 +26,7 @@ use tracing::{debug, warn};
 
 use bevy::prelude::App;
 use bevy_event_bus::{
-    EventBusBackend,
+    backends::event_bus_backend::{EventBusBackend, ReceiveOptions, SendOptions},
     config::kafka::{
         KafkaBackendConfig, KafkaConnectionConfig, KafkaConsumerGroupSpec, KafkaInitialOffset,
         KafkaTopologyConfig,
@@ -244,7 +246,7 @@ impl KafkaEventBusBackend {
         self.inner.producer.poll(Duration::from_millis(0));
     }
 
-    pub fn flush_with_timeout(&self, timeout: Duration) -> Result<(), String> {
+    pub fn flush(&self, timeout: Duration) -> Result<(), String> {
         self.inner
             .producer
             .flush(timeout)
@@ -370,7 +372,7 @@ impl KafkaEventBusBackend {
 
         let handle = runtime::runtime().spawn(async move {
             while running.load(Ordering::Relaxed) {
-                match rx.try_recv() {
+                match tokio::task::block_in_place(|| rx.recv_timeout(Duration::from_millis(50))) {
                     Ok(req) => {
                         let consumer_opt =
                             consumers.lock().unwrap().get(&req.consumer_group).cloned();
@@ -391,10 +393,8 @@ impl KafkaEventBusBackend {
                             error: result.err(),
                         });
                     }
-                    Err(crossbeam_channel::TryRecvError::Empty) => {
-                        tokio::time::sleep(Duration::from_millis(25)).await;
-                    }
-                    Err(crossbeam_channel::TryRecvError::Disconnected) => break,
+                    Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Disconnected) => break,
                 }
             }
         });
@@ -525,8 +525,31 @@ impl EventBusBackend for KafkaEventBusBackend {
         true
     }
 
-    fn try_send_serialized(&self, event_json: &[u8], topic: &str) -> bool {
-        let record = BaseRecord::<(), _>::to(topic).payload(event_json);
+    fn try_send_serialized(
+        &self,
+        event_json: &[u8],
+        topic: &str,
+        options: SendOptions<'_>,
+    ) -> bool {
+        let mut record = BaseRecord::to(topic).payload(event_json);
+
+        if let Some(key) = options.partition_key {
+            record = record.key(key.as_bytes());
+        }
+
+        if let Some(headers) = options.headers {
+            if !headers.is_empty() {
+                let mut kafka_headers = OwnedHeaders::new();
+                for (key, value) in headers {
+                    kafka_headers = kafka_headers.insert(Header {
+                        key,
+                        value: Some(value.as_bytes()),
+                    });
+                }
+                record = record.headers(kafka_headers);
+            }
+        }
+
         match self.inner.producer.send(record) {
             Ok(_) => true,
             Err((err, _)) => {
@@ -536,35 +559,8 @@ impl EventBusBackend for KafkaEventBusBackend {
         }
     }
 
-    fn try_send_serialized_with_headers(
-        &self,
-        event_json: &[u8],
-        topic: &str,
-        headers: &HashMap<String, String>,
-    ) -> bool {
-        let mut record = BaseRecord::<(), _>::to(topic).payload(event_json);
-        if !headers.is_empty() {
-            let mut kafka_headers = rdkafka::message::OwnedHeaders::new();
-            for (key, value) in headers {
-                kafka_headers = kafka_headers.insert(rdkafka::message::Header {
-                    key,
-                    value: Some(value.as_bytes()),
-                });
-            }
-            record = record.headers(kafka_headers);
-        }
-
-        match self.inner.producer.send(record) {
-            Ok(_) => true,
-            Err((err, _)) => {
-                warn!(target = %topic, error = %err, "Failed to enqueue Kafka message with headers");
-                false
-            }
-        }
-    }
-
-    async fn receive_serialized(&self, topic: &str) -> Vec<Vec<u8>> {
-        self.drain_matching_messages(topic, None)
+    async fn receive_serialized(&self, topic: &str, options: ReceiveOptions<'_>) -> Vec<Vec<u8>> {
+        self.drain_matching_messages(topic, options.consumer_group)
     }
 
     async fn subscribe(&mut self, _topic: &str) -> bool {
@@ -581,10 +577,6 @@ impl EventBusBackend for KafkaEventBusBackend {
         _group_id: &str,
     ) -> Result<(), String> {
         Err("Dynamic consumer group creation is not supported at runtime".into())
-    }
-
-    async fn receive_serialized_with_group(&self, topic: &str, group_id: &str) -> Vec<Vec<u8>> {
-        self.drain_matching_messages(topic, Some(group_id))
     }
 
     async fn enable_manual_commits(&mut self, group_id: &str) -> Result<(), String> {
@@ -813,9 +805,22 @@ async fn consumer_loop(
                                 dropped.fetch_add(1, Ordering::Relaxed);
                                 break;
                             }
-
-                            tokio::time::sleep(Duration::from_millis(2)).await;
-                            pending = returned;
+                            match tokio::task::block_in_place(|| {
+                                tx.send_timeout(returned, Duration::from_millis(50))
+                            }) {
+                                Ok(()) => break,
+                                Err(SendTimeoutError::Timeout(returned_again)) => {
+                                    if !running.load(Ordering::Relaxed) {
+                                        dropped.fetch_add(1, Ordering::Relaxed);
+                                        break;
+                                    }
+                                    pending = returned_again;
+                                }
+                                Err(SendTimeoutError::Disconnected(_returned)) => {
+                                    dropped.fetch_add(1, Ordering::Relaxed);
+                                    break;
+                                }
+                            }
                         }
                         Err(TrySendError::Disconnected(returned)) => {
                             let _ = returned;

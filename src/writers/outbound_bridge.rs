@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 
-use bevy_event_bus::backends::EventBusBackendResource;
+use bevy_event_bus::backends::{EventBusBackendResource, event_bus_backend::SendOptions};
 use bevy_event_bus::writers::EventBusErrorQueue;
 use bevy_event_bus::{BusEvent, EventBusError, EventBusErrorType};
 
@@ -78,7 +78,7 @@ fn outbound_bridge_system<T: BusEvent + Event>(
                 let backend = &**backend_guard;
 
                 for topic in topics {
-                    if !backend.try_send(event, topic) {
+                    if !backend.try_send(event, topic, SendOptions::default()) {
                         let error_event = EventBusError::immediate(
                             topic.clone(),
                             EventBusErrorType::Other,

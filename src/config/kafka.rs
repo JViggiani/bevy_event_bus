@@ -439,6 +439,8 @@ pub struct KafkaProducerConfig {
     batch_size: u32,
     linger_ms: u32,
     request_timeout_ms: u32,
+    partition_key: Option<String>,
+    headers: HashMap<String, String>,
     additional_config: HashMap<String, String>,
 }
 
@@ -457,6 +459,8 @@ impl KafkaProducerConfig {
             batch_size: 16384,
             linger_ms: 0,
             request_timeout_ms: 30000,
+            partition_key: None,
+            headers: HashMap::new(),
             additional_config: HashMap::new(),
         }
     }
@@ -507,6 +511,44 @@ impl KafkaProducerConfig {
         self
     }
 
+    /// Set a partition key that will be applied to every message produced with this config.
+    pub fn partition_key(mut self, key: impl Into<String>) -> Self {
+        self.partition_key = Some(key.into());
+        self
+    }
+
+    /// Clear any configured partition key.
+    pub fn clear_partition_key(mut self) -> Self {
+        self.partition_key = None;
+        self
+    }
+
+    /// Add or replace a single header that will accompany produced messages.
+    pub fn header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.headers.insert(key.into(), value.into());
+        self
+    }
+
+    /// Replace all headers with the provided map.
+    pub fn headers_map<I, K, V>(mut self, headers: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.headers.clear();
+        for (key, value) in headers {
+            self.headers.insert(key.into(), value.into());
+        }
+        self
+    }
+
+    /// Remove all configured headers.
+    pub fn clear_headers(mut self) -> Self {
+        self.headers.clear();
+        self
+    }
+
     /// Add additional Kafka producer configuration
     pub fn additional_config<K, V>(mut self, key: K, value: V) -> Self
     where
@@ -545,6 +587,16 @@ impl KafkaProducerConfig {
     /// Get request timeout
     pub fn get_request_timeout_ms(&self) -> u32 {
         self.request_timeout_ms
+    }
+
+    /// Get the configured partition key for produced messages, if any.
+    pub fn get_partition_key(&self) -> Option<&str> {
+        self.partition_key.as_deref()
+    }
+
+    /// Get the configured headers that will be attached to produced messages.
+    pub fn get_headers(&self) -> &HashMap<String, String> {
+        &self.headers
     }
 
     /// Get additional config

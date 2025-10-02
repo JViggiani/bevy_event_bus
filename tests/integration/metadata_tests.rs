@@ -200,8 +200,9 @@ fn header_forwarding_producer_to_consumer() {
         move |mut w: KafkaEventWriter, mut sent: Local<bool>| {
             if !*sent {
                 *sent = true;
-                let config = KafkaProducerConfig::new([topic_clone.clone()]);
-                let _ = w.write_with_headers(&config, test_event.clone(), headers.clone());
+                let config =
+                    KafkaProducerConfig::new([topic_clone.clone()]).headers_map(headers.clone());
+                w.write(&config, test_event.clone());
             }
         },
     );

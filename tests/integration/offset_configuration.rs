@@ -5,6 +5,7 @@ use bevy_event_bus::config::kafka::{
 };
 use bevy_event_bus::{
     EventBusBackend, EventBusPlugins, KafkaEventBusBackend, KafkaEventReader, KafkaEventWriter,
+    backends::event_bus_backend::SendOptions,
 };
 use integration_tests::common::events::TestEvent;
 use integration_tests::common::helpers::{
@@ -45,13 +46,13 @@ fn offset_configuration_earliest_receives_historical_events() {
             };
             let payload = serde_json::to_vec(&event).expect("serialize historical event");
             assert!(
-                backend_producer.try_send_serialized(&payload, &topic),
+                backend_producer.try_send_serialized(&payload, &topic, SendOptions::default()),
                 "Failed to enqueue historical event"
             );
         }
 
         backend_producer
-            .flush_with_timeout(Duration::from_secs(2))
+            .flush(Duration::from_secs(2))
             .expect("flush historical events");
         let _ = bevy_event_bus::block_on(backend_producer.disconnect());
     }
