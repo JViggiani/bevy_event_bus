@@ -4,7 +4,6 @@ use std::collections::HashMap;
 
 use bevy_event_bus::backends::{EventBusBackend, EventBusBackendResource, KafkaEventBusBackend};
 use bevy_event_bus::decoder::DecoderRegistry;
-use bevy_event_bus::registration::EVENT_REGISTRY;
 use bevy_event_bus::resources::{
     ConsumerMetrics, DecodedEventBuffer, DrainMetricsEvent, DrainedTopicMetadata,
     EventBusConsumerConfig, EventMetadata, KafkaCommitQueue, KafkaCommitResultChannel,
@@ -21,11 +20,6 @@ impl Plugin for EventBusPlugin {
         // Register core error events
         app.add_event::<bevy_event_bus::EventBusDecodeError>();
 
-        // Invoke registration callbacks (derive macro populated). We DO NOT drain so multiple Apps each see events.
-        let guard = EVENT_REGISTRY.lock().unwrap();
-        for cb in guard.iter() {
-            cb(app);
-        }
     }
 }
 
@@ -100,6 +94,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
         let boxed = self.0.clone_box();
         app.insert_resource(EventBusBackendResource::from_box(boxed));
         app.insert_resource(EventBusErrorQueue::default());
+        self.0.apply_event_bindings(app);
         bevy_event_bus::writers::outbound_bridge::activate_registered_bridges(app);
         // Connect backend and capture runtime resources (message queue, commit channels, lag cache).
         if let Some(backend_res) = app

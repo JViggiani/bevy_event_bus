@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
-use bevy_event_bus::{EventBusAppExt, EventBusPlugins, KafkaEventReader, KafkaEventWriter};
+use bevy_event_bus::{EventBusPlugins, KafkaEventReader, KafkaEventWriter};
 use integration_tests::common::events::{TestEvent, UserLoginEvent};
 use integration_tests::common::helpers::{
     DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
@@ -15,11 +15,14 @@ fn single_topic_multiple_types_same_frame() {
 
     let topic_for_writer = topic.clone();
     let (backend_w, _b1) = setup("earliest", move |builder| {
-        builder.add_topic(
-            KafkaTopicSpec::new(topic_for_writer.clone())
-                .partitions(1)
-                .replication(1),
-        );
+        builder
+            .add_topic(
+                KafkaTopicSpec::new(topic_for_writer.clone())
+                    .partitions(1)
+                    .replication(1),
+            )
+            .add_event::<TestEvent>([topic_for_writer.clone()])
+            .add_event::<UserLoginEvent>([topic_for_writer.clone()]);
     });
 
     let topic_for_reader = topic.clone();
@@ -30,21 +33,20 @@ fn single_topic_multiple_types_same_frame() {
                 .partitions(1)
                 .replication(1),
         );
-        builder.add_consumer_group(
-            group_for_reader.clone(),
-            KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
-                .initial_offset(KafkaInitialOffset::Earliest),
-        );
+        builder
+            .add_consumer_group(
+                group_for_reader.clone(),
+                KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
+                    .initial_offset(KafkaInitialOffset::Earliest),
+            )
+            .add_event_single::<TestEvent>(topic_for_reader.clone())
+            .add_event_single::<UserLoginEvent>(topic_for_reader.clone());
     });
 
     let mut writer = App::new();
     writer.add_plugins(EventBusPlugins(backend_w));
-    writer.add_bus_event::<TestEvent>(&topic);
-    writer.add_bus_event::<UserLoginEvent>(&topic);
     let mut reader = App::new();
     reader.add_plugins(EventBusPlugins(backend_r));
-    reader.add_bus_event::<TestEvent>(&topic);
-    reader.add_bus_event::<UserLoginEvent>(&topic);
 
     #[derive(Resource, Default)]
     struct CollectedA(Vec<TestEvent>);
@@ -130,11 +132,14 @@ fn single_topic_multiple_types_interleaved_frames() {
 
     let topic_for_writer = topic.clone();
     let (backend_w, _b1) = setup("earliest", move |builder| {
-        builder.add_topic(
-            KafkaTopicSpec::new(topic_for_writer.clone())
-                .partitions(1)
-                .replication(1),
-        );
+        builder
+            .add_topic(
+                KafkaTopicSpec::new(topic_for_writer.clone())
+                    .partitions(1)
+                    .replication(1),
+            )
+            .add_event::<TestEvent>([topic_for_writer.clone()])
+            .add_event::<UserLoginEvent>([topic_for_writer.clone()]);
     });
 
     let topic_for_reader = topic.clone();
@@ -145,21 +150,20 @@ fn single_topic_multiple_types_interleaved_frames() {
                 .partitions(1)
                 .replication(1),
         );
-        builder.add_consumer_group(
-            group_for_reader.clone(),
-            KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
-                .initial_offset(KafkaInitialOffset::Earliest),
-        );
+        builder
+            .add_consumer_group(
+                group_for_reader.clone(),
+                KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
+                    .initial_offset(KafkaInitialOffset::Earliest),
+            )
+            .add_event_single::<TestEvent>(topic_for_reader.clone())
+            .add_event_single::<UserLoginEvent>(topic_for_reader.clone());
     });
 
     let mut writer = App::new();
     writer.add_plugins(EventBusPlugins(backend_w));
-    writer.add_bus_event::<TestEvent>(&topic);
-    writer.add_bus_event::<UserLoginEvent>(&topic);
     let mut reader = App::new();
     reader.add_plugins(EventBusPlugins(backend_r));
-    reader.add_bus_event::<TestEvent>(&topic);
-    reader.add_bus_event::<UserLoginEvent>(&topic);
 
     #[derive(Resource, Default)]
     struct CollectedA(Vec<TestEvent>);

@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
-use bevy_event_bus::{EventBusAppExt, EventBusPlugins, KafkaEventReader, KafkaEventWriter};
+use bevy_event_bus::{EventBusPlugins, KafkaEventReader, KafkaEventWriter};
 use integration_tests::common::events::TestEvent;
 use integration_tests::common::helpers::{
     DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
@@ -21,12 +21,14 @@ fn multi_topic_isolation() {
             KafkaTopicSpec::new(topic_a_writer.clone())
                 .partitions(1)
                 .replication(1),
-        );
+        )
+        .add_event_single::<TestEvent>(topic_a_writer.clone());
         builder.add_topic(
             KafkaTopicSpec::new(topic_b_writer.clone())
                 .partitions(1)
                 .replication(1),
-        );
+        )
+        .add_event_single::<TestEvent>(topic_b_writer.clone());
     });
 
     let topic_a_reader = topic_a.clone();
@@ -43,22 +45,21 @@ fn multi_topic_isolation() {
                 .partitions(1)
                 .replication(1),
         );
-        builder.add_consumer_group(
-            group_for_reader.clone(),
-            KafkaConsumerGroupSpec::new([topic_a_reader.clone(), topic_b_reader.clone()])
-                .initial_offset(KafkaInitialOffset::Earliest),
-        );
+        builder
+            .add_consumer_group(
+                group_for_reader.clone(),
+                KafkaConsumerGroupSpec::new([topic_a_reader.clone(), topic_b_reader.clone()])
+                    .initial_offset(KafkaInitialOffset::Earliest),
+            )
+            .add_event_single::<TestEvent>(topic_a_reader.clone())
+            .add_event_single::<TestEvent>(topic_b_reader.clone());
     });
 
     let mut writer = App::new();
     writer.add_plugins(EventBusPlugins(backend_w));
-    writer.add_bus_event::<TestEvent>(&topic_a);
-    writer.add_bus_event::<TestEvent>(&topic_b);
 
     let mut reader = App::new();
     reader.add_plugins(EventBusPlugins(backend_r));
-    reader.add_bus_event::<TestEvent>(&topic_a);
-    reader.add_bus_event::<TestEvent>(&topic_b);
 
     let ta = topic_a.clone();
     let tb = topic_b.clone();

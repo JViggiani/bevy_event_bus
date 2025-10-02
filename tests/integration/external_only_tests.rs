@@ -1,9 +1,10 @@
 use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
 use bevy_event_bus::backends::EventBusBackendResource;
+use bevy_event_bus::config::kafka::KafkaTopologyEventBinding;
 use bevy_event_bus::{
-    EventBusAppExt, EventBusError, EventBusErrorQueue, EventBusErrorType, EventBusPlugin,
-    EventBusPlugins, KafkaEventWriter,
+    EventBusError, EventBusErrorQueue, EventBusErrorType, EventBusPlugin, EventBusPlugins,
+    KafkaEventWriter,
 };
 use integration_tests::common::events::TestEvent;
 use integration_tests::common::helpers::{
@@ -21,7 +22,7 @@ fn writer_does_not_emit_bevy_events() {
     app.add_plugins(EventBusPlugins(MockEventBusBackend::new()));
 
     let topic = unique_topic("external_only");
-    app.add_bus_event::<TestEvent>(&topic);
+    KafkaTopologyEventBinding::new::<TestEvent>(vec![topic.clone()]).apply(&mut app);
     app.insert_resource(InternalSeen::default());
 
     let topic_for_writer = topic.clone();

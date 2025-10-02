@@ -7,7 +7,7 @@
 
 use bevy::prelude::*;
 use bevy_event_bus::{
-    EventBusAppExt, EventBusPlugins, KafkaEventReader, KafkaEventWriter,
+    EventBusPlugins, KafkaEventReader, KafkaEventWriter,
     config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec},
 };
 use integration_tests::common::helpers::{
@@ -18,11 +18,14 @@ use integration_tests::common::setup::setup;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 use std::{
-    fs::OpenOptions,
-    io::{Read, Write},
+    fs::{self, OpenOptions},
+    io::{BufRead, BufReader, Read, Write},
+    path::Path,
     process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
+
+const PERFORMANCE_CSV_HEADER: &str = "timestamp_ms,git_hash,run_name,messages_sent,messages_received,payload_size_bytes,send_duration_ms,receive_duration_ms,send_rate_per_sec,receive_rate_per_sec,send_throughput_mb_per_sec,receive_throughput_mb_per_sec,test_name,send_rate_delta_per_sec\n";
 
 #[derive(Event, Deserialize, Serialize, Debug, Clone, PartialEq)]
 struct PerformanceTestEvent {
@@ -72,7 +75,8 @@ fn test_message_throughput() {
                 group_for_config.clone(),
                 KafkaConsumerGroupSpec::new([topic_for_config.clone()])
                     .initial_offset(KafkaInitialOffset::Earliest),
-            );
+            )
+            .add_event_single::<PerformanceTestEvent>(topic_for_config.clone());
     });
 
     // Configuration for the performance test
@@ -110,7 +114,8 @@ fn test_large_message_throughput() {
                 group_for_config.clone(),
                 KafkaConsumerGroupSpec::new([topic_for_config.clone()])
                     .initial_offset(KafkaInitialOffset::Earliest),
-            );
+            )
+            .add_event_single::<PerformanceTestEvent>(topic_for_config.clone());
     });
 
     // Test with larger messages
@@ -148,7 +153,8 @@ fn test_high_volume_small_messages() {
                 group_for_config.clone(),
                 KafkaConsumerGroupSpec::new([topic_for_config.clone()])
                     .initial_offset(KafkaInitialOffset::Earliest),
-            );
+            )
+            .add_event_single::<PerformanceTestEvent>(topic_for_config.clone());
     });
 
     // Test with many small messages
@@ -176,7 +182,6 @@ fn run_throughput_test(
 ) {
     let mut app = App::new();
     app.add_plugins(EventBusPlugins(backend));
-    app.add_bus_event::<PerformanceTestEvent>(&topic);
 
     #[derive(Resource)]
     struct PerformanceTestState {
@@ -414,11 +419,19 @@ fn record_performance_results(
 
     let csv_path =
         std::env::var("BENCH_CSV_PATH").unwrap_or_else(|_| "event_bus_perf_results.csv".into());
+    let csv_path_ref = Path::new(&csv_path);
 
-    let header = "timestamp_ms,git_hash,run_name,messages_sent,messages_received,payload_size_bytes,send_duration_ms,receive_duration_ms,send_rate_per_sec,receive_rate_per_sec,send_throughput_mb_per_sec,receive_throughput_mb_per_sec\n";
+    if let Err(err) = ensure_performance_csv_schema(csv_path_ref) {
+        eprintln!("Failed to normalise performance CSV schema: {err}");
+    }
+
+    let previous_rate = previous_send_rate(csv_path_ref, test_name).unwrap_or(None);
+    let send_rate_delta = previous_rate
+        .map(|previous| send_rate - previous)
+        .unwrap_or(0.0);
 
     let record = format!(
-        "{ts},{hash},{run},{ms},{mr},{ps},{sd_ms},{rd_ms},{sr},{rr},{st},{rt}\n",
+        "{ts},{hash},{run},{ms},{mr},{ps},{sd_ms},{rd_ms},{sr},{rr},{st},{rt},{test},{delta}\n",
         ts = ts_ms,
         hash = git_hash,
         run = run_name,
@@ -430,14 +443,14 @@ fn record_performance_results(
         sr = send_rate,
         rr = receive_rate,
         st = send_throughput_mb,
-        rt = receive_throughput_mb
+        rt = receive_throughput_mb,
+        test = test_name,
+        delta = send_rate_delta
     );
 
-    // Create file if missing and write header once; otherwise just append
     let mut need_header = true;
-    if let Ok(mut f) = OpenOptions::new().read(true).open(&csv_path) {
-        let mut buf = [0u8; 1];
-        if f.read(&mut buf).ok().filter(|&n| n > 0).is_some() {
+    if let Ok(metadata) = fs::metadata(csv_path_ref) {
+        if metadata.len() > 0 {
             need_header = false;
         }
     }
@@ -449,7 +462,7 @@ fn record_performance_results(
         .expect("Failed to open performance results CSV file");
 
     if need_header {
-        file.write_all(header.as_bytes())
+        file.write_all(PERFORMANCE_CSV_HEADER.as_bytes())
             .expect("Failed to write CSV header");
     }
 
@@ -457,4 +470,85 @@ fn record_performance_results(
         .expect("Failed to write CSV record");
 
     println!("📊 Performance results recorded to: {}", csv_path);
+}
+
+fn ensure_performance_csv_schema(path: &Path) -> std::io::Result<()> {
+    if !path.exists() {
+        let mut file = fs::File::create(path)?;
+        file.write_all(PERFORMANCE_CSV_HEADER.as_bytes())?;
+        return Ok(());
+    }
+
+    let mut content = String::new();
+    fs::File::open(path)?.read_to_string(&mut content)?;
+
+    if content.is_empty() {
+        let mut file = fs::File::create(path)?;
+        file.write_all(PERFORMANCE_CSV_HEADER.as_bytes())?;
+        return Ok(());
+    }
+
+    let lines: Vec<String> = content.lines().map(|line| line.to_string()).collect();
+    if lines.is_empty() {
+        let mut file = fs::File::create(path)?;
+        file.write_all(PERFORMANCE_CSV_HEADER.as_bytes())?;
+        return Ok(());
+    }
+
+    let header_matches = lines[0].trim() == PERFORMANCE_CSV_HEADER.trim();
+    let header_contains = lines[0].contains("test_name") && lines[0].contains("send_rate_delta_per_sec");
+    if header_matches || header_contains {
+        return Ok(());
+    }
+
+    let mut rewritten = String::new();
+    rewritten.push_str(PERFORMANCE_CSV_HEADER);
+
+    for line in lines.iter().skip(1) {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        rewritten.push_str(line);
+        rewritten.push(',');
+        let columns: Vec<&str> = line.split(',').collect();
+        let inferred_test_name = columns.get(2).copied().unwrap_or("");
+        rewritten.push_str(inferred_test_name);
+        rewritten.push(',');
+        rewritten.push_str("\n");
+    }
+
+    let mut file = fs::File::create(path)?;
+    file.write_all(rewritten.as_bytes())?;
+    Ok(())
+}
+
+fn previous_send_rate(path: &Path, test_name: &str) -> std::io::Result<Option<f64>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let file = fs::File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut last: Option<f64> = None;
+
+    for line in reader.lines().skip(1) {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let columns: Vec<&str> = line.split(',').collect();
+        if columns.len() < 14 {
+            continue;
+        }
+
+        if columns[12] == test_name {
+            if let Ok(rate) = columns[8].parse::<f64>() {
+                last = Some(rate);
+            }
+        }
+    }
+
+    Ok(last)
 }

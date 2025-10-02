@@ -10,7 +10,6 @@
 //! in a real Kafka environment.
 
 use bevy::prelude::*;
-use bevy_event_bus::EventBusAppExt;
 use bevy_event_bus::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -71,23 +70,18 @@ fn test_multi_decoder() {
                 .partitions(1)
                 .replication(1),
         );
+        builder.add_event::<PlayerMove>([
+            topic_game_cfg.clone(),
+            topic_combat_cfg.clone(),
+        ]);
+        builder.add_event_single::<PlayerAttack>(topic_combat_cfg.clone());
+        builder.add_event::<GameStateUpdate>([
+            topic_game_cfg.clone(),
+            topic_analytics_cfg.clone(),
+        ]);
     });
     let mut app = App::new();
     app.add_plugins(EventBusPlugins(backend));
-
-    // Configure comprehensive many-to-many relationships using the new API
-
-    // PlayerMove events should be decoded from both game_events and combat_events
-    // (movement happens in both general gameplay and combat scenarios)
-    app.add_bus_event_multi::<PlayerMove>(&[&topic_game, &topic_combat]);
-
-    // PlayerAttack events should only be decoded from combat_events
-    // (attacks are combat-specific)
-    app.add_bus_event::<PlayerAttack>(&topic_combat);
-
-    // GameStateUpdate events should be decoded from both game_events and analytics_events
-    // (game state updates come from both gameplay and analytics systems)
-    app.add_bus_event_multi::<GameStateUpdate>(&[&topic_game, &topic_analytics]);
 
     // Initialize the app
     app.update();

@@ -11,7 +11,7 @@ use integration_tests::common::helpers::{
 use integration_tests::common::setup::build_basic_app_simple;
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, bevy_event_bus::ExternalBusEvent)]
+#[derive(Event, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 struct TestMsg {
     v: u32,
 }

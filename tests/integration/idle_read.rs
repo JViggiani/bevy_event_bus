@@ -21,18 +21,19 @@ fn idle_empty_topic_poll_does_not_block() {
                 .partitions(1)
                 .replication(1),
         );
-        builder.add_consumer_group(
-            group_for_backend.clone(),
-            KafkaConsumerGroupSpec::new([topic_for_backend.clone()])
-                .initial_offset(KafkaInitialOffset::Earliest),
-        );
+        builder
+            .add_consumer_group(
+                group_for_backend.clone(),
+                KafkaConsumerGroupSpec::new([topic_for_backend.clone()])
+                    .initial_offset(KafkaInitialOffset::Earliest),
+            )
+            .add_event_single::<TestEvent>(topic_for_backend.clone());
     });
     let mut app = App::new();
     app.add_plugins(EventBusPlugins(backend));
     #[derive(Resource, Default)]
     struct Ticks(u32);
     app.insert_resource(Ticks::default());
-    app.add_event::<TestEvent>(); // ensure event type registered though we won't send
     let topic_read = topic.clone();
     app.add_systems(
         Update,

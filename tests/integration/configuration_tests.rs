@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
 use bevy_event_bus::{
-    EventBusAppExt, EventBusPlugins, KafkaConsumerConfig, KafkaEventBusBackend, KafkaEventReader,
+    EventBusPlugins, KafkaConsumerConfig, KafkaEventBusBackend, KafkaEventReader,
     KafkaEventWriter, KafkaProducerConfig,
 };
 use integration_tests::common::events::TestEvent;
@@ -30,6 +30,7 @@ fn configuration_with_readers_writers_works() {
                 .partitions(1)
                 .replication(1),
         );
+        builder.add_event_single::<TestEvent>(topic_for_writer.clone());
     });
 
     let topic_for_reader = topic.clone();
@@ -45,13 +46,13 @@ fn configuration_with_readers_writers_works() {
             KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
                 .initial_offset(KafkaInitialOffset::Earliest),
         );
+        builder.add_event_single::<TestEvent>(topic_for_reader.clone());
     });
 
     // Producer app
     let mut producer_app = {
         let mut app = App::new();
         app.add_plugins(EventBusPlugins(backend_writer));
-        app.add_bus_event::<TestEvent>(&topic);
 
         // Producer system using configuration
         let topic_clone = topic.clone();
@@ -76,7 +77,6 @@ fn configuration_with_readers_writers_works() {
     let mut consumer_app = {
         let mut app = App::new();
         app.add_plugins(EventBusPlugins(backend_reader));
-        app.add_bus_event::<TestEvent>(&topic);
 
         // Consumer system using configuration
         let topic_clone = topic.clone();
@@ -153,12 +153,12 @@ fn kafka_specific_methods_work() {
                     consumer_for_config.clone(),
                     KafkaConsumerGroupSpec::new([topic_for_config.clone()])
                         .initial_offset(KafkaInitialOffset::Earliest),
-                );
+                )
+                .add_event_single::<TestEvent>(topic_for_config.clone());
         },
     ));
     let mut app = App::new();
     app.add_plugins(EventBusPlugins(backend));
-    app.add_bus_event::<TestEvent>(&topic);
 
     let kafka_producer_config =
         kafka_producer_config(DEFAULT_KAFKA_BOOTSTRAP, Vec::<String>::new())

@@ -2,10 +2,11 @@
 
 use serde::{Serialize, de::DeserializeOwned};
 
-/// Marker trait for events that can be sent/received via the event bus
+/// Marker trait for events that can be sent/received via the event bus.
 ///
-/// Normally you don't need to implement this manually - use the
-/// `#[derive(ExternalBusEvent)]` macro instead.
+/// Any type that implements `Serialize`, `DeserializeOwned`, `Clone`, `Send` and `Sync`
+/// will automatically implement `BusEvent`. Event registration is handled by the
+/// topology builder when configuring a backend.
 pub trait BusEvent: Serialize + DeserializeOwned + Send + Sync + Clone + 'static {}
 
 // Automatically implement BusEvent for any type that meets the requirements

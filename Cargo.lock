@@ -186,7 +186,6 @@ version = "0.2.0"
 dependencies = [
  "async-trait",
  "bevy",
- "bevy_event_bus_derive",
  "crossbeam-channel",
  "ctor",
  "futures-util",
@@ -198,19 +197,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "bevy_event_bus_derive"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "441144738163f829002bcb48ea7803f0a3801ef580737d7375c4d9c616d6d593"
-dependencies = [
- "ctor",
- "proc-macro-crate",
- "proc-macro2",
- "quote",
- "syn",
 ]
 
 [[package]]

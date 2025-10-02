@@ -1,462 +1,148 @@
 # bevy_event_bus
 
-A Bevy plugin that connects Bevy's event system to external message brokers like Kafka.
+A Bevy plugin that bridges Bevy's event system with external message brokers such as Kafka. It keeps authoring ergonomics close to standard Bevy patterns while powering production-grade ingestion, decoding, and delivery pipelines.
 
 ## Features
 
-- **Seamless integration with Bevy's event system**
-    - Familiar API design following Bevy's conventions (BusEventReader/BusEventWriter)
-    - External brokers are driven through ergonomic system parameters
-
-- **Automatic event registration**
-  - Simply derive `ExternalBusEvent` on your event types
-  - Must also derive `Serialize` and `Deserialize` from serde for external broker compatibility
-  - No manual registration required
-
-- **Topic-based messaging**
-    - Send and receive events on specific topics (auto-subscribe on first read)
-    - No manual subscription API required
-
-- **Error handling**
-  - Provides detailed error information for connectivity and serialization issues
-  - Fire-and-forget behavior available by ignoring the Result (e.g., `let _ = writer.write(...)`)
-  - Bevy events fired to describe event bus errors (connection issues etc)
-
-- **Backends**
-  - Kafka support (with the "kafka" feature)
-  - Easily extendable to support other message brokers
+- Topology-driven registration – declare topics, consumer groups, and event bindings up front via `KafkaTopologyBuilder`; the backend applies them automatically during startup.
+- Multi-decoder pipeline – register multiple decoders per topic and fan decoded payloads out to matching Bevy events in a single pass.
+- Type-safe configuration – reuse strongly typed consumer and producer configs across systems without exposing backend-specific traits in your signatures.
+- Rich observability – drain metrics, lag snapshots, and commit statistics surface as Bevy resources/events ready for diagnostics.
+- Extensible architecture – Kafka ships out of the box; other brokers can plug in by implementing the backend trait.
 
 ## Installation
 
-Add to your `Cargo.toml`:
+Add the crate to your `Cargo.toml` and enable the Kafka feature when you need the Kafka backend:
 
 ```toml
 [dependencies]
-bevy_event_bus = "0.1"
+bevy_event_bus = { version = "0.2", features = ["kafka"] }
 ```
 
-With Kafka support:
+## Quick start
 
-```toml
-[dependencies]
-bevy_event_bus = { version = "0.1", features = ["kafka"] }
-```
-
-## Usage
-
-### Define your events
+1. **Define your Bevy events.** Implementing `Serialize`, `Deserialize`, `Clone`, `Send`, and `Sync` is enough — the `BusEvent` marker trait is automatically implemented.
+2. **Describe your topology.** Use the `KafkaTopologyBuilder` to declare topics, consumer groups, and which Bevy events bind to which topics.
+3. **Spin up the plugin.** Build a `KafkaBackendConfig`, pass it to `KafkaEventBusBackend`, then add `EventBusPlugins` to your app.
 
 ```rust
+use std::time::Duration;
+
 use bevy::prelude::*;
 use bevy_event_bus::prelude::*;
-use serde::{Deserialize, Serialize};
+use bevy_event_bus::config::kafka::{
+    KafkaBackendConfig, KafkaConnectionConfig, KafkaConsumerConfig, KafkaConsumerGroupSpec,
+    KafkaInitialOffset, KafkaProducerConfig, KafkaTopologyBuilder, KafkaTopicSpec,
+};
 
-// Define an event - no manual registration needed!
-#[derive(ExternalBusEvent, Serialize, Deserialize, Clone, Debug)]
-struct PlayerLevelUpEvent {
-    entity_id: u64,
+#[derive(Event, Clone, serde::Serialize, serde::Deserialize, Debug)]
+struct PlayerLevelUp {
+    player_id: u64,
     new_level: u32,
 }
-```
 
-### Set up the plugin
-
-```rust
-use bevy::prelude::*;
-use bevy_event_bus::prelude::*;
+#[derive(Component)]
+struct LevelComponent(u32);
 
 fn main() {
-    // Create a Kafka configuration
-    let kafka_config = KafkaConnection {
-        bootstrap_servers: "localhost:9092".to_string(),
-        default_group_id: "bevy_game".to_string(),
-        ..Default::default()
+    let topology = {
+        let mut builder = KafkaTopologyBuilder::default();
+        builder
+            .add_topic(
+                KafkaTopicSpec::new("game-events.level-up")
+                    .partitions(3)
+                    .replication(1),
+            )
+            .add_consumer_group(
+                "game-servers",
+                KafkaConsumerGroupSpec::new(["game-events.level-up"])\
+                    .initial_offset(KafkaInitialOffset::Earliest),
+            )
+            .add_event_single::<PlayerLevelUp>("game-events.level-up");
+        builder.build()
     };
-    
-    // Create the Kafka backend
-    let kafka_backend = KafkaEventBusBackend::new(kafka_config);
+
+    let backend = KafkaEventBusBackend::new(KafkaBackendConfig::new(
+        KafkaConnectionConfig::new("localhost:9092"),
+        topology,
+        Duration::from_secs(5),
+    ));
 
     App::new()
-        .add_plugins(EventBusPlugins(kafka_backend))
-        .add_systems(Update, (player_level_up_system, handle_level_ups))
+        .add_plugins(EventBusPlugins(backend))
+        .insert_resource(LevelUpProducerConfig::default())
+        .insert_resource(LevelUpConsumerConfig::default())
+        .add_systems(Update, (emit_level_ups, apply_level_ups))
         .run();
 }
-```
 
-### Send events
+#[derive(Resource, Clone)]
+struct LevelUpProducerConfig(KafkaProducerConfig);
 
-```rust
-// System that sends events
-fn player_level_up_system(
-    mut ev_writer: BusEventWriter,
-    query: Query<(Entity, &PlayerXp, &PlayerLevel)>,
-) {
-    for (entity, xp, level) in query.iter() {
-        if xp.0 >= level.next_level_requirement {
-            // Send to specific topic via the configured backend
-            let _ = ev_writer.write(
-                "game-events.level-up",
-                PlayerLevelUpEvent { 
-                    entity_id: entity.to_bits(), 
-                    new_level: level.0 + 1 
-                }
-            );
-        }
+impl Default for LevelUpProducerConfig {
+    fn default() -> Self {
+        Self(KafkaProducerConfig::new("localhost:9092", ["game-events.level-up"]).acks("all"))
     }
 }
-```
 
-### Receive events
+#[derive(Resource, Clone)]
+struct LevelUpConsumerConfig(KafkaConsumerConfig);
 
-```rust
-// System that receives events
-fn handle_level_ups(mut ev_reader: BusEventReader<PlayerLevelUpEvent>) {
-    for event in ev_reader.read("game-events.level-up") {
-        println!("Entity {} leveled up to level {}!", event.entity_id, event.new_level);
-    }
-}
-```
-
-## Error Handling
-
-The event bus provides comprehensive error handling for both sending and receiving events. All errors are reported as Bevy events, allowing you to handle them in your systems.
-
-### Write Errors
-
-When sending events, errors can occur asynchronously and handled with Bevy's inbuilt event system:
-
-```rust
-fn handle_delivery_errors(
-    mut delivery_errors: EventReader<EventBusError<PlayerLevelUpEvent>>,
-) {
-    for error in delivery_errors.read() {
-        if error.error_type == EventBusErrorType::DeliveryFailure {
-            error!(
-                "Message delivery failed to topic '{}' ({}): {}", 
-                error.topic, 
-                error.backend.as_deref().unwrap_or("unknown"), 
-                error.error_message
-            );
-            
-            // NOTE: delivery errors don't have the original event available
-            // Implement your error handling logic:
-            // - Retry mechanisms
-            // - Circuit breaker patterns  
-            // - Alerting systems
-            // - Fallback strategies
-        }
-    }
-}
-```
-
-### Read Errors
-
-When receiving events, deserialization failures are reported as `EventBusDecodeError` events:
-
-```rust
-fn handle_read_errors(mut decode_errors: EventReader<EventBusDecodeError>) {
-    for error in decode_errors.read() {
-        warn!(
-            "Failed to decode message from topic '{}' using decoder '{}': {}",
-            error.topic, error.decoder_name, error.error_message
-        );
-        
-        // You can access the raw message bytes for debugging
-        debug!("Raw payload size: {} bytes", error.raw_payload.len());
-        
-        // Handle decoding errors:
-        // - Log malformed messages for debugging
-        // - Implement message format migration logic
-        // - Track error rates for monitoring
-        // - Skip corrupted messages gracefully
-    }
-}
-```
-
-### Complete Error Handling Setup
-
-Add all error handling systems to your app:
-
-```rust
-use bevy_event_bus::prelude::*;
-
-fn main() {
-    App::new()
-        .add_plugins(EventBusPlugins(kafka_backend))
-        .add_systems(Update, (
-            send_events_with_error_handling,
-            handle_delivery_errors,
-            handle_read_errors,
-            // Your other systems...
+impl Default for LevelUpConsumerConfig {
+    fn default() -> Self {
+        Self(KafkaConsumerConfig::new(
+            "localhost:9092",
+            "game-servers",
+            ["game-events.level-up"],
         ))
-        .run();
+    }
 }
-```
 
-### Fire-and-Forget Usage
-
-If you don't want to handle errors explicitly, simply don't add error handling systems. The errors will still be logged as warnings but won't affect your application flow:
-
-```rust
-// Simple usage without explicit error handling
-fn simple_event_sending(mut ev_writer: BusEventWriter) {
-    ev_writer.write("game-events.level-up", PlayerLevelUpEvent { 
-        entity_id: 123, 
-        new_level: 5 
-    });
-    // Errors are logged but don't need to be handled
-}
-```
-
-## Backend Configuration
-
-### Kafka
-
-```rust
-use std::collections::HashMap;
-use bevy_event_bus::prelude::*;
-
-let config = KafkaConnection {
-    bootstrap_servers: "localhost:9092".to_string(),
-    default_group_id: "bevy_game".to_string(),
-    client_id: Some("game-client".to_string()),
-    timeout_ms: 5000,
-    additional_config: HashMap::new(),
-};
-
-let kafka_backend = KafkaEventBusBackend::new(config);
-```
-
-### Auto-Subscription
-Reading from a topic automatically subscribes the consumer to that topic on first use.
-
-### Additional Kafka Config Keys
-Use `additional_config` to pass through arbitrary librdkafka properties (e.g. security, retries, acks).
-
-Common keys:
-* `enable.idempotence=true`
-* `message.timeout.ms=5000` (already set on producer)
-* `security.protocol=SSL`
-* `ssl.ca.location=/path/to/ca.pem`
-* `ssl.certificate.location=/path/to/cert.pem`
-* `ssl.key.location=/path/to/key.pem`
-
-### Local Development (Docker)
-You can spin up a single-node Kafka (KRaft) automatically in tests. The test harness will:
-1. Try to start `bitnami/kafka:latest` exposing 9092 if `KAFKA_BOOTSTRAP_SERVERS` not set.
-2. Poll metadata until the broker is ready.
-
-Manual run:
-```bash
-docker run -d --rm --name bevy_event_bus_kafka -p 9092:9092 \
-    -e KAFKA_ENABLE_KRAFT=yes \
-    -e KAFKA_KRAFT_CLUSTER_ID=abcdefghijklmnopqrstuv \
-    -e KAFKA_CFG_PROCESS_ROLES=broker,controller \
-    -e KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@localhost:9093 \
-    -e KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093 \
-    -e KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 \
-    -e KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT \
-    -e KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER \
-    -e KAFKA_CFG_INTER_BROKER_LISTENER_NAME=PLAINTEXT \
-    -e KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true \
-    bitnami/kafka:latest
-```
-
-Set `KAFKA_BOOTSTRAP_SERVERS` to override (e.g. in CI):
-```bash
-export KAFKA_BOOTSTRAP_SERVERS=my-broker:9092
-```
-
-### Testing Notes
-Integration tests use the docker harness or external broker.
-They generate unique topic names per run to avoid offset collisions.
-
-## Backend Configuration
-
-### Kafka
-
-```rust
-use std::collections::HashMap;
-use bevy_event_bus::prelude::*;
-
-let config = KafkaConnection {
-    bootstrap_servers: "localhost:9092".to_string(),
-    default_group_id: "bevy_game".to_string(),
-    client_id: Some("game-client".to_string()),
-    timeout_ms: 5000,
-};
-
-let kafka_backend = KafkaEventBusBackend::new(config);
-```
-
-## Type-Safe Configuration (Phase 2)
-
-The event bus now supports type-safe configuration with compile-time backend inference and clean system signatures. This enables production-ready features while maintaining zero runtime cost.
-
-### Configuration-Based API
-
-Instead of specifying topics and backend-specific options in each system, you can define reusable configurations:
-
-```rust
-use bevy_event_bus::{KafkaConsumerConfig, KafkaProducerConfig, BusEventReader, BusEventWriter};
-
-// Define const configurations that can be shared across systems
-const GAME_EVENTS_CONSUMER: KafkaConsumerConfig = KafkaConsumerConfig::new("game-server")
-    .topics(&["player-events", "world-events"])
-    .auto_offset_reset("latest")
-    .enable_auto_commit(false)
-    .session_timeout_ms(6000);
-
-const GAME_EVENTS_PRODUCER: KafkaProducerConfig = KafkaProducerConfig::new()
-    .compression_type("gzip")
-    .acks("all")
-    .retries(3)
-    .batch_size(16384);
-
-// Clean system signatures without backend types
-fn process_player_events(
-    mut reader: BusEventReader<PlayerEvent>,
-    mut writer: BusEventWriter,
+fn emit_level_ups(
+    mut writer: KafkaEventWriter,
+    config: Res<LevelUpProducerConfig>,
+    query: Query<(Entity, &LevelComponent), Added<LevelComponent>>,
 ) {
-    // Read using configuration - automatically reads from all configured topics
-    let events = reader.read_with_config(&GAME_EVENTS_CONSUMER);
-    
-    for event_wrapper in events {
-        let player_event = event_wrapper.event();
-        
-        // Process the event...
-        let game_event = GameStateEvent {
-            message: format!("Player {} performed action", player_event.player_id),
+    for (entity, level) in &query {
+        let event = PlayerLevelUp {
+            player_id: entity.to_bits(),
+            new_level: level.0,
         };
-        
-        // Write using configuration
-        writer.write_with_config(&GAME_EVENTS_PRODUCER, game_event);
+        writer.write(&config.0, event);
     }
 }
-```
 
-### Backend-Specific Methods
-
-The configuration system enables backend-specific functionality at compile time:
-
-```rust
-// Kafka-specific features
-fn kafka_specific_system(
-    mut reader: BusEventReader<PlayerEvent>,
-    mut writer: BusEventWriter,
+fn apply_level_ups(
+    mut reader: KafkaEventReader<PlayerLevelUp>,
+    config: Res<LevelUpConsumerConfig>,
 ) {
-    let kafka_consumer = KafkaConsumerConfig::new("manual-commit-group")
-        .topics(&["critical-events"])
-        .enable_auto_commit(false);
-    
-    let kafka_producer = KafkaProducerConfig::new()
-        .acks("all")
-        .compression_type("gzip");
-    
-    // Read with manual commit control (Kafka-only feature)
-    let uncommitted_events = reader.read_uncommitted_with_config(&kafka_consumer);
-    
-    for uncommitted_event in uncommitted_events {
-        let player_event = uncommitted_event.event();
-        
-        // Process event...
-        
-        // Manually commit after successful processing
-        if let Err(e) = uncommitted_event.commit() {
-            eprintln!("Failed to commit offset: {}", e);
-        }
-    }
-    
-    // Write with partition key for ordering (Kafka-only feature)
-    let metadata = writer.write_with_key_and_config(
-        &kafka_producer,
-        "player-events",
-        PlayerEvent { player_id: 123 },
-        "player_123" // Partition key ensures ordering per player
-    );
-    
-    // Write with custom headers (Kafka-only feature)
-    let metadata = writer.write_with_headers_and_config(
-        &kafka_producer,
-        "audit-events",
-        AuditEvent { action: "login".to_string() },
-        &[("source", "game-server"), ("priority", "high")]
-    );
-    
-    // Flush producer to ensure delivery (Kafka-only feature)
-    if let Err(e) = writer.flush_with_config(&kafka_producer) {
-        eprintln!("Failed to flush producer: {}", e);
-    }
-    
-    // Check consumer lag (Kafka-only feature)
-    if let Ok(lag) = reader.get_consumer_lag_with_config(&kafka_consumer) {
-        if lag > 1000 {
-            println!("High consumer lag detected: {} messages", lag);
-        }
+    for wrapper in reader.read(&config.0) {
+        info!(?wrapper.metadata(), "player leveled up");
     }
 }
 ```
 
-### Configuration Examples
+## Error handling
 
-#### Consumer Configuration
-```rust
-let consumer_config = KafkaConsumerConfig::new("my-service")
-    .topics(["events", "notifications"])
-    .auto_offset_reset("earliest")  // or "latest"
-    .enable_auto_commit(true)
-    .session_timeout_ms(30000)
-    .max_poll_records(500)
-    .additional_config("max.poll.interval.ms", "300000");
-```
+- Delivery failures surface as `EventBusError<T>` events. Add a Bevy system that reads `EventReader<EventBusError<T>>` to react to dropped messages, backend outages, or serialization issues.
+- Deserialization issues emit `EventBusDecodeError` events. Metadata includes the raw payload, decoder name, and original topic so you can log or dead-letter messages.
+- For Kafka-specific acknowledgement workflows, consume `KafkaCommitResultEvent` and inspect `KafkaCommitResultStats` for aggregate success/failure counts.
 
-#### Producer Configuration
-```rust
-let producer_config = KafkaProducerConfig::new()
-    .compression_type("gzip")  // "none", "gzip", "snappy", "lz4", "zstd"
-    .acks("all")               // "0", "1", "all"
-    .retries(3)
-    .batch_size(16384)
-    .linger_ms(100)
-    .request_timeout_ms(30000)
-    .additional_config("enable.idempotence", "true");
-```
+## Observability & diagnostics
 
-### Benefits
+The plugin inserts several resources once the backend activates:
 
-- **Type Safety**: Configuration types are checked at compile time
-- **Clean Systems**: No need to specify backend types in system parameters
-- **Zero Runtime Cost**: Type resolution happens at compile time
-- **Reusable Configs**: Define once, use across multiple systems
-- **Backend-Specific Features**: Access advanced functionality like manual commits, partition keys, headers
-- **const Support**: Configurations can be defined as constants for maximum efficiency
+- `ConsumerMetrics` tracks queue depths, per-frame drain counts, and idle frame streaks.
+- `DrainedTopicMetadata` and `DecodedEventBuffer` expose the in-flight multi-decoder output.
+- `KafkaLagCacheResource` (Kafka only) provides consumer lag estimates for each topic/partition.
 
-## Performance Testing
+Hook these into your diagnostics UI or telemetry exporters to keep an eye on the pipeline.
 
-The library includes comprehensive performance tests to measure throughput and latency under various conditions.
+## Testing & performance
 
-### Quick Performance Test
-```bash
-# Run all performance benchmarks
-./run_performance_tests.sh
+- The integration suite under `tests/` can launch a temporary Redpanda container when Docker is available. Set `KAFKA_BOOTSTRAP_SERVERS` to target an existing broker if you prefer to manage infrastructure yourself.
+- Run `cargo test` for unit coverage and `./run_performance_tests.sh` to capture throughput metrics. Compare new runs with `event_bus_perf_results.csv` to spot regressions; each row now includes the test name and a `send_rate_delta_per_sec` column so you can gauge improvement or drift at a glance.
 
-# Run specific test
-./run_performance_tests.sh test_message_throughput
+## Contributing
 
-# Results are automatically saved to event_bus_perf_results.csv
-```
-
-### Sample Performance Results
-```
-Test: test_message_throughput        | Send Rate:    76373 msg/s | Receive Rate:    78000 msg/s | Payload:   100 bytes
-Test: test_high_volume_small_messages | Send Rate:    73742 msg/s | Receive Rate:    74083 msg/s | Payload:    20 bytes
-Test: test_large_message_throughput   | Send Rate:     8234 msg/s | Receive Rate:     8156 msg/s | Payload: 10000 bytes
-```
-
-The performance tests measure:
-- **Message throughput** (messages per second)
-- **Data throughput** (MB/s) 
-- **End-to-end latency**
-- **System stability** under load
-
-Performance results are tracked over time with git commit hashes for regression analysis.
+Issues and pull requests are welcome. When adding features, prefer extending the topology/configuration surfaces over reintroducing ad-hoc registration helpers so the APIs stay cohesive.

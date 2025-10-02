@@ -22,11 +22,12 @@ use std::{
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
+use bevy::prelude::App;
 use bevy_event_bus::{
     EventBusBackend,
     config::kafka::{
         KafkaBackendConfig, KafkaConnectionConfig, KafkaConsumerGroupSpec, KafkaInitialOffset,
-        KafkaTopologyConfig,
+    KafkaTopologyConfig,
     },
     resources::IncomingMessage,
     runtime,
@@ -135,6 +136,7 @@ impl Debug for KafkaEventBusBackend {
     }
 }
 
+/// Custom producer context for Kafka delivery reporting
 #[derive(Clone)]
 struct EventBusProducerContext;
 
@@ -152,6 +154,7 @@ impl ProducerContext for EventBusProducerContext {
                     error = %kafka_error,
                     "Kafka message delivery failed"
                 );
+                // TODO: Fire EventBusError<T> event when we have access to the event type
             }
             Ok(delivery) => {
                 debug!(
@@ -491,6 +494,12 @@ impl EventBusBackend for KafkaEventBusBackend {
 
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
+    }
+
+    fn apply_event_bindings(&self, app: &mut App) {
+        for binding in self.inner.config.topology.event_bindings() {
+            binding.apply(app);
+        }
     }
 
     async fn connect(&mut self) -> bool {

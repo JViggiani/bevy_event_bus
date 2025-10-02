@@ -1,8 +1,6 @@
 use bevy::prelude::*;
 use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
-use bevy_event_bus::{
-    EventBusAppExt, EventBusPlugins, EventWrapper, KafkaEventReader, KafkaEventWriter,
-};
+use bevy_event_bus::{EventBusPlugins, EventWrapper, KafkaEventReader, KafkaEventWriter};
 use integration_tests::common::events::TestEvent;
 use integration_tests::common::helpers::{
     DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, run_app_updates,
@@ -33,7 +31,9 @@ fn metadata_propagation_from_kafka_to_bevy() {
 
     let topic_for_writer = topic.clone();
     let (backend_w, _b1) = setup("earliest", move |builder| {
-        builder.add_topic(topic_spec(&topic_for_writer));
+        builder
+            .add_topic(topic_spec(&topic_for_writer))
+            .add_event_single::<TestEvent>(topic_for_writer.clone());
     });
 
     let topic_for_reader = topic.clone();
@@ -41,20 +41,19 @@ fn metadata_propagation_from_kafka_to_bevy() {
     let (backend_r, _b2) = setup("earliest", move |builder| {
         builder.add_topic(topic_spec(&topic_for_reader));
         let topics_for_group = vec![topic_for_reader.clone()];
-        builder.add_consumer_group(
-            consumer_group_for_reader.clone(),
-            group_spec(&topics_for_group, KafkaInitialOffset::Earliest),
-        );
+        builder
+            .add_consumer_group(
+                consumer_group_for_reader.clone(),
+                group_spec(&topics_for_group, KafkaInitialOffset::Earliest),
+            )
+            .add_event_single::<TestEvent>(topic_for_reader.clone());
     });
 
     let mut writer = App::new();
     let mut reader = App::new();
 
     writer.add_plugins(EventBusPlugins(backend_w));
-    writer.add_bus_event::<TestEvent>(&topic);
-
     reader.add_plugins(EventBusPlugins(backend_r));
-    reader.add_bus_event::<TestEvent>(&topic);
 
     // Create test event
     let test_event = TestEvent {
@@ -158,7 +157,8 @@ fn header_forwarding_producer_to_consumer() {
             KafkaTopicSpec::new(topic_for_writer.clone())
                 .partitions(1)
                 .replication(1),
-        );
+        )
+        .add_event_single::<TestEvent>(topic_for_writer.clone());
     });
 
     let topic_for_reader = topic.clone();
@@ -169,21 +169,20 @@ fn header_forwarding_producer_to_consumer() {
                 .partitions(1)
                 .replication(1),
         );
-        builder.add_consumer_group(
-            consumer_group_for_reader.clone(),
-            KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
-                .initial_offset(KafkaInitialOffset::Earliest),
-        );
+        builder
+            .add_consumer_group(
+                consumer_group_for_reader.clone(),
+                KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
+                    .initial_offset(KafkaInitialOffset::Earliest),
+            )
+            .add_event_single::<TestEvent>(topic_for_reader.clone());
     });
 
     let mut writer = App::new();
     let mut reader = App::new();
 
     writer.add_plugins(EventBusPlugins(backend_w));
-    writer.add_bus_event::<TestEvent>(&topic);
-
     reader.add_plugins(EventBusPlugins(backend_r));
-    reader.add_bus_event::<TestEvent>(&topic);
 
     // Create test event
     let test_event = TestEvent {
@@ -285,7 +284,9 @@ fn timestamp_accuracy_for_latency_measurement() {
 
     let topic_for_writer = topic.clone();
     let (backend_w, _b1) = setup("earliest", move |builder| {
-        builder.add_topic(topic_spec(&topic_for_writer));
+        builder
+            .add_topic(topic_spec(&topic_for_writer))
+            .add_event_single::<TestEvent>(topic_for_writer.clone());
     });
 
     let topic_for_reader = topic.clone();
@@ -296,17 +297,15 @@ fn timestamp_accuracy_for_latency_measurement() {
         builder.add_consumer_group(
             consumer_group_for_reader.clone(),
             group_spec(&topics_for_reader, KafkaInitialOffset::Earliest),
-        );
+        )
+        .add_event_single::<TestEvent>(topic_for_reader.clone());
     });
 
     let mut writer = App::new();
     let mut reader = App::new();
 
     writer.add_plugins(EventBusPlugins(backend_w));
-    writer.add_bus_event::<TestEvent>(&topic);
-
     reader.add_plugins(EventBusPlugins(backend_r));
-    reader.add_bus_event::<TestEvent>(&topic);
 
     let send_time = std::time::Instant::now();
 
@@ -407,10 +406,12 @@ fn mixed_metadata_and_regular_reading() {
     let (backend_r1, _b2) = setup("earliest", move |builder| {
         builder.add_topic(topic_spec(&topic_for_regular));
         let topics = vec![topic_for_regular.clone()];
-        builder.add_consumer_group(
-            regular_group_for_reader.clone(),
-            group_spec(&topics, KafkaInitialOffset::Earliest),
-        );
+        builder
+            .add_consumer_group(
+                regular_group_for_reader.clone(),
+                group_spec(&topics, KafkaInitialOffset::Earliest),
+            )
+            .add_event_single::<TestEvent>(topic_for_regular.clone());
     });
 
     let topic_for_metadata = topic.clone();
@@ -418,10 +419,12 @@ fn mixed_metadata_and_regular_reading() {
     let (backend_r2, _b3) = setup("earliest", move |builder| {
         builder.add_topic(topic_spec(&topic_for_metadata));
         let topics = vec![topic_for_metadata.clone()];
-        builder.add_consumer_group(
-            metadata_group_for_reader.clone(),
-            group_spec(&topics, KafkaInitialOffset::Earliest),
-        );
+        builder
+            .add_consumer_group(
+                metadata_group_for_reader.clone(),
+                group_spec(&topics, KafkaInitialOffset::Earliest),
+            )
+            .add_event_single::<TestEvent>(topic_for_metadata.clone());
     });
 
     let mut writer = App::new();
@@ -429,13 +432,8 @@ fn mixed_metadata_and_regular_reading() {
     let mut metadata_reader = App::new();
 
     writer.add_plugins(EventBusPlugins(backend_w));
-    writer.add_bus_event::<TestEvent>(&topic);
-
     regular_reader.add_plugins(EventBusPlugins(backend_r1));
-    regular_reader.add_bus_event::<TestEvent>(&topic);
-
     metadata_reader.add_plugins(EventBusPlugins(backend_r2));
-    metadata_reader.add_bus_event::<TestEvent>(&topic);
 
     // Send events
     let topic_clone = topic.clone();

@@ -12,8 +12,8 @@
 //! - Error retry mechanisms
 
 use bevy::prelude::*;
-use bevy_event_bus::{EventBusAppExt, EventBusError};
-use bevy_event_bus::{EventBusPlugins, KafkaEventWriter};
+use bevy_event_bus::config::kafka::KafkaTopologyEventBinding;
+use bevy_event_bus::{EventBusError, EventBusPlugins, KafkaEventWriter};
 use integration_tests::common::MockEventBusBackend;
 use integration_tests::common::helpers::{
     DEFAULT_KAFKA_BOOTSTRAP, kafka_producer_config, unique_topic,
@@ -66,8 +66,8 @@ fn test_delivery_error_handling() {
     let mut app = App::new();
     app.add_plugins(EventBusPlugins(mock_backend));
 
-    // Add bus event (automatically registers error events)
-    app.add_bus_event::<TestErrorEvent>(&topic);
+    // Register event bindings for the mock backend scenario
+    KafkaTopologyEventBinding::new::<TestErrorEvent>(vec![topic.clone()]).apply(&mut app);
 
     #[derive(Resource, Default)]
     struct ErrorTestState {
@@ -182,10 +182,11 @@ fn test_multiple_event_types_error_handling() {
     let mut app = App::new();
     app.add_plugins(EventBusPlugins(mock_backend));
 
-    // Add all event types (automatically registers error events for each)
-    app.add_bus_event::<PlayerEvent>(&player_topic);
-    app.add_bus_event::<CombatEvent>(&combat_topic);
-    app.add_bus_event::<AnalyticsEvent>(&analytics_topic);
+    // Register all event types through topology bindings (includes error events)
+    KafkaTopologyEventBinding::new::<PlayerEvent>(vec![player_topic.clone()]).apply(&mut app);
+    KafkaTopologyEventBinding::new::<CombatEvent>(vec![combat_topic.clone()]).apply(&mut app);
+    KafkaTopologyEventBinding::new::<AnalyticsEvent>(vec![analytics_topic.clone()])
+        .apply(&mut app);
 
     #[derive(Resource, Default)]
     struct MultiEventTestState {
@@ -332,9 +333,9 @@ fn test_centralized_error_handling() {
     let mut app = App::new();
     app.add_plugins(EventBusPlugins(mock_backend));
 
-    // Add bus events for both topics
-    app.add_bus_event::<TestEvent>(&working_topic);
-    app.add_bus_event::<TestEvent>(&failing_topic);
+    // Register the event bindings for both topics
+    KafkaTopologyEventBinding::new::<TestEvent>(vec![working_topic.clone()]).apply(&mut app);
+    KafkaTopologyEventBinding::new::<TestEvent>(vec![failing_topic.clone()]).apply(&mut app);
 
     #[derive(Resource, Default)]
     struct CentralizedErrorTestState {
@@ -465,7 +466,7 @@ fn test_batch_operation_error_handling() {
     let mut app = App::new();
     app.add_plugins(EventBusPlugins(mock_backend));
 
-    app.add_bus_event::<TestEvent>(&topic);
+    KafkaTopologyEventBinding::new::<TestEvent>(vec![topic.clone()]).apply(&mut app);
 
     #[derive(Resource, Default)]
     struct BatchTestState {
@@ -583,7 +584,7 @@ fn test_error_retry_mechanism() {
     let mut app = App::new();
     app.add_plugins(EventBusPlugins(mock_backend));
 
-    app.add_bus_event::<TestEvent>(&topic);
+    KafkaTopologyEventBinding::new::<TestEvent>(vec![topic.clone()]).apply(&mut app);
 
     #[derive(Resource, Default)]
     struct RetryTestState {

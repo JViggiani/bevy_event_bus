@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
-use bevy_event_bus::{EventBusAppExt, EventBusPlugins, KafkaEventReader, KafkaEventWriter};
+use bevy_event_bus::{EventBusPlugins, KafkaEventReader, KafkaEventWriter};
 use integration_tests::common::TestEvent;
 use integration_tests::common::helpers::{
     DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
@@ -33,6 +33,7 @@ fn test_basic_kafka_event_bus() {
                 .partitions(1)
                 .replication(1),
         );
+        builder.add_event_single::<TestEvent>(topic_for_writer.clone());
     });
 
     let topic_for_reader = topic.clone();
@@ -48,6 +49,7 @@ fn test_basic_kafka_event_bus() {
             KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
                 .initial_offset(KafkaInitialOffset::Earliest),
         );
+        builder.add_event_single::<TestEvent>(topic_for_reader.clone());
     });
 
     info!(
@@ -58,9 +60,6 @@ fn test_basic_kafka_event_bus() {
     // Writer app
     let mut writer_app = App::new();
     writer_app.add_plugins(EventBusPlugins(backend_writer));
-
-    // Register bus event to enable KafkaEventWriter error handling
-    writer_app.add_bus_event::<TestEvent>(&topic);
 
     #[derive(Resource, Clone)]
     struct ToSend(TestEvent, String);
@@ -85,9 +84,6 @@ fn test_basic_kafka_event_bus() {
     // Reader app (separate consumer group with separate backend)
     let mut reader_app = App::new();
     reader_app.add_plugins(EventBusPlugins(backend_reader));
-
-    // Register bus event for reading
-    reader_app.add_bus_event::<TestEvent>(&topic);
 
     #[derive(Resource, Default)]
     struct Collected(Vec<TestEvent>);

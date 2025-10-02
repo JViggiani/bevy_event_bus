@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
-use bevy_event_bus::{EventBusAppExt, EventBusPlugins, KafkaEventReader, KafkaEventWriter};
+use bevy_event_bus::{EventBusPlugins, KafkaEventReader, KafkaEventWriter};
 use integration_tests::common::events::TestEvent;
 use integration_tests::common::helpers::{
     DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
@@ -15,11 +15,13 @@ fn per_topic_order_preserved() {
 
     let topic_for_writer = topic.clone();
     let (backend_w, _b1) = setup("earliest", move |builder| {
-        builder.add_topic(
-            KafkaTopicSpec::new(topic_for_writer.clone())
-                .partitions(1)
-                .replication(1),
-        );
+        builder
+            .add_topic(
+                KafkaTopicSpec::new(topic_for_writer.clone())
+                    .partitions(1)
+                    .replication(1),
+            )
+            .add_event_single::<TestEvent>(topic_for_writer.clone());
     });
 
     let topic_for_reader = topic.clone();
@@ -30,20 +32,20 @@ fn per_topic_order_preserved() {
                 .partitions(1)
                 .replication(1),
         );
-        builder.add_consumer_group(
-            group_for_reader.clone(),
-            KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
-                .initial_offset(KafkaInitialOffset::Earliest),
-        );
+        builder
+            .add_consumer_group(
+                group_for_reader.clone(),
+                KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
+                    .initial_offset(KafkaInitialOffset::Earliest),
+            )
+            .add_event_single::<TestEvent>(topic_for_reader.clone());
     });
 
     bevy_event_bus::runtime();
     let mut writer = App::new();
     let mut reader = App::new();
     writer.add_plugins(EventBusPlugins(backend_w));
-    writer.add_bus_event::<TestEvent>(&topic);
     reader.add_plugins(EventBusPlugins(backend_r));
-    reader.add_bus_event::<TestEvent>(&topic);
     let tclone = topic.clone();
     writer.add_systems(
         Update,
@@ -116,6 +118,7 @@ fn cross_topic_interleave_each_ordered() {
                 .partitions(1)
                 .replication(1),
         );
+        builder.add_event::<TestEvent>([t1_writer.clone(), t2_writer.clone()]);
     });
 
     let t1_reader = t1.clone();
@@ -132,20 +135,21 @@ fn cross_topic_interleave_each_ordered() {
                 .partitions(1)
                 .replication(1),
         );
-        builder.add_consumer_group(
-            group_for_reader.clone(),
-            KafkaConsumerGroupSpec::new([t1_reader.clone(), t2_reader.clone()])
-                .initial_offset(KafkaInitialOffset::Earliest),
-        );
+        builder
+            .add_consumer_group(
+                group_for_reader.clone(),
+                KafkaConsumerGroupSpec::new([t1_reader.clone(), t2_reader.clone()])
+                    .initial_offset(KafkaInitialOffset::Earliest),
+            )
+            .add_event_single::<TestEvent>(t1_reader.clone())
+            .add_event_single::<TestEvent>(t2_reader.clone());
     });
 
     bevy_event_bus::runtime();
     let mut writer = App::new();
     let mut reader = App::new();
     writer.add_plugins(EventBusPlugins(backend_w));
-    writer.add_bus_event_topics::<TestEvent>(&[&t1, &t2]);
     reader.add_plugins(EventBusPlugins(backend_r));
-    reader.add_bus_event_topics::<TestEvent>(&[&t1, &t2]);
     let t1c = t1.clone();
     let t2c = t2.clone();
     // Single send frame like earlier test

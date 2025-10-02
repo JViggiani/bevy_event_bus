@@ -1,8 +1,6 @@
 use bevy::prelude::*;
 use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
-use bevy_event_bus::{
-    EventBusAppExt, EventBusPlugins, EventWrapper, KafkaEventReader, KafkaEventWriter,
-};
+use bevy_event_bus::{EventBusPlugins, EventWrapper, KafkaEventReader, KafkaEventWriter};
 use integration_tests::common::events::TestEvent;
 use integration_tests::common::helpers::{
     kafka_consumer_config, kafka_producer_config, run_app_updates, unique_consumer_group,
@@ -87,11 +85,13 @@ fn external_bus_events_flow_from_both_writers() {
 
     let topic_for_writer = topic.clone();
     let (backend_writer, bootstrap_w) = setup("earliest", move |builder| {
-        builder.add_topic(
-            KafkaTopicSpec::new(topic_for_writer.clone())
-                .partitions(1)
-                .replication(1),
-        );
+        builder
+            .add_topic(
+                KafkaTopicSpec::new(topic_for_writer.clone())
+                    .partitions(1)
+                    .replication(1),
+            )
+            .add_event_single::<TestEvent>(topic_for_writer.clone());
     });
 
     let topic_for_reader = topic.clone();
@@ -102,17 +102,18 @@ fn external_bus_events_flow_from_both_writers() {
                 .partitions(1)
                 .replication(1),
         );
-        builder.add_consumer_group(
-            group_for_reader.clone(),
-            KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
-                .initial_offset(KafkaInitialOffset::Earliest),
-        );
+        builder
+            .add_consumer_group(
+                group_for_reader.clone(),
+                KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
+                    .initial_offset(KafkaInitialOffset::Earliest),
+            )
+            .add_event_single::<TestEvent>(topic_for_reader.clone());
     });
 
     // Writer app configuration
     let mut writer_app = App::new();
     writer_app.add_plugins(EventBusPlugins(backend_writer));
-    writer_app.add_bus_event::<TestEvent>(&topic);
     writer_app.insert_resource(WriterState {
         bootstrap: bootstrap_w,
         topic: topic.clone(),
@@ -126,7 +127,6 @@ fn external_bus_events_flow_from_both_writers() {
     // Reader app configuration
     let mut reader_app = App::new();
     reader_app.add_plugins(EventBusPlugins(backend_reader));
-    reader_app.add_bus_event::<TestEvent>(&topic);
     reader_app.insert_resource(ReaderState {
         bootstrap: bootstrap_r,
         topic: topic.clone(),

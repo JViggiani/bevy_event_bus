@@ -1,8 +1,7 @@
 use bevy::prelude::*;
 use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
 use bevy_event_bus::{
-    EventBusAppExt, EventBusBackend, EventBusPlugins, KafkaEventBusBackend, KafkaEventReader,
-    KafkaEventWriter,
+    EventBusBackend, EventBusPlugins, KafkaEventBusBackend, KafkaEventReader, KafkaEventWriter,
 };
 use integration_tests::common::events::TestEvent;
 use integration_tests::common::helpers::{
@@ -71,7 +70,8 @@ fn offset_configuration_earliest_receives_historical_events() {
                 consumer_for_config.clone(),
                 KafkaConsumerGroupSpec::new([topic_for_config.clone()])
                     .initial_offset(KafkaInitialOffset::Earliest),
-            );
+            )
+            .add_event_single::<TestEvent>(topic_for_config.clone());
     });
 
     let mut backend = backend_earliest.clone();
@@ -137,10 +137,18 @@ fn offset_configuration_latest_ignores_historical_events() {
 
     // Send historical events first
     {
-        let (backend_producer, _bootstrap) = setup("latest", |_| {});
+        let topic_for_binding = topic.clone();
+        let (backend_producer, _bootstrap) = setup("latest", move |builder| {
+            builder
+                .add_topic(
+                    KafkaTopicSpec::new(topic_for_binding.clone())
+                        .partitions(1)
+                        .replication(1),
+                )
+                .add_event_single::<TestEvent>(topic_for_binding.clone());
+        });
         let mut producer_app = App::new();
         producer_app.add_plugins(EventBusPlugins(backend_producer));
-        producer_app.add_bus_event::<TestEvent>(&topic);
 
         let topic_clone = topic.clone();
         producer_app.add_systems(Update, move |mut w: KafkaEventWriter| {
@@ -175,7 +183,8 @@ fn offset_configuration_latest_ignores_historical_events() {
                 consumer_for_config.clone(),
                 KafkaConsumerGroupSpec::new([topic_for_config.clone()])
                     .initial_offset(KafkaInitialOffset::Latest),
-            );
+            )
+            .add_event_single::<TestEvent>(topic_for_config.clone());
     });
     latest_config.connection = latest_config
         .connection
@@ -184,7 +193,6 @@ fn offset_configuration_latest_ignores_historical_events() {
     let backend_latest = KafkaEventBusBackend::new(latest_config);
     let mut latest_app = App::new();
     latest_app.add_plugins(EventBusPlugins(backend_latest));
-    latest_app.add_bus_event::<TestEvent>(&topic);
 
     #[derive(Resource, Default)]
     struct CollectedLatest(Vec<TestEvent>);
@@ -274,10 +282,18 @@ fn default_offset_configuration_is_latest() {
 
     // Send historical events first
     {
-        let (backend_producer, _bootstrap) = setup("latest", |_| {});
+        let topic_for_binding = topic.clone();
+        let (backend_producer, _bootstrap) = setup("latest", move |builder| {
+            builder
+                .add_topic(
+                    KafkaTopicSpec::new(topic_for_binding.clone())
+                        .partitions(1)
+                        .replication(1),
+                )
+                .add_event_single::<TestEvent>(topic_for_binding.clone());
+        });
         let mut producer_app = App::new();
         producer_app.add_plugins(EventBusPlugins(backend_producer));
-        producer_app.add_bus_event::<TestEvent>(&topic);
 
         let topic_clone = topic.clone();
         producer_app.add_systems(Update, move |mut w: KafkaEventWriter| {
@@ -317,7 +333,6 @@ fn default_offset_configuration_is_latest() {
     ));
     let mut app = App::new();
     app.add_plugins(EventBusPlugins(backend));
-    app.add_bus_event::<TestEvent>(&topic);
 
     #[derive(Resource, Default)]
     struct Collected(Vec<TestEvent>);

@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use bevy::prelude::App;
 use bevy_event_bus::BusEvent;
 use std::any::Any;
 use std::collections::HashMap;
@@ -61,6 +62,9 @@ pub trait EventBusBackend: Send + Sync + 'static + Debug {
         let _ = _config;
         Ok(())
     }
+
+    /// Apply topology-defined event registrations to the provided Bevy `App`.
+    fn apply_event_bindings(&self, _app: &mut App) {}
 
     /// Connect to the backend. Returns true if successful.
     async fn connect(&mut self) -> bool;

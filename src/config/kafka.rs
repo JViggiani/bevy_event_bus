@@ -1,7 +1,13 @@
 //! Kafka-specific configuration objects for type-safe backend inference
 
 use super::{EventBusConfig, Kafka, ProcessingLimits};
-use crate::backends::event_bus_backend::EventBusBackendConfig;
+use crate::{
+    BusEvent,
+    EventBusError,
+    backends::event_bus_backend::EventBusBackendConfig,
+    decoder::DecoderRegistry,
+};
+use bevy::prelude::{App, Event};
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -71,21 +77,63 @@ impl Default for KafkaConnectionConfig {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct KafkaTopologyEventBinding {
+    topics: Vec<String>,
+    register_fn: fn(&mut App, &[String]),
+}
+
+impl KafkaTopologyEventBinding {
+    pub fn new<T: BusEvent + Event>(topics: Vec<String>) -> Self {
+        Self {
+            topics,
+            register_fn: register_event_binding::<T>,
+        }
+    }
+
+    pub fn apply(&self, app: &mut App) {
+        (self.register_fn)(app, &self.topics);
+    }
+
+    pub fn topics(&self) -> &[String] {
+        &self.topics
+    }
+}
+
+fn register_event_binding<T: BusEvent + Event>(app: &mut App, topics: &[String]) {
+    App::add_event::<T>(app);
+    App::add_event::<EventBusError<T>>(app);
+
+    if !app.world().contains_resource::<DecoderRegistry>() {
+        app.world_mut().insert_resource(DecoderRegistry::new());
+    }
+
+    let mut registry = app.world_mut().resource_mut::<DecoderRegistry>();
+    for topic in topics {
+        registry.register_json_decoder::<T>(topic);
+    }
+
+    crate::writers::outbound_bridge::ensure_bridge::<T>(app, topics);
+}
+
 /// Controls the topics, consumer groups and behaviour that the backend prepares at startup.
 #[derive(Clone, Debug, Default)]
 pub struct KafkaTopologyConfig {
     topics: Vec<KafkaTopicSpec>,
     consumer_groups: HashMap<String, KafkaConsumerGroupSpec>,
+    event_bindings: Vec<KafkaTopologyEventBinding>,
 }
 
 impl KafkaTopologyConfig {
     pub fn new(
         topics: Vec<KafkaTopicSpec>,
         consumer_groups: HashMap<String, KafkaConsumerGroupSpec>,
+        event_bindings: Vec<KafkaTopologyEventBinding>,
     ) -> Self {
         Self {
             topics,
             consumer_groups,
+            event_bindings,
         }
     }
 
@@ -104,12 +152,17 @@ impl KafkaTopologyConfig {
     pub fn topic_names(&self) -> HashSet<String> {
         self.topics.iter().map(|t| t.name.clone()).collect()
     }
+
+    pub fn event_bindings(&self) -> &[KafkaTopologyEventBinding] {
+        &self.event_bindings
+    }
 }
 
 #[derive(Default)]
 pub struct KafkaTopologyBuilder {
     topics: Vec<KafkaTopicSpec>,
     consumer_groups: HashMap<String, KafkaConsumerGroupSpec>,
+    event_bindings: Vec<KafkaTopologyEventBinding>,
 }
 
 impl KafkaTopologyBuilder {
@@ -132,8 +185,22 @@ impl KafkaTopologyBuilder {
         self
     }
 
+    pub fn add_event<T: BusEvent + Event>(
+        &mut self,
+        topics: impl IntoIterator<Item = impl Into<String>>,
+    ) -> &mut Self {
+        let topics_vec: Vec<String> = topics.into_iter().map(Into::into).collect();
+        self.event_bindings
+            .push(KafkaTopologyEventBinding::new::<T>(topics_vec));
+        self
+    }
+
+    pub fn add_event_single<T: BusEvent + Event>(&mut self, topic: impl Into<String>) -> &mut Self {
+        self.add_event::<T>([topic.into()])
+    }
+
     pub fn build(self) -> KafkaTopologyConfig {
-        KafkaTopologyConfig::new(self.topics, self.consumer_groups)
+        KafkaTopologyConfig::new(self.topics, self.consumer_groups, self.event_bindings)
     }
 }
 

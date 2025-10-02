@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
 use bevy_event_bus::{
-    EventBusAppExt, EventBusConsumerConfig, EventBusPlugins, KafkaEventReader, KafkaEventWriter,
+    EventBusConsumerConfig, EventBusPlugins, KafkaEventReader, KafkaEventWriter,
 };
 use integration_tests::common::events::TestEvent;
 use integration_tests::common::helpers::{
@@ -21,7 +21,8 @@ fn frame_limit_spreads_drain() {
             KafkaTopicSpec::new(topic_for_writer.clone())
                 .partitions(1)
                 .replication(1),
-        );
+        )
+        .add_event_single::<TestEvent>(topic_for_writer.clone());
     });
 
     let topic_for_reader = topic.clone();
@@ -32,19 +33,19 @@ fn frame_limit_spreads_drain() {
                 .partitions(1)
                 .replication(1),
         );
-        builder.add_consumer_group(
-            group_for_reader.clone(),
-            KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
-                .initial_offset(KafkaInitialOffset::Earliest),
-        );
+        builder
+            .add_consumer_group(
+                group_for_reader.clone(),
+                KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
+                    .initial_offset(KafkaInitialOffset::Earliest),
+            )
+            .add_event_single::<TestEvent>(topic_for_reader.clone());
     });
     let mut writer = App::new();
     writer.add_plugins(EventBusPlugins(backend_w));
-    writer.add_bus_event::<TestEvent>(&topic);
 
     let mut reader = App::new();
     reader.add_plugins(EventBusPlugins(backend_r));
-    reader.add_bus_event::<TestEvent>(&topic);
     let tclone = topic.clone();
     writer.add_systems(Update, move |mut w: KafkaEventWriter| {
         for i in 0..15 {

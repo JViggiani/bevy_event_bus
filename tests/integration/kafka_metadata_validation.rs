@@ -1,8 +1,6 @@
 use bevy::prelude::*;
 use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
-use bevy_event_bus::{
-    EventBusAppExt, EventBusPlugins, EventWrapper, KafkaEventReader, KafkaEventWriter,
-};
+use bevy_event_bus::{EventBusPlugins, EventWrapper, KafkaEventReader, KafkaEventWriter};
 use integration_tests::common::events::TestEvent;
 use integration_tests::common::helpers::{
     DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
@@ -31,7 +29,8 @@ fn kafka_metadata_end_to_end_validation() {
             KafkaTopicSpec::new(topic_for_writer.clone())
                 .partitions(1)
                 .replication(1),
-        );
+        )
+        .add_event_single::<TestEvent>(topic_for_writer.clone());
     });
 
     let topic_for_reader = topic.clone();
@@ -42,11 +41,13 @@ fn kafka_metadata_end_to_end_validation() {
                 .partitions(1)
                 .replication(1),
         );
-        builder.add_consumer_group(
-            consumer_group_for_reader.clone(),
-            KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
-                .initial_offset(KafkaInitialOffset::Earliest),
-        );
+        builder
+            .add_consumer_group(
+                consumer_group_for_reader.clone(),
+                KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
+                    .initial_offset(KafkaInitialOffset::Earliest),
+            )
+            .add_event_single::<TestEvent>(topic_for_reader.clone());
     });
 
     info!("Testing Kafka metadata validation with topic: {}", topic);
@@ -54,12 +55,9 @@ fn kafka_metadata_end_to_end_validation() {
     // Writer app
     let mut writer = App::new();
     writer.add_plugins(EventBusPlugins(backend_w));
-    writer.add_bus_event::<TestEvent>(&topic);
-
     // Reader app - receives events and validates metadata
     let mut reader = App::new();
     reader.add_plugins(EventBusPlugins(backend_r));
-    reader.add_bus_event::<TestEvent>(&topic);
 
     #[derive(Resource, Default)]
     struct ReceivedEventsWithMetadata(Vec<EventWrapper<TestEvent>>);
@@ -257,12 +255,14 @@ fn kafka_metadata_topic_isolation() {
             KafkaTopicSpec::new(topic_a_for_writer.clone())
                 .partitions(1)
                 .replication(1),
-        );
+        )
+        .add_event_single::<TestEvent>(topic_a_for_writer.clone());
         builder.add_topic(
             KafkaTopicSpec::new(topic_b_for_writer.clone())
                 .partitions(1)
                 .replication(1),
-        );
+        )
+        .add_event_single::<TestEvent>(topic_b_for_writer.clone());
     });
 
     let topic_a_for_reader = topic_a.clone();
@@ -280,11 +280,14 @@ fn kafka_metadata_topic_isolation() {
                 .replication(1),
         );
         let topics_for_group = vec![topic_a_for_reader.clone(), topic_b_for_reader.clone()];
-        builder.add_consumer_group(
-            consumer_group_for_reader.clone(),
-            KafkaConsumerGroupSpec::new(topics_for_group)
-                .initial_offset(KafkaInitialOffset::Earliest),
-        );
+        builder
+            .add_consumer_group(
+                consumer_group_for_reader.clone(),
+                KafkaConsumerGroupSpec::new(topics_for_group)
+                    .initial_offset(KafkaInitialOffset::Earliest),
+            )
+            .add_event_single::<TestEvent>(topic_a_for_reader.clone())
+            .add_event_single::<TestEvent>(topic_b_for_reader.clone());
     });
 
     info!(
@@ -295,14 +298,10 @@ fn kafka_metadata_topic_isolation() {
     // Writer app
     let mut writer = App::new();
     writer.add_plugins(EventBusPlugins(backend_w));
-    writer.add_bus_event::<TestEvent>(&topic_a);
-    writer.add_bus_event::<TestEvent>(&topic_b);
 
     // Reader app
     let mut reader = App::new();
     reader.add_plugins(EventBusPlugins(backend_r));
-    reader.add_bus_event::<TestEvent>(&topic_a);
-    reader.add_bus_event::<TestEvent>(&topic_b);
 
     #[derive(Resource, Default)]
     struct ReceivedEvents {
@@ -465,7 +464,8 @@ fn kafka_metadata_consistency_under_load() {
             KafkaTopicSpec::new(topic_for_writer.clone())
                 .partitions(1)
                 .replication(1),
-        );
+        )
+        .add_event_single::<TestEvent>(topic_for_writer.clone());
     });
 
     let topic_for_reader = topic.clone();
@@ -476,11 +476,13 @@ fn kafka_metadata_consistency_under_load() {
                 .partitions(1)
                 .replication(1),
         );
-        builder.add_consumer_group(
-            consumer_group_for_reader.clone(),
-            KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
-                .initial_offset(KafkaInitialOffset::Earliest),
-        );
+        builder
+            .add_consumer_group(
+                consumer_group_for_reader.clone(),
+                KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
+                    .initial_offset(KafkaInitialOffset::Earliest),
+            )
+            .add_event_single::<TestEvent>(topic_for_reader.clone());
     });
 
     info!(
@@ -491,12 +493,10 @@ fn kafka_metadata_consistency_under_load() {
     // Writer app
     let mut writer = App::new();
     writer.add_plugins(EventBusPlugins(backend_w));
-    writer.add_bus_event::<TestEvent>(&topic);
 
     // Reader app
     let mut reader = App::new();
     reader.add_plugins(EventBusPlugins(backend_r));
-    reader.add_bus_event::<TestEvent>(&topic);
 
     #[derive(Resource, Default)]
     struct ReceivedEventsWithMetadata(Vec<EventWrapper<TestEvent>>);
