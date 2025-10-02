@@ -6,16 +6,16 @@ use integration_tests::common::events::TestEvent;
 use integration_tests::common::helpers::{
     unique_consumer_group, unique_topic, wait_for_consumer_group_ready, wait_for_messages_in_group,
 };
-use integration_tests::common::setup::setup_with_offset;
+use integration_tests::common::setup::setup;
 
 async fn init_backend<F>(offset: &str, configure: F) -> (KafkaEventBusBackend, String)
 where
     F: FnOnce(&mut KafkaTopologyBuilder) + Send + 'static,
 {
     let offset_owned = offset.to_string();
-    tokio::task::spawn_blocking(move || setup_with_offset(offset_owned.as_str(), configure))
+    tokio::task::spawn_blocking(move || setup(offset_owned.as_str(), configure))
         .await
-        .expect("setup_with_offset panicked")
+        .expect("setup panicked")
 }
 #[tokio::test]
 async fn test_create_consumer_group() {

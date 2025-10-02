@@ -6,7 +6,7 @@ use integration_tests::common::helpers::{
     DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
     unique_topic, wait_for_events,
 };
-use integration_tests::common::setup::setup_with_offset;
+use integration_tests::common::setup::setup;
 
 #[test]
 fn per_topic_order_preserved() {
@@ -14,7 +14,7 @@ fn per_topic_order_preserved() {
     let consumer_group = unique_consumer_group("ordering_single_topic");
 
     let topic_for_writer = topic.clone();
-    let (backend_w, _b1) = setup_with_offset("earliest", move |builder| {
+    let (backend_w, _b1) = setup("earliest", move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_for_writer.clone())
                 .partitions(1)
@@ -24,7 +24,7 @@ fn per_topic_order_preserved() {
 
     let topic_for_reader = topic.clone();
     let group_for_reader = consumer_group.clone();
-    let (backend_r, _b2) = setup_with_offset("earliest", move |builder| {
+    let (backend_r, _b2) = setup("earliest", move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_for_reader.clone())
                 .partitions(1)
@@ -105,7 +105,7 @@ fn cross_topic_interleave_each_ordered() {
 
     let t1_writer = t1.clone();
     let t2_writer = t2.clone();
-    let (backend_w, _b1) = setup_with_offset("earliest", move |builder| {
+    let (backend_w, _b1) = setup("earliest", move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(t1_writer.clone())
                 .partitions(1)
@@ -121,7 +121,7 @@ fn cross_topic_interleave_each_ordered() {
     let t1_reader = t1.clone();
     let t2_reader = t2.clone();
     let group_for_reader = consumer_group.clone();
-    let (backend_r, _b2) = setup_with_offset("earliest", move |builder| {
+    let (backend_r, _b2) = setup("earliest", move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(t1_reader.clone())
                 .partitions(1)

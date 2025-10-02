@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use bevy_event_bus::config::kafka::KafkaTopicSpec;
 use integration_tests::common::helpers::unique_topic;
-use integration_tests::common::setup::setup_with_offset;
+use integration_tests::common::setup::setup;
 
 // Event types for the comprehensive test
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Event)]
@@ -55,7 +55,7 @@ fn test_multi_decoder() {
     let topic_game_cfg = topic_game.clone();
     let topic_combat_cfg = topic_combat.clone();
     let topic_analytics_cfg = topic_analytics.clone();
-    let (backend, _) = setup_with_offset("earliest", move |builder| {
+    let (backend, _) = setup("earliest", move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_game_cfg.clone())
                 .partitions(1)

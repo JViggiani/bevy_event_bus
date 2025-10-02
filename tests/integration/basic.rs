@@ -6,7 +6,7 @@ use integration_tests::common::helpers::{
     DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
     unique_topic, update_until,
 };
-use integration_tests::common::setup::setup_with_offset;
+use integration_tests::common::setup::setup;
 use tracing::{info, info_span};
 use tracing_subscriber::EnvFilter;
 
@@ -27,7 +27,7 @@ fn test_basic_kafka_event_bus() {
     let consumer_group = unique_consumer_group("basic_reader_group");
 
     let topic_for_writer = topic.clone();
-    let (backend_writer, _bootstrap_writer) = setup_with_offset("earliest", move |builder| {
+    let (backend_writer, _bootstrap_writer) = setup("earliest", move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_for_writer.clone())
                 .partitions(1)
@@ -37,7 +37,7 @@ fn test_basic_kafka_event_bus() {
 
     let topic_for_reader = topic.clone();
     let group_for_reader = consumer_group.clone();
-    let (backend_reader, _bootstrap_reader) = setup_with_offset("earliest", move |builder| {
+    let (backend_reader, _bootstrap_reader) = setup("earliest", move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_for_reader.clone())
                 .partitions(1)

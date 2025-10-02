@@ -8,7 +8,7 @@ use integration_tests::common::helpers::{
     kafka_consumer_config, kafka_producer_config, run_app_updates, unique_consumer_group,
     unique_topic, wait_for_events,
 };
-use integration_tests::common::setup::setup_with_offset;
+use integration_tests::common::setup::setup;
 use tracing::{info, info_span};
 use tracing_subscriber::EnvFilter;
 
@@ -86,7 +86,7 @@ fn external_bus_events_flow_from_both_writers() {
     let consumer_group = unique_consumer_group("dual-writer-group");
 
     let topic_for_writer = topic.clone();
-    let (backend_writer, bootstrap_w) = setup_with_offset("earliest", move |builder| {
+    let (backend_writer, bootstrap_w) = setup("earliest", move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_for_writer.clone())
                 .partitions(1)
@@ -96,7 +96,7 @@ fn external_bus_events_flow_from_both_writers() {
 
     let topic_for_reader = topic.clone();
     let group_for_reader = consumer_group.clone();
-    let (backend_reader, bootstrap_r) = setup_with_offset("earliest", move |builder| {
+    let (backend_reader, bootstrap_r) = setup("earliest", move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_for_reader.clone())
                 .partitions(1)

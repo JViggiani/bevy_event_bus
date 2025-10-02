@@ -5,7 +5,7 @@ use integration_tests::common::events::TestEvent;
 use integration_tests::common::helpers::{
     DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, unique_consumer_group, unique_topic,
 };
-use integration_tests::common::setup::setup_with_offset;
+use integration_tests::common::setup::setup;
 
 // Test that repeatedly reading an empty topic does not hang or block frames.
 #[test]
@@ -15,7 +15,7 @@ fn idle_empty_topic_poll_does_not_block() {
 
     let topic_for_backend = topic.clone();
     let group_for_backend = consumer_group.clone();
-    let (backend, _) = setup_with_offset("earliest", move |builder| {
+    let (backend, _) = setup("earliest", move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_for_backend.clone())
                 .partitions(1)

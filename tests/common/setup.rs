@@ -17,6 +17,7 @@ use tracing::{debug, info, info_span, warn};
 
 const DEFAULT_IMAGE: &str = "redpandadata/redpanda:v23.3.16";
 const CONTAINER_NAME: &str = "bevy_event_bus_test_kafka";
+const DEFAULT_OFFSET: &str = "latest";
 
 /// Holds lifecycle data for the ephemeral Kafka container used in tests
 #[derive(Default, Debug, Clone)]
@@ -237,11 +238,7 @@ fn wait_metadata(bootstrap: &str, max_wait: Duration) -> (bool, u128) {
     (false, start.elapsed().as_millis())
 }
 
-pub fn setup() -> (KafkaEventBusBackend, String) {
-    setup_with_offset("earliest", |_| {})
-}
-
-pub fn setup_with_offset<F>(offset: &str, configure_topology: F) -> (KafkaEventBusBackend, String)
+pub fn setup<F>(offset: &str, configure_topology: F) -> (KafkaEventBusBackend, String)
 where
     F: FnOnce(&mut KafkaTopologyBuilder),
 {
@@ -422,7 +419,7 @@ pub fn build_basic_app<F>(customize: F) -> bevy::prelude::App
 where
     F: FnOnce(&mut bevy::prelude::App),
 {
-    let (backend, _bootstrap) = setup();
+    let (backend, _bootstrap) = setup(DEFAULT_OFFSET, |_| {});
     let mut app = bevy::prelude::App::new();
     app.add_plugins(bevy_event_bus::EventBusPlugins(backend));
     customize(&mut app);

@@ -6,7 +6,7 @@ use integration_tests::common::helpers::{
     DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
     unique_topic, update_until,
 };
-use integration_tests::common::setup::setup_with_offset;
+use integration_tests::common::setup::setup;
 
 #[test]
 fn single_topic_multiple_types_same_frame() {
@@ -14,7 +14,7 @@ fn single_topic_multiple_types_same_frame() {
     let consumer_group = unique_consumer_group("multi_type_same_frame");
 
     let topic_for_writer = topic.clone();
-    let (backend_w, _b1) = setup_with_offset("earliest", move |builder| {
+    let (backend_w, _b1) = setup("earliest", move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_for_writer.clone())
                 .partitions(1)
@@ -24,7 +24,7 @@ fn single_topic_multiple_types_same_frame() {
 
     let topic_for_reader = topic.clone();
     let group_for_reader = consumer_group.clone();
-    let (backend_r, _b2) = setup_with_offset("earliest", move |builder| {
+    let (backend_r, _b2) = setup("earliest", move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_for_reader.clone())
                 .partitions(1)
@@ -129,7 +129,7 @@ fn single_topic_multiple_types_interleaved_frames() {
     let consumer_group2 = unique_consumer_group("multi_type_interleaved");
 
     let topic_for_writer = topic.clone();
-    let (backend_w, _b1) = setup_with_offset("earliest", move |builder| {
+    let (backend_w, _b1) = setup("earliest", move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_for_writer.clone())
                 .partitions(1)
@@ -139,7 +139,7 @@ fn single_topic_multiple_types_interleaved_frames() {
 
     let topic_for_reader = topic.clone();
     let group_for_reader = consumer_group2.clone();
-    let (backend_r, _b2) = setup_with_offset("earliest", move |builder| {
+    let (backend_r, _b2) = setup("earliest", move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_for_reader.clone())
                 .partitions(1)

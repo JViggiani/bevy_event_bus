@@ -14,7 +14,7 @@ use integration_tests::common::helpers::{
     DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
     unique_topic,
 };
-use integration_tests::common::setup::setup_with_offset;
+use integration_tests::common::setup::setup;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 use std::{
@@ -61,7 +61,7 @@ fn test_message_throughput() {
     let topic_for_config = topic.clone();
     let group_for_config = consumer_group.clone();
 
-    let (backend, _container) = setup_with_offset("earliest", move |builder| {
+    let (backend, _container) = setup("earliest", move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic_for_config.clone())
@@ -99,7 +99,7 @@ fn test_large_message_throughput() {
     let topic_for_config = topic.clone();
     let group_for_config = consumer_group.clone();
 
-    let (backend, _container) = setup_with_offset("earliest", move |builder| {
+    let (backend, _container) = setup("earliest", move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic_for_config.clone())
@@ -137,7 +137,7 @@ fn test_high_volume_small_messages() {
     let topic_for_config = topic.clone();
     let group_for_config = consumer_group.clone();
 
-    let (backend, _container) = setup_with_offset("earliest", move |builder| {
+    let (backend, _container) = setup("earliest", move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic_for_config.clone())

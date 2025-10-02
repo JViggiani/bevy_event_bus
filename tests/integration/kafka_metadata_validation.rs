@@ -8,7 +8,7 @@ use integration_tests::common::helpers::{
     DEFAULT_KAFKA_BOOTSTRAP, kafka_consumer_config, kafka_producer_config, unique_consumer_group,
     unique_topic, update_until, wait_for_events,
 };
-use integration_tests::common::setup::setup_with_offset;
+use integration_tests::common::setup::setup;
 use tracing::{info, info_span};
 
 /// Test that validates Kafka metadata propagation with real broker interaction
@@ -26,7 +26,7 @@ fn kafka_metadata_end_to_end_validation() {
     let consumer_group = unique_consumer_group("kafka_metadata_validation_reader");
 
     let topic_for_writer = topic.clone();
-    let (backend_w, _b1) = setup_with_offset("earliest", move |builder| {
+    let (backend_w, _b1) = setup("earliest", move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_for_writer.clone())
                 .partitions(1)
@@ -36,7 +36,7 @@ fn kafka_metadata_end_to_end_validation() {
 
     let topic_for_reader = topic.clone();
     let consumer_group_for_reader = consumer_group.clone();
-    let (backend_r, _b2) = setup_with_offset("earliest", move |builder| {
+    let (backend_r, _b2) = setup("earliest", move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_for_reader.clone())
                 .partitions(1)
@@ -252,7 +252,7 @@ fn kafka_metadata_topic_isolation() {
 
     let topic_a_for_writer = topic_a.clone();
     let topic_b_for_writer = topic_b.clone();
-    let (backend_w, _b1) = setup_with_offset("earliest", move |builder| {
+    let (backend_w, _b1) = setup("earliest", move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_a_for_writer.clone())
                 .partitions(1)
@@ -268,7 +268,7 @@ fn kafka_metadata_topic_isolation() {
     let topic_a_for_reader = topic_a.clone();
     let topic_b_for_reader = topic_b.clone();
     let consumer_group_for_reader = consumer_group.clone();
-    let (backend_r, _b2) = setup_with_offset("earliest", move |builder| {
+    let (backend_r, _b2) = setup("earliest", move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_a_for_reader.clone())
                 .partitions(1)
@@ -460,7 +460,7 @@ fn kafka_metadata_consistency_under_load() {
     let consumer_group = unique_consumer_group("kafka_metadata_consistency");
 
     let topic_for_writer = topic.clone();
-    let (backend_w, _b1) = setup_with_offset("earliest", move |builder| {
+    let (backend_w, _b1) = setup("earliest", move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_for_writer.clone())
                 .partitions(1)
@@ -470,7 +470,7 @@ fn kafka_metadata_consistency_under_load() {
 
     let topic_for_reader = topic.clone();
     let consumer_group_for_reader = consumer_group.clone();
-    let (backend_r, _b2) = setup_with_offset("earliest", move |builder| {
+    let (backend_r, _b2) = setup("earliest", move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_for_reader.clone())
                 .partitions(1)

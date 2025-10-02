@@ -10,7 +10,7 @@ use integration_tests::common::helpers::{
     kafka_producer_config, unique_consumer_group, unique_topic, update_until,
     wait_for_consumer_group_ready, wait_for_messages_in_group,
 };
-use integration_tests::common::setup::{setup, setup_with_offset};
+use integration_tests::common::setup::setup;
 
 /// Test that consumers with "earliest" offset receive historical events
 #[test]
@@ -20,7 +20,7 @@ fn offset_configuration_earliest_receives_historical_events() {
     let topic = unique_topic("offset_test_earliest");
 
     // Create topic and ensure it's ready before proceeding
-    let (_backend_setup, bootstrap) = setup();
+    let (_backend_setup, bootstrap) = setup("latest", |_| {});
     let topic_ready = integration_tests::common::setup::ensure_topic_ready(
         &bootstrap,
         &topic,
@@ -31,7 +31,7 @@ fn offset_configuration_earliest_receives_historical_events() {
 
     // Send historical events using a temporary backend producer
     {
-        let (mut backend_producer, _bootstrap) = setup();
+        let (mut backend_producer, _bootstrap) = setup("latest", |_| {});
         assert!(
             bevy_event_bus::block_on(backend_producer.connect()),
             "Failed to connect producer backend"
@@ -60,7 +60,7 @@ fn offset_configuration_earliest_receives_historical_events() {
     let topic_for_config = topic.clone();
     let consumer_for_config = consumer_group.clone();
 
-    let (backend_earliest, _bootstrap_override) = setup_with_offset("earliest", move |builder| {
+    let (backend_earliest, _bootstrap_override) = setup("earliest", move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic_for_config.clone())
@@ -126,7 +126,7 @@ fn offset_configuration_latest_ignores_historical_events() {
     let topic = unique_topic("offset_test_latest");
 
     // Create topic and ensure it's ready before proceeding
-    let (_backend_setup, bootstrap) = setup();
+    let (_backend_setup, bootstrap) = setup("latest", |_| {});
     let topic_ready = integration_tests::common::setup::ensure_topic_ready(
         &bootstrap,
         &topic,
@@ -137,7 +137,7 @@ fn offset_configuration_latest_ignores_historical_events() {
 
     // Send historical events first
     {
-        let (backend_producer, _bootstrap) = setup();
+        let (backend_producer, _bootstrap) = setup("latest", |_| {});
         let mut producer_app = App::new();
         producer_app.add_plugins(EventBusPlugins(backend_producer));
         producer_app.add_bus_event::<TestEvent>(&topic);
@@ -263,7 +263,7 @@ fn default_offset_configuration_is_latest() {
     let topic = unique_topic("default_offset");
 
     // Create topic and ensure it's ready before proceeding
-    let (_backend_setup, bootstrap) = setup();
+    let (_backend_setup, bootstrap) = setup("latest", |_| {});
     let topic_ready = integration_tests::common::setup::ensure_topic_ready(
         &bootstrap,
         &topic,
@@ -274,7 +274,7 @@ fn default_offset_configuration_is_latest() {
 
     // Send historical events first
     {
-        let (backend_producer, _bootstrap) = setup();
+        let (backend_producer, _bootstrap) = setup("latest", |_| {});
         let mut producer_app = App::new();
         producer_app.add_plugins(EventBusPlugins(backend_producer));
         producer_app.add_bus_event::<TestEvent>(&topic);
