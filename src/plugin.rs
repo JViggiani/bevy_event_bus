@@ -6,8 +6,9 @@ use bevy_event_bus::backends::{EventBusBackend, EventBusBackendResource, KafkaEv
 use bevy_event_bus::decoder::DecoderRegistry;
 use bevy_event_bus::resources::{
     ConsumerMetrics, DecodedEventBuffer, DrainMetricsEvent, DrainedTopicMetadata,
-    EventBusConsumerConfig, EventMetadata, KafkaCommitQueue, KafkaCommitResultChannel,
-    KafkaLagCacheResource, MessageQueue, ProcessedMessage, TopicDecodedEvents,
+    EventBusConsumerConfig, EventMetadata, IncomingMessage, KafkaCommitQueue,
+    KafkaCommitResultChannel, KafkaLagCacheResource, MessageQueue, ProcessedMessage,
+    TopicDecodedEvents,
 };
 use bevy_event_bus::runtime::{block_on, ensure_runtime};
 use bevy_event_bus::writers::EventBusErrorQueue;
@@ -196,60 +197,70 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
 
                     match queue.receiver.try_recv() {
                         Ok(msg) => {
-                            let topic_name = msg.topic.clone();
-                            tracing::debug!(topic=%topic_name, "Processing message with multi-decoder pipeline");
+                            let IncomingMessage {
+                                topic,
+                                partition,
+                                offset,
+                                key,
+                                payload,
+                                timestamp,
+                                headers,
+                                consumer_group,
+                                manual_commit,
+                            } = msg;
 
-                            // Create metadata for this message using new backend-agnostic structure
+                            let topic_str = topic.as_str();
+                            tracing::debug!(topic=%topic_str, "Processing message with multi-decoder pipeline");
+
+                            let key_string =
+                                key.as_ref().map(|k| String::from_utf8_lossy(k).to_string());
+
+                            let kafka_metadata =
+                                bevy_event_bus::resources::backend_metadata::KafkaMetadata {
+                                    topic: topic.clone(),
+                                    partition,
+                                    offset,
+                                    consumer_group,
+                                    manual_commit,
+                                };
+
                             let metadata = EventMetadata::new(
-                                msg.topic.clone(), // source
-                                msg.timestamp,
-                                msg.headers.clone(),
-                                msg.key
-                                    .as_ref()
-                                    .map(|k| String::from_utf8_lossy(k).to_string()), // key as String
-                                Some(Box::new(
-                                    bevy_event_bus::resources::backend_metadata::KafkaMetadata {
-                                        topic: msg.topic.clone(),
-                                        partition: msg.partition,
-                                        offset: msg.offset,
-                                        consumer_group: msg.consumer_group.clone(),
-                                        manual_commit: msg.manual_commit,
-                                    },
-                                )),
+                                topic.clone(),
+                                timestamp,
+                                headers,
+                                key_string,
+                                Some(Box::new(kafka_metadata)),
                             );
 
                             // Attempt multi-decode using registered decoders
-                            let decoded_events =
-                                decoder_registry.decode_all(&topic_name, &msg.payload);
+                            let decoded_events = decoder_registry.decode_all(topic_str, &payload);
 
                             // Get or create topic buffer
                             let topic_buffer = decoded_buffer
                                 .topics
-                                .entry(topic_name.clone())
+                                .entry(topic.clone())
                                 .or_insert_with(TopicDecodedEvents::new);
                             topic_buffer.total_processed += 1;
 
                             if decoded_events.is_empty() {
                                 // No decoder succeeded - fire decode error event
                                 topic_buffer.decode_failures += 1;
+                                let decoder_count = decoder_registry.decoder_count(topic_str);
                                 tracing::debug!(
-                                    topic = %topic_name,
-                                    decoders_tried = decoder_registry.decoder_count(&topic_name),
+                                    topic = %topic_str,
+                                    decoders_tried = decoder_count,
                                     "No decoder succeeded for message"
                                 );
 
                                 // Generate decode error event
                                 let decode_error = bevy_event_bus::EventBusDecodeError::new(
-                                    topic_name.clone(),
+                                    metadata.source.clone(),
                                     format!(
                                         "No decoder succeeded. Tried {} decoders",
-                                        decoder_registry.decoder_count(&topic_name)
+                                        decoder_count
                                     ),
-                                    msg.payload.clone(),
-                                    format!(
-                                        "tried_{}_decoders",
-                                        decoder_registry.decoder_count(&topic_name)
-                                    ),
+                                    payload,
+                                    format!("tried_{}_decoders", decoder_count),
                                     Some(metadata.clone()),
                                 );
 
@@ -259,7 +270,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                                 // At least one decoder succeeded
                                 for decoded_event in decoded_events {
                                     tracing::trace!(
-                                        topic = %topic_name,
+                                        topic = %topic_str,
                                         decoder = %decoded_event.decoder_name,
                                         "Successfully decoded event"
                                     );
@@ -282,13 +293,13 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                                 // Also add the original message to DrainedTopicMetadata for BusEventReader compatibility
                                 // This allows existing BusEventReader<T> to find the events by deserializing the original payload
                                 let processed_msg = ProcessedMessage {
-                                    payload: msg.payload.clone(),
+                                    payload,
                                     metadata: metadata.clone(),
                                 };
 
                                 metadata_buffers
                                     .topics
-                                    .entry(topic_name.clone())
+                                    .entry(topic.clone())
                                     .or_insert_with(Vec::new)
                                     .push(processed_msg);
                             }
