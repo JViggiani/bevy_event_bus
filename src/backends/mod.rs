@@ -9,7 +9,8 @@ pub use event_bus_backend::EventBusBackend;
 
 #[cfg(feature = "kafka")]
 pub use kafka_backend::{
-    KafkaCommitRequest, KafkaCommitResult, KafkaEventBusBackend, KafkaLagCache,
+    KafkaCommitOutcome, KafkaCommitRequest, KafkaCommitResult, KafkaCommitResultEvent,
+    KafkaCommitResultStats, KafkaEventBusBackend, KafkaLagCache,
 };
 
 // Producer flush helper removed; frame-level system now guarantees delivery.

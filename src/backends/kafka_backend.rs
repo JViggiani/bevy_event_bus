@@ -24,20 +24,21 @@ use std::{
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
-use bevy::prelude::App;
+use bevy::prelude::*;
 use bevy_event_bus::{
-    backends::event_bus_backend::{EventBusBackend, ReceiveOptions, SendOptions},
+    backends::event_bus_backend::{
+        BackendPluginSetup, EventBusBackend, ReceiveOptions, SendOptions,
+    },
     config::kafka::{
         KafkaBackendConfig, KafkaConnectionConfig, KafkaConsumerGroupSpec, KafkaInitialOffset,
         KafkaTopologyConfig,
     },
-    resources::IncomingMessage,
+    resources::{
+        ConsumerMetrics, IncomingMessage, KafkaCommitQueue, KafkaCommitResultChannel,
+        KafkaLagCacheResource, backend_metadata::KafkaMetadata,
+    },
     runtime,
 };
-
-const MESSAGE_CHANNEL_CAPACITY: usize = 10_000;
-const COMMIT_CHANNEL_CAPACITY: usize = 2_048;
-const RESULT_CHANNEL_CAPACITY: usize = 1_024;
 
 #[derive(Debug, Clone)]
 pub struct KafkaCommitRequest {
@@ -88,6 +89,86 @@ impl KafkaLagCache {
             .get(&(consumer_group.to_string(), topic.to_string()))
             .cloned()
     }
+}
+
+fn kafka_commit_result_dispatch_system(
+    mut commands: Commands,
+    maybe_channel: Option<Res<KafkaCommitResultChannel>>,
+    mut events: EventWriter<KafkaCommitResultEvent>,
+) {
+    if let Some(channel) = maybe_channel {
+        loop {
+            match channel.receiver.try_recv() {
+                Ok(result) => {
+                    events.write(KafkaCommitResultEvent {
+                        backend: "kafka".into(),
+                        consumer_group: result.consumer_group,
+                        topic: result.topic,
+                        partition: result.partition,
+                        offset: result.offset,
+                        error: result.error,
+                    });
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    commands.remove_resource::<KafkaCommitResultChannel>();
+                    break;
+                }
+            }
+        }
+    }
+}
+
+fn kafka_commit_result_stats_system(
+    mut stats: ResMut<KafkaCommitResultStats>,
+    mut events: EventReader<KafkaCommitResultEvent>,
+) {
+    for event in events.read() {
+        let key = (
+            event.backend.clone(),
+            event.consumer_group.clone(),
+            event.topic.clone(),
+        );
+        let entry = stats.totals.entry(key).or_default();
+        entry.partition = event.partition;
+        entry.last_offset = event.offset;
+        match &event.error {
+            Some(err) => {
+                entry.failures += 1;
+                entry.last_error = Some(err.clone());
+            }
+            None => {
+                entry.successes += 1;
+                entry.last_error = None;
+            }
+        }
+    }
+}
+
+/// Emitted when an asynchronous Kafka manual commit completes.
+#[derive(Event, Debug, Clone)]
+pub struct KafkaCommitResultEvent {
+    pub backend: String,
+    pub consumer_group: String,
+    pub topic: String,
+    pub partition: i32,
+    pub offset: i64,
+    pub error: Option<String>,
+}
+
+/// Tracks aggregate statistics for Kafka commit outcomes so tests or diagnostics can inspect behaviour.
+#[derive(Resource, Debug, Clone, Default)]
+pub struct KafkaCommitResultStats {
+    pub totals: HashMap<(String, String, String), KafkaCommitOutcome>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct KafkaCommitOutcome {
+    pub partition: i32,
+    pub last_offset: i64,
+    pub successes: usize,
+    pub failures: usize,
+    pub last_error: Option<String>,
 }
 
 #[derive(Clone)]
@@ -180,9 +261,11 @@ impl KafkaEventBusBackend {
             &config.topology,
         )));
 
-        let (incoming_tx, incoming_rx) = bounded(MESSAGE_CHANNEL_CAPACITY);
-        let (commit_tx, commit_rx) = bounded(COMMIT_CHANNEL_CAPACITY);
-        let (result_tx, result_rx) = bounded(RESULT_CHANNEL_CAPACITY);
+        let capacities = config.channel_capacities.clone();
+
+        let (incoming_tx, incoming_rx) = bounded(capacities.message);
+        let (commit_tx, commit_rx) = bounded(capacities.commit);
+        let (result_tx, result_rx) = bounded(capacities.result);
 
         let inner = KafkaBackendInner {
             config,
@@ -306,14 +389,16 @@ impl KafkaEventBusBackend {
     }
 
     fn message_matches(message: &IncomingMessage, topic: &str, group: Option<&str>) -> bool {
-        if message.topic != topic {
+        if message.source != topic {
             return false;
         }
 
         match group {
             Some(group_id) => message
-                .consumer_group
-                .as_deref()
+                .backend_metadata
+                .as_ref()
+                .and_then(|meta| meta.as_any().downcast_ref::<KafkaMetadata>())
+                .and_then(|kafka| kafka.consumer_group.as_deref())
                 .map(|candidate| candidate == group_id)
                 .unwrap_or(false),
             None => true,
@@ -496,10 +581,50 @@ impl EventBusBackend for KafkaEventBusBackend {
         self
     }
 
+    fn backend_name(&self) -> &'static str {
+        "kafka"
+    }
+
+    fn configure_plugin(&self, app: &mut App) {
+        app.add_event::<KafkaCommitResultEvent>();
+        app.init_resource::<KafkaCommitResultStats>();
+        app.add_systems(
+            PreUpdate,
+            (
+                kafka_commit_result_dispatch_system,
+                kafka_commit_result_stats_system,
+            )
+                .chain(),
+        );
+    }
+
+    fn setup_plugin(&self, world: &mut World) -> BackendPluginSetup {
+        let mut setup = BackendPluginSetup::default();
+        setup.ready_topics = self.configured_topics();
+
+        world.insert_resource(KafkaCommitQueue(self.commit_sender()));
+        if let Some(commit_rx) = self.take_commit_results() {
+            world.insert_resource(KafkaCommitResultChannel {
+                receiver: commit_rx,
+            });
+        }
+        world.insert_resource(KafkaLagCacheResource(self.lag_cache()));
+
+        setup
+    }
+
+    fn augment_metrics(&self, metrics: &mut ConsumerMetrics) {
+        metrics.dropped_messages = self.dropped_count();
+    }
+
     fn apply_event_bindings(&self, app: &mut App) {
         for binding in self.inner.config.topology.event_bindings() {
             binding.apply(app);
         }
+    }
+
+    fn take_message_stream(&self) -> Option<Receiver<IncomingMessage>> {
+        self.take_receiver()
     }
 
     async fn connect(&mut self) -> bool {
@@ -771,7 +896,9 @@ async fn consumer_loop(
                     None => Vec::new(),
                 };
 
-                let key = message.key().map(|k| k.to_vec());
+                let key = message
+                    .key()
+                    .map(|k| String::from_utf8_lossy(k).into_owned());
                 let mut headers_map = HashMap::new();
                 if let Some(headers) = message.headers() {
                     for header in headers.iter() {
@@ -784,15 +911,18 @@ async fn consumer_loop(
                 }
 
                 let msg = IncomingMessage {
-                    topic: message.topic().to_string(),
-                    partition: message.partition(),
-                    offset: message.offset(),
-                    key,
+                    source: message.topic().to_string(),
                     payload,
                     timestamp: Instant::now(),
                     headers: headers_map,
-                    consumer_group: Some(runtime.group_id.clone()),
-                    manual_commit: runtime.manual_commit,
+                    key,
+                    backend_metadata: Some(Box::new(KafkaMetadata {
+                        topic: message.topic().to_string(),
+                        partition: message.partition(),
+                        offset: message.offset(),
+                        consumer_group: Some(runtime.group_id.clone()),
+                        manual_commit: runtime.manual_commit,
+                    })),
                 };
 
                 let mut pending = msg;

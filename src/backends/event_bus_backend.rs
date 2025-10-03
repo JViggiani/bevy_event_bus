@@ -1,6 +1,9 @@
+use crate::resources::ConsumerMetrics;
+use crate::resources::IncomingMessage;
 use async_trait::async_trait;
-use bevy::prelude::App;
+use bevy::prelude::{App, World};
 use bevy_event_bus::BusEvent;
+use crossbeam_channel::Receiver;
 use std::any::Any;
 use std::collections::HashMap;
 use std::error::Error;
@@ -45,6 +48,12 @@ impl Error for BackendConfigError {}
 /// Trait implemented by backend-specific configuration objects to enable dynamic dispatch.
 pub trait EventBusBackendConfig: Send + Sync + 'static {
     fn as_any(&self) -> &dyn Any;
+}
+
+/// Data returned by a backend when the plugin is setting up runtime resources.
+#[derive(Default)]
+pub struct BackendPluginSetup {
+    pub ready_topics: Vec<String>,
 }
 
 /// Options that customize how serialized events are dispatched to a backend.
@@ -97,6 +106,22 @@ pub trait EventBusBackend: Send + Sync + 'static + Debug {
     fn as_any(&self) -> &dyn std::any::Any;
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 
+    /// Identifier used for logging and lifecycle events.
+    fn backend_name(&self) -> &'static str {
+        "unknown"
+    }
+
+    /// Allow the backend to register additional events, resources and systems with the plugin's [`App`].
+    fn configure_plugin(&self, _app: &mut App) {}
+
+    /// Give the backend a chance to install runtime resources once connection has been established.
+    fn setup_plugin(&self, _world: &mut World) -> BackendPluginSetup {
+        BackendPluginSetup::default()
+    }
+
+    /// Allow the backend to annotate consumer metrics with backend-specific counters.
+    fn augment_metrics(&self, _metrics: &mut ConsumerMetrics) {}
+
     /// Apply backend-specific configuration prior to connecting.
     fn configure(&mut self, _config: &dyn EventBusBackendConfig) -> Result<(), BackendConfigError> {
         let _ = _config;
@@ -105,6 +130,11 @@ pub trait EventBusBackend: Send + Sync + 'static + Debug {
 
     /// Apply topology-defined event registrations to the provided Bevy `App`.
     fn apply_event_bindings(&self, _app: &mut App) {}
+
+    /// Take ownership of the incoming message stream if the backend provides one.
+    fn take_message_stream(&self) -> Option<Receiver<IncomingMessage>> {
+        None
+    }
 
     /// Connect to the backend. Returns true if successful.
     async fn connect(&mut self) -> bool;

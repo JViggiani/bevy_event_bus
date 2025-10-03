@@ -19,7 +19,11 @@ mod writers;
 
 // Re-exports
 pub use backends::EventBusBackend;
-pub use config::{BackendMarker, EventBusConfig, InMemory, Kafka, ProcessingLimits};
+#[cfg(feature = "kafka")]
+pub use config::Kafka;
+#[cfg(feature = "redis")]
+pub use config::Redis;
+pub use config::{BackendMarker, EventBusConfig, InMemory, ProcessingLimits};
 pub use decoder::{DecodedEvent, DecoderFn, DecoderRegistry, TypedDecoder};
 pub use error::{EventBusDecodeError, EventBusError, EventBusErrorType};
 pub use event::BusEvent;
@@ -42,9 +46,16 @@ pub use writers::{KafkaEventWriter, KafkaWriterError};
 pub use backends::kafka_backend::KafkaEventBusBackend;
 #[cfg(feature = "kafka")]
 pub use config::kafka::{
-    KafkaBackendConfig, KafkaConnectionConfig, KafkaConsumerConfig, KafkaConsumerGroupSpec,
-    KafkaEventMetadata, KafkaInitialOffset, KafkaProducerConfig, KafkaTopicSpec,
-    KafkaTopologyConfig, UncommittedEvent,
+    KafkaBackendConfig, KafkaChannelCapacities, KafkaConnectionConfig, KafkaConsumerConfig,
+    KafkaConsumerGroupSpec, KafkaEventMetadata, KafkaInitialOffset, KafkaProducerConfig,
+    KafkaTopicSpec, KafkaTopologyConfig, UncommittedEvent,
+};
+
+#[cfg(feature = "redis")]
+pub use config::redis::{
+    RedisBackendConfig, RedisConnectionConfig, RedisConsumerConfig, RedisConsumerGroupSpec,
+    RedisProducerConfig, RedisStreamSpec, RedisTopologyBuilder, RedisTopologyConfig,
+    RedisTopologyEventBinding, TrimStrategy,
 };
 
 pub use runtime::{SharedRuntime, ensure_runtime};
@@ -57,18 +68,29 @@ pub mod prelude {
         DecodedEventBuffer, DecoderRegistry, EventBusBackend, EventBusConsumerConfig,
         EventBusDecodeError, EventBusError, EventBusErrorType, EventBusPlugin, EventBusPlugins,
         EventMetadata, EventWrapper, ProcessedMessage, TopicDecodedEvents, TypedDecoder,
-        config::{BackendMarker, EventBusConfig, InMemory, Kafka, ProcessingLimits},
+        config::{BackendMarker, EventBusConfig, InMemory, ProcessingLimits},
     };
+
+    #[cfg(feature = "redis")]
+    pub use bevy_event_bus::config::Redis;
 
     #[cfg(feature = "kafka")]
     pub use bevy_event_bus::{
         KafkaEventBusBackend, KafkaEventReader, KafkaEventWriter, KafkaReaderError,
         KafkaWriterError,
+        config::Kafka,
         config::kafka::{
-            KafkaBackendConfig, KafkaConnectionConfig, KafkaConsumerConfig, KafkaConsumerGroupSpec,
-            KafkaEventMetadata, KafkaInitialOffset, KafkaProducerConfig, KafkaTopicSpec,
-            KafkaTopologyConfig, UncommittedEvent,
+            KafkaBackendConfig, KafkaChannelCapacities, KafkaConnectionConfig, KafkaConsumerConfig,
+            KafkaConsumerGroupSpec, KafkaEventMetadata, KafkaInitialOffset, KafkaProducerConfig,
+            KafkaTopicSpec, KafkaTopologyConfig, UncommittedEvent,
         },
+    };
+
+    #[cfg(feature = "redis")]
+    pub use bevy_event_bus::config::redis::{
+        RedisBackendConfig, RedisConnectionConfig, RedisConsumerConfig, RedisConsumerGroupSpec,
+        RedisProducerConfig, RedisStreamSpec, RedisTopologyBuilder, RedisTopologyConfig,
+        TrimStrategy,
     };
 }
 
