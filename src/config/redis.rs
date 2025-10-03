@@ -292,12 +292,69 @@ impl RedisTopologyBuilder {
     }
 }
 
+/// Runtime tuning parameters controlling buffering and polling behaviour for the Redis backend.
+#[derive(Clone, Debug)]
+pub struct RedisRuntimeTuning {
+    pub message_channel_capacity: usize,
+    pub ack_channel_capacity: usize,
+    pub read_batch_size: usize,
+    pub empty_read_backoff: Duration,
+}
+
+impl RedisRuntimeTuning {
+    pub fn new(
+        message_channel_capacity: usize,
+        ack_channel_capacity: usize,
+        read_batch_size: usize,
+        empty_read_backoff: Duration,
+    ) -> Self {
+        Self {
+            message_channel_capacity,
+            ack_channel_capacity,
+            read_batch_size,
+            empty_read_backoff,
+        }
+    }
+
+    pub fn message_channel_capacity(mut self, capacity: usize) -> Self {
+        self.message_channel_capacity = capacity;
+        self
+    }
+
+    pub fn ack_channel_capacity(mut self, capacity: usize) -> Self {
+        self.ack_channel_capacity = capacity;
+        self
+    }
+
+    pub fn read_batch_size(mut self, batch: usize) -> Self {
+        self.read_batch_size = batch;
+        self
+    }
+
+    pub fn empty_read_backoff(mut self, backoff: Duration) -> Self {
+        self.empty_read_backoff = backoff;
+        self
+    }
+}
+
+impl Default for RedisRuntimeTuning {
+    fn default() -> Self {
+        Self {
+            message_channel_capacity: 10_000,
+            ack_channel_capacity: 2_048,
+            read_batch_size: 128,
+            empty_read_backoff: Duration::from_millis(5),
+        }
+    }
+}
+
 /// Backend configuration wrapper used to construct the Redis backend.
 #[derive(Clone, Debug)]
 pub struct RedisBackendConfig {
     pub connection: RedisConnectionConfig,
     pub topology: RedisTopologyConfig,
     pub read_block_timeout: Duration,
+    pub runtime: RedisRuntimeTuning,
 }
 
 impl RedisBackendConfig {
@@ -310,7 +367,17 @@ impl RedisBackendConfig {
             connection,
             topology,
             read_block_timeout,
+            runtime: RedisRuntimeTuning::default(),
         }
+    }
+
+    pub fn runtime_tuning(mut self, runtime: RedisRuntimeTuning) -> Self {
+        self.runtime = runtime;
+        self
+    }
+
+    pub fn get_runtime_tuning(&self) -> &RedisRuntimeTuning {
+        &self.runtime
     }
 }
 

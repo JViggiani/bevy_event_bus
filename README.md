@@ -141,7 +141,7 @@ Hook these into your diagnostics UI or telemetry exporters to keep an eye on the
 ## Testing & performance
 
 - The integration suite under `tests/` can launch a temporary Redpanda container when Docker is available. Set `KAFKA_BOOTSTRAP_SERVERS` to target an existing broker if you prefer to manage infrastructure yourself.
-- Run `cargo test` for unit coverage and `./run_performance_tests.sh` to capture throughput metrics. Compare new runs with `event_bus_perf_results.csv` to spot regressions; each row now includes the test name and a `send_rate_delta_per_sec` column so you can gauge improvement or drift at a glance.
+- Run `cargo test` for unit coverage and `./run_performance_tests.py` to capture throughput metrics. Compare new runs with `event_bus_perf_results.csv` to spot regressions; each row now includes the test name and a `send_rate_delta_per_sec` column so you can gauge improvement or drift at a glance.
 
 ## Contributing
 

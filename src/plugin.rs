@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 
+use bevy_event_bus::backends::event_bus_backend::{LagReportingDescriptor, ManualCommitDescriptor};
 use bevy_event_bus::backends::{EventBusBackend, EventBusBackendResource};
 use bevy_event_bus::decoder::DecoderRegistry;
 use bevy_event_bus::resources::{
@@ -55,6 +56,25 @@ pub struct BackendStatus {
     pub ready: bool,
 }
 
+#[derive(Resource, Debug, Clone)]
+pub struct BackendCapabilities {
+    pub backend: String,
+    pub message_stream: bool,
+    pub manual_commit: Option<ManualCommitDescriptor>,
+    pub lag_reporting: Option<LagReportingDescriptor>,
+}
+
+impl BackendCapabilities {
+    fn new(backend: impl Into<String>) -> Self {
+        Self {
+            backend: backend.into(),
+            message_stream: false,
+            manual_commit: None,
+            lag_reporting: None,
+        }
+    }
+}
+
 impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
     fn build(&self, app: &mut App) {
         // Add the core plugin and ensure runtime exists
@@ -74,29 +94,51 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
             .get_resource::<EventBusBackendResource>()
             .cloned()
         {
-            let (message_stream, backend_name, backend_setup) = {
+            let (backend_name, mut backend_setup) = {
                 let mut guard = backend_res.write();
                 let _ = block_on(guard.connect());
-                let message_stream = guard.take_message_stream();
                 let backend_name = guard.backend_name().to_string();
                 let setup = guard.setup_plugin(app.world_mut());
-                (message_stream, backend_name, setup)
+                (backend_name, setup)
             };
 
-            if let Some(rx) = message_stream {
+            let mut capabilities = BackendCapabilities::new(backend_name.clone());
+
+            if let Some(rx) = backend_setup.message_stream.take() {
                 app.world_mut()
                     .insert_resource(MessageQueue { receiver: rx });
+                capabilities.message_stream = true;
+            }
+
+            if let Some(handle) = backend_setup.manual_commit.take() {
+                let descriptor = handle.descriptor();
+                {
+                    let world = app.world_mut();
+                    handle.register_resources(world);
+                }
+                capabilities.manual_commit = Some(descriptor);
+            }
+
+            if let Some(handle) = backend_setup.lag_reporting.take() {
+                let descriptor = handle.descriptor();
+                {
+                    let world = app.world_mut();
+                    handle.register_resources(world);
+                }
+                capabilities.lag_reporting = Some(descriptor);
             }
 
             let (tx, rx_life) = crossbeam_channel::unbounded::<LifecycleMessage>();
+            let ready_topics = backend_setup.ready_topics.clone();
             let _ = tx.send(LifecycleMessage::Ready {
                 backend: backend_name.clone(),
-                topics: backend_setup.ready_topics.clone(),
+                topics: ready_topics.clone(),
             });
             app.world_mut()
                 .insert_resource(BackendLifecycleChannel(rx_life));
             app.world_mut()
                 .insert_resource(BackendStatus { ready: false });
+            app.world_mut().insert_resource(capabilities);
             // We cannot directly hook errors here; leave placeholder (Down events emitted by future backend error hook TBD)
         }
 
@@ -112,7 +154,6 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
 
         // Drain system with multi-decoder pipeline
         fn drain_system(
-            mut commands: Commands,
             backend: Option<Res<EventBusBackendResource>>,
             mut metadata_buffers: ResMut<DrainedTopicMetadata>,
             mut decoded_buffer: ResMut<DecodedEventBuffer>,
@@ -259,12 +300,6 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                 metrics.remaining_channel_after_drain = queue.receiver.len();
                 metrics.queue_len_end = metrics.remaining_channel_after_drain;
                 metrics.total_drained += metrics.drained_last_frame;
-            } else if let Some(backend_res) = backend_ref {
-                let guard = backend_res.write();
-
-                if let Some(rx) = guard.take_message_stream() {
-                    commands.insert_resource(MessageQueue { receiver: rx });
-                }
             }
 
             if let Some(backend_res) = backend_ref {

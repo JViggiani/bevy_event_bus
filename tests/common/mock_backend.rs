@@ -72,12 +72,4 @@ impl EventBusBackend for MockEventBusBackend {
         // Mock backend doesn't actually store/receive messages for this test
         Vec::new()
     }
-
-    async fn subscribe(&mut self, _topic: &str) -> bool {
-        true
-    }
-
-    async fn unsubscribe(&mut self, _topic: &str) -> bool {
-        true
-    }
 }

@@ -77,8 +77,37 @@ impl<'w, 's, T: BusEvent + Event> KafkaEventReader<'w, 's, T> {
     /// Read all messages for the supplied Kafka configuration. When manual commit is requested
     /// (auto commit disabled) the reader ensures the backend has manual commit mode enabled
     /// for the consumer group before returning events.
-    pub fn read(&mut self, config: &KafkaConsumerConfig) -> Vec<EventWrapper<T>> {
-        self.read_internal(config)
+    pub fn read<C: EventBusConfig>(&mut self, config: &C) -> Vec<EventWrapper<T>> {
+        let mut all_events = Vec::new();
+        let topics = config.topics();
+
+        for topic in topics {
+            self.wrapped_events.clear();
+
+            if let Some(metadata_drained) = &mut self.metadata_drained {
+                if let Some(messages) = metadata_drained.topics.get(topic) {
+                    let start = *self.metadata_offsets.get(topic).unwrap_or(&0);
+                    if start < messages.len() {
+                        for processed_msg in messages.iter().skip(start) {
+                            match serde_json::from_slice::<T>(&processed_msg.payload) {
+                                Ok(event) => self
+                                    .wrapped_events
+                                    .push(EventWrapper::new(event, processed_msg.metadata.clone())),
+                                Err(_) => tracing::warn!(
+                                    "Failed to deserialize event from topic {}",
+                                    topic
+                                ),
+                            }
+                        }
+                        self.metadata_offsets.insert(topic.clone(), messages.len());
+                    }
+                }
+            }
+
+            all_events.append(&mut *self.wrapped_events);
+        }
+
+        all_events
     }
 
     /// Commit the supplied event using Kafka manual offsets. The configuration used to read the
@@ -148,46 +177,10 @@ impl<'w, 's, T: BusEvent + Event> KafkaEventReader<'w, 's, T> {
 
         Ok(per_topic)
     }
-
-    /// Backend-agnostic read implementation shared between the trait impl and the
-    /// Kafka-specific helper. It drains decoded events from `DrainedTopicMetadata` and
-    /// converts them into typed wrappers.
-    fn read_internal<C: EventBusConfig>(&mut self, config: &C) -> Vec<EventWrapper<T>> {
-        let mut all_events = Vec::new();
-        let topics = config.topics();
-
-        for topic in topics {
-            self.wrapped_events.clear();
-
-            if let Some(metadata_drained) = &mut self.metadata_drained {
-                if let Some(messages) = metadata_drained.topics.get(topic) {
-                    let start = *self.metadata_offsets.get(topic).unwrap_or(&0);
-                    if start < messages.len() {
-                        for processed_msg in messages.iter().skip(start) {
-                            match serde_json::from_slice::<T>(&processed_msg.payload) {
-                                Ok(event) => self
-                                    .wrapped_events
-                                    .push(EventWrapper::new(event, processed_msg.metadata.clone())),
-                                Err(_) => tracing::warn!(
-                                    "Failed to deserialize event from topic {}",
-                                    topic
-                                ),
-                            }
-                        }
-                        self.metadata_offsets.insert(topic.clone(), messages.len());
-                    }
-                }
-            }
-
-            all_events.append(&mut *self.wrapped_events);
-        }
-
-        all_events
-    }
 }
 
 impl<'w, 's, T: BusEvent + Event> BusEventReader<T> for KafkaEventReader<'w, 's, T> {
     fn read<C: EventBusConfig>(&mut self, config: &C) -> Vec<EventWrapper<T>> {
-        self.read_internal(config)
+        KafkaEventReader::read(self, config)
     }
 }

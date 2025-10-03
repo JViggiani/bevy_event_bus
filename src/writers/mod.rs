@@ -1,5 +1,7 @@
 #[cfg(feature = "kafka")]
 mod kafka;
+#[cfg(feature = "redis")]
+mod redis;
 
 pub mod outbound_bridge;
 
@@ -12,6 +14,8 @@ use bevy_event_bus::{BusEvent, EventBusError};
 
 #[cfg(feature = "kafka")]
 pub use kafka::{KafkaEventWriter, KafkaWriterError};
+#[cfg(feature = "redis")]
+pub use redis::{RedisEventWriter, RedisWriterError};
 
 /// Queue of errors emitted by writers so they can be flushed outside of the system parameter borrow.
 #[derive(Resource, Default)]

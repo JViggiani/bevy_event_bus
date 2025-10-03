@@ -9,6 +9,51 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{Debug, Display};
 
+/// Descriptor summarising the manual commit mechanism exposed by a backend.
+#[derive(Debug, Clone)]
+pub struct ManualCommitDescriptor {
+    pub backend: &'static str,
+    pub style: ManualCommitStyle,
+}
+
+/// Manual commit styles supported by the framework.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManualCommitStyle {
+    /// Offsets committed back to the broker (Kafka-style).
+    OffsetQueue,
+    /// Stream acknowledgement (Redis XACK-style).
+    StreamAck,
+}
+
+/// Trait implemented by backend-provided manual commit handles. Allows backends to
+/// expose additional resources without the plugin understanding concrete types.
+pub trait ManualCommitHandle: Send + Sync {
+    fn register_resources(&self, world: &mut World);
+    fn descriptor(&self) -> ManualCommitDescriptor;
+}
+
+/// Descriptor summarising lag reporting capabilities exposed by a backend.
+#[derive(Debug, Clone)]
+pub struct LagReportingDescriptor {
+    pub backend: &'static str,
+    pub detail: &'static str,
+}
+
+/// Trait implemented by backend-provided lag reporting handles.
+pub trait LagReportingHandle: Send + Sync {
+    fn register_resources(&self, world: &mut World);
+    fn descriptor(&self) -> LagReportingDescriptor;
+}
+
+/// Data returned by a backend when the plugin is setting up runtime resources.
+#[derive(Default)]
+pub struct BackendPluginSetup {
+    pub ready_topics: Vec<String>,
+    pub message_stream: Option<Receiver<IncomingMessage>>,
+    pub manual_commit: Option<Box<dyn ManualCommitHandle>>,
+    pub lag_reporting: Option<Box<dyn LagReportingHandle>>,
+}
+
 /// Error returned when a backend configuration cannot be applied.
 #[derive(Debug, Clone)]
 pub struct BackendConfigError {
@@ -50,10 +95,11 @@ pub trait EventBusBackendConfig: Send + Sync + 'static {
     fn as_any(&self) -> &dyn Any;
 }
 
-/// Data returned by a backend when the plugin is setting up runtime resources.
-#[derive(Default)]
-pub struct BackendPluginSetup {
-    pub ready_topics: Vec<String>,
+/// Strategy used when trimming append-only streams during writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StreamTrimStrategy {
+    Exact,
+    Approximate,
 }
 
 /// Options that customize how serialized events are dispatched to a backend.
@@ -61,6 +107,7 @@ pub struct BackendPluginSetup {
 pub struct SendOptions<'a> {
     pub partition_key: Option<&'a str>,
     pub headers: Option<&'a HashMap<String, String>>,
+    pub stream_trim: Option<(usize, StreamTrimStrategy)>,
 }
 
 impl<'a> SendOptions<'a> {
@@ -75,6 +122,11 @@ impl<'a> SendOptions<'a> {
 
     pub fn headers(mut self, headers: &'a HashMap<String, String>) -> Self {
         self.headers = Some(headers);
+        self
+    }
+
+    pub fn stream_trim(mut self, maxlen: usize, strategy: StreamTrimStrategy) -> Self {
+        self.stream_trim = Some((maxlen, strategy));
         self
     }
 }
@@ -131,11 +183,6 @@ pub trait EventBusBackend: Send + Sync + 'static + Debug {
     /// Apply topology-defined event registrations to the provided Bevy `App`.
     fn apply_event_bindings(&self, _app: &mut App) {}
 
-    /// Take ownership of the incoming message stream if the backend provides one.
-    fn take_message_stream(&self) -> Option<Receiver<IncomingMessage>> {
-        None
-    }
-
     /// Connect to the backend. Returns true if successful.
     async fn connect(&mut self) -> bool;
 
@@ -151,45 +198,33 @@ pub trait EventBusBackend: Send + Sync + 'static + Debug {
     /// Returns empty vec if no messages or on error.
     async fn receive_serialized(&self, topic: &str, options: ReceiveOptions<'_>) -> Vec<Vec<u8>>;
 
-    /// Subscribe to a topic. Returns true if successful.
-    async fn subscribe(&mut self, topic: &str) -> bool;
+    /// Flush all pending messages (producer-side)
+    async fn flush(&self) -> Result<(), String> {
+        Ok(()) // Default no-op so that basic backends do not need to override it.
+    }
+}
 
-    /// Unsubscribe from a topic. Returns true if successful.
-    async fn unsubscribe(&mut self, topic: &str) -> bool;
-
-    /// Create a consumer group with specific configuration
+/// Trait implemented by backends that can provision consumer groups dynamically at runtime.
+#[async_trait]
+pub trait ConsumerGroupManager: EventBusBackend {
     async fn create_consumer_group(
         &mut self,
         topics: &[String],
         group_id: &str,
-    ) -> Result<(), String> {
-        let _ = (topics, group_id); // Suppress unused parameter warnings
-        Ok(()) // Default no-op for backends that don't support multiple consumer groups
-    }
+    ) -> Result<(), String>;
+}
 
-    /// Consume from specific consumer group
-    /// Enable manual offset commits for reliable processing
-    async fn enable_manual_commits(&mut self, group_id: &str) -> Result<(), String> {
-        let _ = group_id; // Suppress unused parameter warning
-        Ok(()) // Default no-op for backends that don't support manual commits
-    }
+/// Trait implemented by backends that expose manual commit controls.
+#[async_trait]
+pub trait ManualCommitController: EventBusBackend {
+    async fn enable_manual_commits(&mut self, group_id: &str) -> Result<(), String>;
+    async fn commit_offset(&self, topic: &str, partition: i32, offset: i64) -> Result<(), String>;
+}
 
-    /// Manually commit a specific message offset
-    async fn commit_offset(&self, topic: &str, partition: i32, offset: i64) -> Result<(), String> {
-        let _ = (topic, partition, offset); // Suppress unused parameter warnings
-        Ok(()) // Default no-op
-    }
-
-    /// Get consumer lag for monitoring
-    async fn get_consumer_lag(&self, topic: &str, group_id: &str) -> Result<i64, String> {
-        let _ = (topic, group_id); // Suppress unused parameter warnings
-        Ok(0) // Default no lag
-    }
-
-    /// Flush all pending messages (producer-side)
-    async fn flush(&self) -> Result<(), String> {
-        Ok(()) // Default no-op
-    }
+/// Trait implemented by backends that can report consumer lag.
+#[async_trait]
+pub trait LagReportingBackend: EventBusBackend {
+    async fn get_consumer_lag(&self, topic: &str, group_id: &str) -> Result<i64, String>;
 }
 
 /// Helper methods for working with EventBusBackend trait objects
