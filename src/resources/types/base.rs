@@ -1,26 +1,22 @@
 use bevy::prelude::*;
-use bevy_event_bus::BusEvent;
-use bevy_event_bus::resources::backend_metadata::EventMetadata;
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::Receiver;
 use std::collections::HashMap;
 use std::time::Instant;
 
-use bevy_event_bus::backends::kafka_backend::{
-    KafkaCommitRequest, KafkaCommitResult, KafkaLagCache,
-};
+use crate::BusEvent;
+use crate::resources::backend_metadata::{BackendMetadata, EventMetadata};
+#[cfg(test)]
+use crate::resources::backend_metadata::{KafkaMetadata, RedisMetadata};
 
 /// Raw incoming message captured by background consumer task
 #[derive(Debug, Clone)]
 pub struct IncomingMessage {
-    pub topic: String,
-    pub partition: i32,
-    pub offset: i64,
-    pub key: Option<Vec<u8>>,
+    pub source: String,
     pub payload: Vec<u8>,
-    pub timestamp: Instant,
     pub headers: HashMap<String, String>,
-    pub consumer_group: Option<String>,
-    pub manual_commit: bool,
+    pub key: Option<String>,
+    pub timestamp: Instant,
+    pub backend_metadata: Option<Box<dyn BackendMetadata>>,
 }
 
 impl EventMetadata {
@@ -94,20 +90,6 @@ pub struct MessageQueue {
     pub receiver: Receiver<IncomingMessage>,
 }
 
-/// Channel used by `KafkaEventReader` to enqueue manual commit requests handled in the background.
-#[derive(Resource, Clone)]
-pub struct KafkaCommitQueue(pub Sender<KafkaCommitRequest>);
-
-/// Channel delivering results of commit attempts back to the main thread for event dispatching.
-#[derive(Resource)]
-pub struct KafkaCommitResultChannel {
-    pub receiver: Receiver<KafkaCommitResult>,
-}
-
-/// Shared cache containing the latest per-topic consumer lag measurements.
-#[derive(Resource, Clone)]
-pub struct KafkaLagCacheResource(pub KafkaLagCache);
-
 /// Pre-processed message with payload and metadata already converted for efficient reading
 #[derive(Clone, Debug)]
 pub struct ProcessedMessage {
@@ -118,8 +100,8 @@ pub struct ProcessedMessage {
 /// Per-topic metadata-aware message buffers filled by drain system each frame
 #[derive(Resource, Default, Debug)]
 pub struct DrainedTopicMetadata {
-    pub topics: std::collections::HashMap<String, Vec<ProcessedMessage>>,
-    pub decode_errors: Vec<bevy_event_bus::EventBusDecodeError>,
+    pub topics: HashMap<String, Vec<ProcessedMessage>>,
+    pub decode_errors: Vec<crate::EventBusDecodeError>,
 }
 
 /// Basic consumer metrics (frame-scoped counters + cumulative stats)
@@ -135,118 +117,6 @@ pub struct ConsumerMetrics {
     pub idle_frames: usize,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use bevy_event_bus::resources::backend_metadata::KafkaMetadata;
-    use std::time::Instant;
-
-    #[test]
-    fn test_key_parsing() {
-        // Test basic key operations with new metadata structure
-        let mut metadata = EventMetadata::new(
-            "test_topic".to_string(),
-            Instant::now(),
-            std::collections::HashMap::new(),
-            None,
-            None,
-        );
-
-        // Test None key
-        assert_eq!(metadata.key_as_string(), None);
-        assert_eq!(metadata.key_display(), None);
-
-        // Test valid UTF-8 string key
-        metadata.key = Some("user_123".to_string());
-        assert_eq!(metadata.key_as_string(), Some("user_123".to_string()));
-        assert_eq!(metadata.key_display(), Some("user_123".to_string()));
-
-        // Test partition key for routing
-        metadata.key = Some("world_456".to_string());
-        assert_eq!(metadata.key_as_string(), Some("world_456".to_string()));
-        assert_eq!(metadata.key_display(), Some("world_456".to_string()));
-
-        // Test Kafka-specific metadata integration
-        let kafka_metadata = KafkaMetadata {
-            topic: "test_topic".to_string(),
-            partition: 0,
-            offset: 42,
-            consumer_group: Some("group_a".to_string()),
-            manual_commit: false,
-        };
-        metadata.backend_specific = Some(Box::new(kafka_metadata));
-
-        if let Some(kafka_meta) = metadata.kafka_metadata() {
-            assert_eq!(kafka_meta.topic, "test_topic");
-            assert_eq!(kafka_meta.partition, 0);
-            assert_eq!(kafka_meta.offset, 42);
-        } else {
-            panic!("Expected Kafka metadata");
-        }
-
-        // Test headers functionality
-        let mut headers = std::collections::HashMap::new();
-        headers.insert("correlation_id".to_string(), "abc-123".to_string());
-        headers.insert("source_service".to_string(), "world_simulator".to_string());
-
-        let metadata_with_headers = EventMetadata::new(
-            "events_topic".to_string(),
-            Instant::now(),
-            headers.clone(),
-            Some("event_key_789".to_string()),
-            Some(Box::new(KafkaMetadata {
-                topic: "events_topic".to_string(),
-                partition: 1,
-                offset: 456,
-                consumer_group: Some("group_b".to_string()),
-                manual_commit: true,
-            })),
-        );
-
-        assert_eq!(metadata_with_headers.source, "events_topic");
-        assert_eq!(
-            metadata_with_headers.key_as_string(),
-            Some("event_key_789".to_string())
-        );
-        assert_eq!(
-            metadata_with_headers.headers.get("correlation_id"),
-            Some(&"abc-123".to_string())
-        );
-        assert_eq!(
-            metadata_with_headers.headers.get("source_service"),
-            Some(&"world_simulator".to_string())
-        );
-    }
-
-    #[test]
-    fn test_backend_metadata_downcasting() {
-        // Test that we can properly downcast backend-specific metadata
-        let kafka_meta = KafkaMetadata {
-            topic: "kafka_topic".to_string(),
-            partition: 1,
-            offset: 100,
-            consumer_group: Some("group_c".to_string()),
-            manual_commit: true,
-        };
-
-        let metadata = EventMetadata::new(
-            "kafka_topic".to_string(),
-            Instant::now(),
-            std::collections::HashMap::new(),
-            Some("partition_key".to_string()),
-            Some(Box::new(kafka_meta)),
-        );
-
-        // Test the helper method
-        assert!(metadata.kafka_metadata().is_some());
-        if let Some(k_meta) = metadata.kafka_metadata() {
-            assert_eq!(k_meta.topic, "kafka_topic");
-            assert_eq!(k_meta.partition, 1);
-            assert_eq!(k_meta.offset, 100);
-        }
-    }
-}
-
 /// Event emitted after each drain with snapshot metrics (optional for user systems)
 #[derive(Event, Debug, Clone)]
 pub struct DrainMetricsEvent {
@@ -258,7 +128,7 @@ pub struct DrainMetricsEvent {
 }
 
 /// Multi-decoded event storage that groups all successfully decoded events by topic
-/// This replaces DrainedTopicMetadata for the new multi-decoder pipeline
+/// This replaces `DrainedTopicMetadata` for the new multi-decoder pipeline
 #[derive(Resource, Default)]
 pub struct DecodedEventBuffer {
     /// Maps topic name to lists of decoded events (organized by type)
@@ -360,6 +230,133 @@ impl TopicDecodedEvents {
             0.0
         } else {
             (self.total_events() as f32 / self.total_processed as f32) * 100.0
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn test_key_parsing() {
+        let mut metadata = EventMetadata::new(
+            "test_topic".to_string(),
+            Instant::now(),
+            HashMap::new(),
+            None,
+            None,
+        );
+
+        assert_eq!(metadata.key_as_string(), None);
+        assert_eq!(metadata.key_display(), None);
+
+        metadata.key = Some("user_123".to_string());
+        assert_eq!(metadata.key_as_string(), Some("user_123".to_string()));
+        assert_eq!(metadata.key_display(), Some("user_123".to_string()));
+
+        metadata.key = Some("world_456".to_string());
+        assert_eq!(metadata.key_as_string(), Some("world_456".to_string()));
+        assert_eq!(metadata.key_display(), Some("world_456".to_string()));
+
+        let kafka_metadata = KafkaMetadata {
+            topic: "test_topic".to_string(),
+            partition: 0,
+            offset: 42,
+            consumer_group: Some("group_a".to_string()),
+            manual_commit: false,
+        };
+        metadata.backend_specific = Some(Box::new(kafka_metadata));
+
+        if let Some(kafka_meta) = metadata.kafka_metadata() {
+            assert_eq!(kafka_meta.topic, "test_topic");
+            assert_eq!(kafka_meta.partition, 0);
+            assert_eq!(kafka_meta.offset, 42);
+        } else {
+            panic!("Expected Kafka metadata");
+        }
+
+        let mut headers = HashMap::new();
+        headers.insert("correlation_id".to_string(), "abc-123".to_string());
+        headers.insert("source_service".to_string(), "world_simulator".to_string());
+
+        let metadata_with_headers = EventMetadata::new(
+            "events_topic".to_string(),
+            Instant::now(),
+            headers.clone(),
+            Some("event_key_789".to_string()),
+            Some(Box::new(KafkaMetadata {
+                topic: "events_topic".to_string(),
+                partition: 1,
+                offset: 456,
+                consumer_group: Some("group_b".to_string()),
+                manual_commit: true,
+            })),
+        );
+
+        assert_eq!(metadata_with_headers.source, "events_topic");
+        assert_eq!(
+            metadata_with_headers.key_as_string(),
+            Some("event_key_789".to_string())
+        );
+        assert_eq!(
+            metadata_with_headers.headers.get("correlation_id"),
+            Some(&"abc-123".to_string())
+        );
+        assert_eq!(
+            metadata_with_headers.headers.get("source_service"),
+            Some(&"world_simulator".to_string())
+        );
+    }
+
+    #[test]
+    fn test_backend_metadata_downcasting() {
+        let kafka_meta = KafkaMetadata {
+            topic: "kafka_topic".to_string(),
+            partition: 1,
+            offset: 100,
+            consumer_group: Some("group_c".to_string()),
+            manual_commit: true,
+        };
+
+        let metadata = EventMetadata::new(
+            "kafka_topic".to_string(),
+            Instant::now(),
+            HashMap::new(),
+            Some("partition_key".to_string()),
+            Some(Box::new(kafka_meta)),
+        );
+
+        assert!(metadata.kafka_metadata().is_some());
+        if let Some(k_meta) = metadata.kafka_metadata() {
+            assert_eq!(k_meta.topic, "kafka_topic");
+            assert_eq!(k_meta.partition, 1);
+            assert_eq!(k_meta.offset, 100);
+        }
+
+        let redis_meta = RedisMetadata {
+            stream: "redis_stream".to_string(),
+            entry_id: "1-0".to_string(),
+            consumer_group: Some("redis_group".to_string()),
+            manual_ack: true,
+        };
+
+        let metadata = EventMetadata::new(
+            "redis_stream".to_string(),
+            Instant::now(),
+            HashMap::new(),
+            None,
+            Some(Box::new(redis_meta)),
+        );
+
+        if let Some(r_meta) = metadata.redis_metadata() {
+            assert_eq!(r_meta.stream, "redis_stream");
+            assert_eq!(r_meta.entry_id, "1-0");
+            assert_eq!(r_meta.consumer_group.as_deref(), Some("redis_group"));
+            assert!(r_meta.manual_ack);
+        } else {
+            panic!("Expected Redis metadata");
         }
     }
 }

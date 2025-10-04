@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy_event_bus::backends::EventBusBackend;
-use bevy_event_bus::backends::event_bus_backend::ReceiveOptions;
+use bevy_event_bus::backends::event_bus_backend::{LagReportingBackend, ReceiveOptions};
 use bevy_event_bus::config::kafka::KafkaTopologyBuilder;
 use bevy_event_bus::{KafkaBackendConfig, KafkaConnectionConfig};
 use std::process;
@@ -129,7 +129,7 @@ pub async fn wait_for_consumer_group_ready<B>(
     timeout_ms: u64,
 ) -> bool
 where
-    B: EventBusBackend,
+    B: EventBusBackend + LagReportingBackend,
 {
     let topic = topic.to_string();
     let group_id = group_id.to_string();

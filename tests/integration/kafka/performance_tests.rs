@@ -27,6 +27,38 @@ use std::{
 
 const PERFORMANCE_CSV_HEADER: &str = "timestamp_ms,git_hash,run_name,messages_sent,messages_received,payload_size_bytes,send_duration_ms,receive_duration_ms,send_rate_per_sec,receive_rate_per_sec,send_throughput_mb_per_sec,receive_throughput_mb_per_sec,test_name,send_rate_delta_per_sec\n";
 
+#[derive(Debug, Clone)]
+struct PerformanceCsvRecord {
+    run_name: String,
+    test_name: String,
+    payload_size_bytes: usize,
+    send_rate_per_sec: f64,
+    receive_rate_per_sec: f64,
+}
+
+impl PerformanceCsvRecord {
+    fn parse(line: &str) -> Option<Self> {
+        let columns: Vec<&str> = line.split(',').collect();
+        if columns.len() < 13 {
+            return None;
+        }
+
+        let run_name = columns.get(2)?.trim().to_string();
+        let payload_size_bytes = columns.get(5)?.trim().parse().ok()?;
+        let send_rate_per_sec = columns.get(8)?.trim().parse().ok()?;
+        let receive_rate_per_sec = columns.get(9)?.trim().parse().ok()?;
+        let test_name = columns.get(12)?.trim().to_string();
+
+        Some(Self {
+            run_name,
+            test_name,
+            payload_size_bytes,
+            send_rate_per_sec,
+            receive_rate_per_sec,
+        })
+    }
+}
+
 #[derive(Event, Deserialize, Serialize, Debug, Clone, PartialEq)]
 struct PerformanceTestEvent {
     id: u64,
@@ -420,9 +452,14 @@ fn record_performance_results(
         eprintln!("Failed to normalise performance CSV schema: {err}");
     }
 
-    let previous_rate = previous_send_rate(csv_path_ref, test_name).unwrap_or(None);
-    let send_rate_delta = previous_rate
-        .map(|previous| send_rate - previous)
+    let previous_record = find_previous_record(csv_path_ref, test_name).unwrap_or(None);
+    let send_rate_delta = previous_record
+        .as_ref()
+        .map(|previous| send_rate - previous.send_rate_per_sec)
+        .unwrap_or(0.0);
+    let receive_rate_delta = previous_record
+        .as_ref()
+        .map(|previous| receive_rate - previous.receive_rate_per_sec)
         .unwrap_or(0.0);
 
     let record = format!(
@@ -465,6 +502,27 @@ fn record_performance_results(
         .expect("Failed to write CSV record");
 
     println!("📊 Performance results recorded to: {}", csv_path);
+
+    if let Some(previous) = previous_record {
+        println!(
+            "Previous run \"{}\": send rate {:.0} msg/s, receive rate {:.0} msg/s (payload {} bytes)",
+            previous.run_name,
+            previous.send_rate_per_sec,
+            previous.receive_rate_per_sec,
+            previous.payload_size_bytes
+        );
+        println!(
+            "Δ send rate: {:+.0} msg/s, Δ receive rate: {:+.0} msg/s",
+            send_rate_delta, receive_rate_delta
+        );
+    } else {
+        println!("No previous run recorded for {test_name} in {csv_path}.");
+    }
+
+    println!(
+        "Current run \"{}\": send rate {:.0} msg/s, receive rate {:.0} msg/s (payload {} bytes)",
+        run_name, send_rate, receive_rate, payload_size
+    );
 }
 
 fn ensure_performance_csv_schema(path: &Path) -> std::io::Result<()> {
@@ -519,14 +577,17 @@ fn ensure_performance_csv_schema(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn previous_send_rate(path: &Path, test_name: &str) -> std::io::Result<Option<f64>> {
+fn find_previous_record(
+    path: &Path,
+    test_name: &str,
+) -> std::io::Result<Option<PerformanceCsvRecord>> {
     if !path.exists() {
         return Ok(None);
     }
 
     let file = fs::File::open(path)?;
     let reader = BufReader::new(file);
-    let mut last: Option<f64> = None;
+    let mut last: Option<PerformanceCsvRecord> = None;
 
     for line in reader.lines().skip(1) {
         let line = line?;
@@ -534,16 +595,16 @@ fn previous_send_rate(path: &Path, test_name: &str) -> std::io::Result<Option<f6
             continue;
         }
 
-        let columns: Vec<&str> = line.split(',').collect();
-        if columns.len() < 14 {
+        let current = match PerformanceCsvRecord::parse(&line) {
+            Some(record) => record,
+            None => continue,
+        };
+
+        if current.test_name != test_name {
             continue;
         }
 
-        if columns[12] == test_name {
-            if let Ok(rate) = columns[8].parse::<f64>() {
-                last = Some(rate);
-            }
-        }
+        last = Some(current);
     }
 
     Ok(last)

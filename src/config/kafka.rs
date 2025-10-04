@@ -10,6 +10,49 @@ use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
+/// Channel capacity configuration for the Kafka backend's internal queues.
+#[derive(Clone, Debug)]
+pub struct KafkaChannelCapacities {
+    pub message: usize,
+    pub commit: usize,
+    pub result: usize,
+}
+
+impl KafkaChannelCapacities {
+    pub fn new(message: usize, commit: usize, result: usize) -> Self {
+        Self {
+            message,
+            commit,
+            result,
+        }
+    }
+
+    pub fn message_capacity(mut self, capacity: usize) -> Self {
+        self.message = capacity;
+        self
+    }
+
+    pub fn commit_capacity(mut self, capacity: usize) -> Self {
+        self.commit = capacity;
+        self
+    }
+
+    pub fn result_capacity(mut self, capacity: usize) -> Self {
+        self.result = capacity;
+        self
+    }
+}
+
+impl Default for KafkaChannelCapacities {
+    fn default() -> Self {
+        Self {
+            message: 10_000,
+            commit: 2_048,
+            result: 1_024,
+        }
+    }
+}
+
 /// Connection configuration for Kafka backend initialization
 #[derive(Clone, Debug)]
 pub struct KafkaConnectionConfig {
@@ -271,6 +314,7 @@ pub struct KafkaBackendConfig {
     pub connection: KafkaConnectionConfig,
     pub topology: KafkaTopologyConfig,
     pub consumer_lag_poll_interval: Duration,
+    pub channel_capacities: KafkaChannelCapacities,
 }
 
 impl KafkaBackendConfig {
@@ -283,7 +327,17 @@ impl KafkaBackendConfig {
             connection,
             topology,
             consumer_lag_poll_interval,
+            channel_capacities: KafkaChannelCapacities::default(),
         }
+    }
+
+    pub fn channel_capacities(mut self, capacities: KafkaChannelCapacities) -> Self {
+        self.channel_capacities = capacities;
+        self
+    }
+
+    pub fn get_channel_capacities(&self) -> &KafkaChannelCapacities {
+        &self.channel_capacities
     }
 }
 

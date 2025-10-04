@@ -24,20 +24,23 @@ use std::{
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
-use bevy::prelude::App;
+use bevy::prelude::*;
 use bevy_event_bus::{
-    backends::event_bus_backend::{EventBusBackend, ReceiveOptions, SendOptions},
+    backends::event_bus_backend::{
+        BackendPluginSetup, ConsumerGroupManager, EventBusBackend, LagReportingBackend,
+        LagReportingDescriptor, LagReportingHandle, ManualCommitController, ManualCommitDescriptor,
+        ManualCommitHandle, ManualCommitStyle, ReceiveOptions, SendOptions,
+    },
     config::kafka::{
         KafkaBackendConfig, KafkaConnectionConfig, KafkaConsumerGroupSpec, KafkaInitialOffset,
         KafkaTopologyConfig,
     },
-    resources::IncomingMessage,
+    resources::{
+        ConsumerMetrics, IncomingMessage, KafkaCommitQueue, KafkaCommitResultChannel,
+        KafkaLagCacheResource, backend_metadata::KafkaMetadata,
+    },
     runtime,
 };
-
-const MESSAGE_CHANNEL_CAPACITY: usize = 10_000;
-const COMMIT_CHANNEL_CAPACITY: usize = 2_048;
-const RESULT_CHANNEL_CAPACITY: usize = 1_024;
 
 #[derive(Debug, Clone)]
 pub struct KafkaCommitRequest {
@@ -90,6 +93,142 @@ impl KafkaLagCache {
     }
 }
 
+struct KafkaManualCommitHandle {
+    sender: Sender<KafkaCommitRequest>,
+    results: Mutex<Option<Receiver<KafkaCommitResult>>>,
+}
+
+impl KafkaManualCommitHandle {
+    fn new(
+        sender: Sender<KafkaCommitRequest>,
+        results: Option<Receiver<KafkaCommitResult>>,
+    ) -> Self {
+        Self {
+            sender,
+            results: Mutex::new(results),
+        }
+    }
+}
+
+impl ManualCommitHandle for KafkaManualCommitHandle {
+    fn register_resources(&self, world: &mut World) {
+        world.insert_resource(KafkaCommitQueue(self.sender.clone()));
+        if let Some(receiver) = self.results.lock().unwrap().take() {
+            world.insert_resource(KafkaCommitResultChannel { receiver });
+        }
+    }
+
+    fn descriptor(&self) -> ManualCommitDescriptor {
+        ManualCommitDescriptor {
+            backend: "kafka",
+            style: ManualCommitStyle::OffsetQueue,
+        }
+    }
+}
+
+struct KafkaLagHandle {
+    cache: KafkaLagCache,
+}
+
+impl KafkaLagHandle {
+    fn new(cache: KafkaLagCache) -> Self {
+        Self { cache }
+    }
+}
+
+impl LagReportingHandle for KafkaLagHandle {
+    fn register_resources(&self, world: &mut World) {
+        world.insert_resource(KafkaLagCacheResource(self.cache.clone()));
+    }
+
+    fn descriptor(&self) -> LagReportingDescriptor {
+        LagReportingDescriptor {
+            backend: "kafka",
+            detail: "consumer_lag",
+        }
+    }
+}
+
+fn kafka_commit_result_dispatch_system(
+    mut commands: Commands,
+    maybe_channel: Option<Res<KafkaCommitResultChannel>>,
+    mut events: EventWriter<KafkaCommitResultEvent>,
+) {
+    if let Some(channel) = maybe_channel {
+        loop {
+            match channel.receiver.try_recv() {
+                Ok(result) => {
+                    events.write(KafkaCommitResultEvent {
+                        backend: "kafka".into(),
+                        consumer_group: result.consumer_group,
+                        topic: result.topic,
+                        partition: result.partition,
+                        offset: result.offset,
+                        error: result.error,
+                    });
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    commands.remove_resource::<KafkaCommitResultChannel>();
+                    break;
+                }
+            }
+        }
+    }
+}
+
+fn kafka_commit_result_stats_system(
+    mut stats: ResMut<KafkaCommitResultStats>,
+    mut events: EventReader<KafkaCommitResultEvent>,
+) {
+    for event in events.read() {
+        let key = (
+            event.backend.clone(),
+            event.consumer_group.clone(),
+            event.topic.clone(),
+        );
+        let entry = stats.totals.entry(key).or_default();
+        entry.partition = event.partition;
+        entry.last_offset = event.offset;
+        match &event.error {
+            Some(err) => {
+                entry.failures += 1;
+                entry.last_error = Some(err.clone());
+            }
+            None => {
+                entry.successes += 1;
+                entry.last_error = None;
+            }
+        }
+    }
+}
+
+/// Emitted when an asynchronous Kafka manual commit completes.
+#[derive(Event, Debug, Clone)]
+pub struct KafkaCommitResultEvent {
+    pub backend: String,
+    pub consumer_group: String,
+    pub topic: String,
+    pub partition: i32,
+    pub offset: i64,
+    pub error: Option<String>,
+}
+
+/// Tracks aggregate statistics for Kafka commit outcomes so tests or diagnostics can inspect behaviour.
+#[derive(Resource, Debug, Clone, Default)]
+pub struct KafkaCommitResultStats {
+    pub totals: HashMap<(String, String, String), KafkaCommitOutcome>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct KafkaCommitOutcome {
+    pub partition: i32,
+    pub last_offset: i64,
+    pub successes: usize,
+    pub failures: usize,
+    pub last_error: Option<String>,
+}
+
 #[derive(Clone)]
 struct ConsumerRuntime {
     consumer: Arc<BaseConsumer>,
@@ -98,7 +237,8 @@ struct ConsumerRuntime {
     topics: Vec<String>,
 }
 
-struct KafkaBackendInner {
+/// Shared runtime state for the Kafka backend, allowing clones to coordinate producer, consumer and worker tasks.
+struct KafkaBackendState {
     config: KafkaBackendConfig,
     producer: Arc<BaseProducer<EventBusProducerContext>>,
     consumers: Arc<Mutex<HashMap<String, ConsumerRuntime>>>,
@@ -119,16 +259,16 @@ struct KafkaBackendInner {
 
 #[derive(Clone)]
 pub struct KafkaEventBusBackend {
-    inner: Arc<KafkaBackendInner>,
+    state: Arc<KafkaBackendState>,
 }
 
 impl Debug for KafkaEventBusBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let consumers = self.inner.consumers.lock().unwrap();
+        let consumers = self.state.consumers.lock().unwrap();
         f.debug_struct("KafkaEventBusBackend")
             .field(
                 "bootstrap",
-                &self.inner.config.connection.bootstrap_servers(),
+                &self.state.config.connection.bootstrap_servers(),
             )
             .field(
                 "consumer_groups",
@@ -180,11 +320,13 @@ impl KafkaEventBusBackend {
             &config.topology,
         )));
 
-        let (incoming_tx, incoming_rx) = bounded(MESSAGE_CHANNEL_CAPACITY);
-        let (commit_tx, commit_rx) = bounded(COMMIT_CHANNEL_CAPACITY);
-        let (result_tx, result_rx) = bounded(RESULT_CHANNEL_CAPACITY);
+        let capacities = config.channel_capacities.clone();
 
-        let inner = KafkaBackendInner {
+        let (incoming_tx, incoming_rx) = bounded(capacities.message);
+        let (commit_tx, commit_rx) = bounded(capacities.commit);
+        let (result_tx, result_rx) = bounded(capacities.result);
+
+        let state = KafkaBackendState {
             config,
             producer,
             consumers: consumers.clone(),
@@ -204,16 +346,16 @@ impl KafkaEventBusBackend {
         };
 
         Self {
-            inner: Arc::new(inner),
+            state: Arc::new(state),
         }
     }
 
     pub fn bootstrap_servers(&self) -> &str {
-        self.inner.config.connection.bootstrap_servers()
+        self.state.config.connection.bootstrap_servers()
     }
 
     pub fn configured_topics(&self) -> Vec<String> {
-        self.inner
+        self.state
             .config
             .topology
             .topics()
@@ -223,31 +365,31 @@ impl KafkaEventBusBackend {
     }
 
     pub fn take_receiver(&self) -> Option<Receiver<IncomingMessage>> {
-        self.inner.incoming_rx.lock().unwrap().take()
+        self.state.incoming_rx.lock().unwrap().take()
     }
 
     pub fn commit_sender(&self) -> Sender<KafkaCommitRequest> {
-        self.inner.commit_tx.clone()
+        self.state.commit_tx.clone()
     }
 
     pub fn take_commit_results(&self) -> Option<Receiver<KafkaCommitResult>> {
-        self.inner.commit_outcome_rx.lock().unwrap().take()
+        self.state.commit_outcome_rx.lock().unwrap().take()
     }
 
     pub fn lag_cache(&self) -> KafkaLagCache {
-        self.inner.lag_cache.clone()
+        self.state.lag_cache.clone()
     }
 
     pub fn dropped_count(&self) -> usize {
-        self.inner.dropped.load(Ordering::Relaxed)
+        self.state.dropped.load(Ordering::Relaxed)
     }
 
     pub fn poll_producer(&self) {
-        self.inner.producer.poll(Duration::from_millis(0));
+        self.state.producer.poll(Duration::from_millis(0));
     }
 
     pub fn flush(&self, timeout: Duration) -> Result<(), String> {
-        self.inner
+        self.state
             .producer
             .flush(timeout)
             .map_err(|err| err.to_string())
@@ -258,7 +400,7 @@ impl KafkaEventBusBackend {
         let mut deferred = VecDeque::new();
 
         {
-            let mut pending = self.inner.pending_messages.lock().unwrap();
+            let mut pending = self.state.pending_messages.lock().unwrap();
             while let Some(msg) = pending.pop_front() {
                 if Self::message_matches(&msg, topic, group) {
                     let payload = msg.payload;
@@ -270,7 +412,7 @@ impl KafkaEventBusBackend {
         }
 
         let receiver_opt = {
-            let mut guard = self.inner.incoming_rx.lock().unwrap();
+            let mut guard = self.state.incoming_rx.lock().unwrap();
             guard.take()
         };
 
@@ -291,12 +433,12 @@ impl KafkaEventBusBackend {
                 }
             }
 
-            let mut guard = self.inner.incoming_rx.lock().unwrap();
+            let mut guard = self.state.incoming_rx.lock().unwrap();
             *guard = Some(receiver);
         }
 
         if !deferred.is_empty() {
-            let mut pending = self.inner.pending_messages.lock().unwrap();
+            let mut pending = self.state.pending_messages.lock().unwrap();
             while let Some(msg) = deferred.pop_front() {
                 pending.push_back(msg);
             }
@@ -306,14 +448,16 @@ impl KafkaEventBusBackend {
     }
 
     fn message_matches(message: &IncomingMessage, topic: &str, group: Option<&str>) -> bool {
-        if message.topic != topic {
+        if message.source != topic {
             return false;
         }
 
         match group {
             Some(group_id) => message
-                .consumer_group
-                .as_deref()
+                .backend_metadata
+                .as_ref()
+                .and_then(|meta| meta.as_any().downcast_ref::<KafkaMetadata>())
+                .and_then(|kafka| kafka.consumer_group.as_deref())
                 .map(|candidate| candidate == group_id)
                 .unwrap_or(false),
             None => true,
@@ -327,13 +471,13 @@ impl KafkaEventBusBackend {
     }
 
     fn spawn_consumer_tasks(&self) {
-        let consumers = self.inner.consumers.lock().unwrap().clone();
-        let running = self.inner.running.clone();
-        let producer = self.inner.producer.clone();
-        let tx = self.inner.incoming_tx.clone();
-        let dropped = self.inner.dropped.clone();
+        let consumers = self.state.consumers.lock().unwrap().clone();
+        let running = self.state.running.clone();
+        let producer = self.state.producer.clone();
+        let tx = self.state.incoming_tx.clone();
+        let dropped = self.state.dropped.clone();
 
-        let mut handles = self.inner.consumer_handles.lock().unwrap();
+        let mut handles = self.state.consumer_handles.lock().unwrap();
         for runtime in consumers.into_values() {
             let tx_clone = tx.clone();
             let running_clone = running.clone();
@@ -354,21 +498,21 @@ impl KafkaEventBusBackend {
     }
 
     fn spawn_commit_worker(&self) {
-        let mut guard = self.inner.commit_handle.lock().unwrap();
+        let mut guard = self.state.commit_handle.lock().unwrap();
         if guard.is_some() {
             return;
         }
 
-        let running = self.inner.running.clone();
-        let consumers = self.inner.consumers.clone();
+        let running = self.state.running.clone();
+        let consumers = self.state.consumers.clone();
         let rx = self
-            .inner
+            .state
             .commit_rx
             .lock()
             .unwrap()
             .take()
             .expect("commit receiver already taken");
-        let outcome_tx = self.inner.commit_outcome_tx.clone();
+        let outcome_tx = self.state.commit_outcome_tx.clone();
 
         let handle = runtime::runtime().spawn(async move {
             while running.load(Ordering::Relaxed) {
@@ -403,18 +547,18 @@ impl KafkaEventBusBackend {
     }
 
     fn spawn_lag_worker(&self) {
-        let mut guard = self.inner.lag_handle.lock().unwrap();
+        let mut guard = self.state.lag_handle.lock().unwrap();
         if guard.is_some() {
             return;
         }
 
-        let running = self.inner.running.clone();
-        let consumers = self.inner.consumers.clone();
-        let cache = self.inner.lag_cache.clone();
-        let interval = self.inner.config.consumer_lag_poll_interval;
+        let running = self.state.running.clone();
+        let consumers = self.state.consumers.clone();
+        let lag_cache = self.state.lag_cache.clone();
+        let poll_interval = self.state.config.consumer_lag_poll_interval;
 
         let handle = runtime::runtime().spawn(async move {
-            let mut ticker = tokio::time::interval(interval);
+            let mut ticker = tokio::time::interval(poll_interval);
             while running.load(Ordering::Relaxed) {
                 ticker.tick().await;
                 let snapshot = consumers.lock().unwrap().clone();
@@ -422,7 +566,7 @@ impl KafkaEventBusBackend {
                     for topic in &runtime.topics {
                         match compute_consumer_lag(runtime, topic) {
                             Ok(lag) => {
-                                cache.update(
+                                lag_cache.update(
                                     &runtime.group_id,
                                     topic,
                                     KafkaLagMeasurement {
@@ -449,19 +593,19 @@ impl KafkaEventBusBackend {
     }
 
     fn stop_tasks(&self) {
-        if let Ok(mut handles) = self.inner.consumer_handles.lock() {
+        if let Ok(mut handles) = self.state.consumer_handles.lock() {
             for handle in handles.drain(..) {
                 handle.abort();
             }
         }
 
-        if let Ok(mut guard) = self.inner.commit_handle.lock() {
+        if let Ok(mut guard) = self.state.commit_handle.lock() {
             if let Some(handle) = guard.take() {
                 handle.abort();
             }
         }
 
-        if let Ok(mut guard) = self.inner.lag_handle.lock() {
+        if let Ok(mut guard) = self.state.lag_handle.lock() {
             if let Some(handle) = guard.take() {
                 handle.abort();
             }
@@ -471,14 +615,14 @@ impl KafkaEventBusBackend {
 
 impl Drop for KafkaEventBusBackend {
     fn drop(&mut self) {
-        if self.inner.running.swap(false, Ordering::SeqCst) {
+        if self.state.running.swap(false, Ordering::SeqCst) {
             self.stop_tasks();
         }
 
         for _ in 0..10 {
-            self.inner.producer.poll(Duration::from_millis(10));
+            self.state.producer.poll(Duration::from_millis(10));
         }
-        let _ = self.inner.producer.flush(Duration::from_millis(250));
+        let _ = self.state.producer.flush(Duration::from_millis(250));
     }
 }
 
@@ -496,15 +640,49 @@ impl EventBusBackend for KafkaEventBusBackend {
         self
     }
 
+    fn backend_name(&self) -> &'static str {
+        "kafka"
+    }
+
+    fn configure_plugin(&self, app: &mut App) {
+        app.add_event::<KafkaCommitResultEvent>();
+        app.init_resource::<KafkaCommitResultStats>();
+        app.add_systems(
+            PreUpdate,
+            (
+                kafka_commit_result_dispatch_system,
+                kafka_commit_result_stats_system,
+            )
+                .chain(),
+        );
+    }
+
+    fn setup_plugin(&self, _world: &mut World) -> BackendPluginSetup {
+        let mut setup = BackendPluginSetup::default();
+        setup.ready_topics = self.configured_topics();
+        setup.message_stream = self.take_receiver();
+        setup.manual_commit = Some(Box::new(KafkaManualCommitHandle::new(
+            self.commit_sender(),
+            self.take_commit_results(),
+        )));
+        setup.lag_reporting = Some(Box::new(KafkaLagHandle::new(self.lag_cache())));
+
+        setup
+    }
+
+    fn augment_metrics(&self, metrics: &mut ConsumerMetrics) {
+        metrics.dropped_messages = self.dropped_count();
+    }
+
     fn apply_event_bindings(&self, app: &mut App) {
-        for binding in self.inner.config.topology.event_bindings() {
+        for binding in self.state.config.topology.event_bindings() {
             binding.apply(app);
         }
     }
 
     async fn connect(&mut self) -> bool {
         if self
-            .inner
+            .state
             .running
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
             .is_err()
@@ -517,7 +695,7 @@ impl EventBusBackend for KafkaEventBusBackend {
     }
 
     async fn disconnect(&mut self) -> bool {
-        if !self.inner.running.swap(false, Ordering::SeqCst) {
+        if !self.state.running.swap(false, Ordering::SeqCst) {
             return true;
         }
 
@@ -550,7 +728,7 @@ impl EventBusBackend for KafkaEventBusBackend {
             }
         }
 
-        match self.inner.producer.send(record) {
+        match self.state.producer.send(record) {
             Ok(_) => true,
             Err((err, _)) => {
                 warn!(target = %topic, error = %err, "Failed to enqueue Kafka message");
@@ -563,14 +741,16 @@ impl EventBusBackend for KafkaEventBusBackend {
         self.drain_matching_messages(topic, options.consumer_group)
     }
 
-    async fn subscribe(&mut self, _topic: &str) -> bool {
-        true
+    async fn flush(&self) -> Result<(), String> {
+        match self.state.producer.flush(Duration::from_secs(30)) {
+            Ok(_) => Ok(()),
+            Err(err) => Err(format!("Flush failed: {err}")),
+        }
     }
+}
 
-    async fn unsubscribe(&mut self, _topic: &str) -> bool {
-        true
-    }
-
+#[async_trait]
+impl ConsumerGroupManager for KafkaEventBusBackend {
     async fn create_consumer_group(
         &mut self,
         _topics: &[String],
@@ -578,9 +758,12 @@ impl EventBusBackend for KafkaEventBusBackend {
     ) -> Result<(), String> {
         Err("Dynamic consumer group creation is not supported at runtime".into())
     }
+}
 
+#[async_trait]
+impl ManualCommitController for KafkaEventBusBackend {
     async fn enable_manual_commits(&mut self, group_id: &str) -> Result<(), String> {
-        let consumers = self.inner.consumers.lock().unwrap();
+        let consumers = self.state.consumers.lock().unwrap();
         if let Some(runtime) = consumers.get(group_id) {
             if runtime.manual_commit {
                 Ok(())
@@ -596,7 +779,7 @@ impl EventBusBackend for KafkaEventBusBackend {
     }
 
     async fn commit_offset(&self, topic: &str, partition: i32, offset: i64) -> Result<(), String> {
-        let consumers = self.inner.consumers.lock().unwrap();
+        let consumers = self.state.consumers.lock().unwrap();
         let runtime = consumers
             .values()
             .find(|cg| cg.manual_commit && cg.topics.contains(&topic.to_string()))
@@ -611,7 +794,7 @@ impl EventBusBackend for KafkaEventBusBackend {
             consumer_group: runtime.group_id.clone(),
         };
 
-        match self.inner.commit_tx.try_send(request.clone()) {
+        match self.state.commit_tx.try_send(request.clone()) {
             Ok(_) => Ok(()),
             Err(crossbeam_channel::TrySendError::Full(_)) => commit_offset_sync(&runtime, &request),
             Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
@@ -619,20 +802,16 @@ impl EventBusBackend for KafkaEventBusBackend {
             }
         }
     }
+}
 
+#[async_trait]
+impl LagReportingBackend for KafkaEventBusBackend {
     async fn get_consumer_lag(&self, topic: &str, group_id: &str) -> Result<i64, String> {
-        let consumers = self.inner.consumers.lock().unwrap();
+        let consumers = self.state.consumers.lock().unwrap();
         if let Some(runtime) = consumers.get(group_id) {
             compute_consumer_lag(runtime, topic)
         } else {
             Err(format!("Consumer group '{}' not found", group_id))
-        }
-    }
-
-    async fn flush(&self) -> Result<(), String> {
-        match self.inner.producer.flush(Duration::from_secs(30)) {
-            Ok(_) => Ok(()),
-            Err(err) => Err(format!("Flush failed: {err}")),
         }
     }
 }
@@ -771,7 +950,9 @@ async fn consumer_loop(
                     None => Vec::new(),
                 };
 
-                let key = message.key().map(|k| k.to_vec());
+                let key = message
+                    .key()
+                    .map(|k| String::from_utf8_lossy(k).into_owned());
                 let mut headers_map = HashMap::new();
                 if let Some(headers) = message.headers() {
                     for header in headers.iter() {
@@ -784,15 +965,18 @@ async fn consumer_loop(
                 }
 
                 let msg = IncomingMessage {
-                    topic: message.topic().to_string(),
-                    partition: message.partition(),
-                    offset: message.offset(),
-                    key,
+                    source: message.topic().to_string(),
                     payload,
                     timestamp: Instant::now(),
                     headers: headers_map,
-                    consumer_group: Some(runtime.group_id.clone()),
-                    manual_commit: runtime.manual_commit,
+                    key,
+                    backend_metadata: Some(Box::new(KafkaMetadata {
+                        topic: message.topic().to_string(),
+                        partition: message.partition(),
+                        offset: message.offset(),
+                        consumer_group: Some(runtime.group_id.clone()),
+                        manual_commit: runtime.manual_commit,
+                    })),
                 };
 
                 let mut pending = msg;

@@ -5,7 +5,10 @@ use bevy_event_bus::config::kafka::{
 };
 use bevy_event_bus::{
     EventBusBackend, KafkaEventBusBackend,
-    backends::event_bus_backend::{ReceiveOptions, SendOptions},
+    backends::event_bus_backend::{
+        ConsumerGroupManager, LagReportingBackend, ManualCommitController, ReceiveOptions,
+        SendOptions,
+    },
 };
 use integration_tests::common::events::TestEvent;
 use integration_tests::common::helpers::{

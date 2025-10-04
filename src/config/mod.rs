@@ -4,7 +4,10 @@
 //! are inferred from configuration objects at compile time. This enables clean system
 //! signatures without explicit backend type parameters while maintaining full type safety.
 
+#[cfg(feature = "kafka")]
 pub mod kafka;
+#[cfg(feature = "redis")]
+pub mod redis;
 
 /// Core trait for event bus configurations that enables type-safe backend inference
 pub trait EventBusConfig: Send + Sync + Clone + 'static {
@@ -22,13 +25,21 @@ pub trait EventBusConfig: Send + Sync + Clone + 'static {
 pub trait BackendMarker: Send + Sync + 'static {}
 
 /// Backend marker types for compile-time type inference
+#[cfg(feature = "kafka")]
 #[derive(Debug, Clone, Copy)]
 pub struct Kafka;
+#[cfg(feature = "kafka")]
 impl BackendMarker for Kafka {}
 
 #[derive(Debug, Clone, Copy)]
 pub struct InMemory;
 impl BackendMarker for InMemory {}
+
+#[cfg(feature = "redis")]
+#[derive(Debug, Clone, Copy)]
+pub struct Redis;
+#[cfg(feature = "redis")]
+impl BackendMarker for Redis {}
 
 /// Configuration for frame-level processing limits
 #[derive(Debug, Clone)]
