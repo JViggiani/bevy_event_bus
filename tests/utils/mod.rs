@@ -1,4 +1,3 @@
-pub mod backend_factory;
 pub mod events;
 pub mod helpers;
 pub mod mock_backend;

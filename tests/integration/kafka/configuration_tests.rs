@@ -6,12 +6,12 @@ use bevy_event_bus::{
     EventBusPlugins, KafkaConsumerConfig, KafkaEventBusBackend, KafkaEventReader, KafkaEventWriter,
     KafkaProducerConfig,
 };
-use integration_tests::common::events::TestEvent;
-use integration_tests::common::helpers::{
+use integration_tests::utils::events::TestEvent;
+use integration_tests::utils::helpers::{
     kafka_backend_config_for_tests, run_app_updates, unique_consumer_group, unique_topic,
     update_until,
 };
-use integration_tests::common::setup::setup;
+use integration_tests::utils::setup::setup;
 
 #[derive(Resource, Default)]
 struct Collected(Vec<TestEvent>);

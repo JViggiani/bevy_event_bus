@@ -7,12 +7,12 @@ use bevy_event_bus::{
     EventBusBackend, EventBusPlugins, KafkaEventBusBackend, KafkaEventReader, KafkaEventWriter,
     backends::event_bus_backend::SendOptions,
 };
-use integration_tests::common::events::TestEvent;
-use integration_tests::common::helpers::{
+use integration_tests::utils::events::TestEvent;
+use integration_tests::utils::helpers::{
     kafka_backend_config_for_tests, unique_consumer_group, unique_topic, update_until,
     wait_for_consumer_group_ready, wait_for_messages_in_group,
 };
-use integration_tests::common::setup::setup;
+use integration_tests::utils::setup::setup;
 
 /// Test that consumers with "earliest" offset receive historical events
 #[test]
@@ -23,7 +23,7 @@ fn offset_configuration_earliest_receives_historical_events() {
 
     // Create topic and ensure it's ready before proceeding
     let (_backend_setup, bootstrap) = setup("latest", |_| {});
-    let topic_ready = integration_tests::common::setup::ensure_topic_ready(
+    let topic_ready = integration_tests::utils::setup::ensure_topic_ready(
         &bootstrap,
         &topic,
         1, // partitions
@@ -130,7 +130,7 @@ fn offset_configuration_latest_ignores_historical_events() {
 
     // Create topic and ensure it's ready before proceeding
     let (_backend_setup, bootstrap) = setup("latest", |_| {});
-    let topic_ready = integration_tests::common::setup::ensure_topic_ready(
+    let topic_ready = integration_tests::utils::setup::ensure_topic_ready(
         &bootstrap,
         &topic,
         1, // partitions
@@ -271,7 +271,7 @@ fn default_offset_configuration_is_latest() {
 
     // Create topic and ensure it's ready before proceeding
     let (_backend_setup, bootstrap) = setup("latest", |_| {});
-    let topic_ready = integration_tests::common::setup::ensure_topic_ready(
+    let topic_ready = integration_tests::utils::setup::ensure_topic_ready(
         &bootstrap,
         &topic,
         1, // partitions

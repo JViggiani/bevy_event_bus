@@ -14,8 +14,8 @@ use bevy_event_bus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use bevy_event_bus::config::kafka::KafkaTopicSpec;
-use integration_tests::common::helpers::unique_topic;
-use integration_tests::common::setup::setup;
+use integration_tests::utils::helpers::unique_topic;
+use integration_tests::utils::setup::setup;
 
 // Event types for the comprehensive test
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Event)]

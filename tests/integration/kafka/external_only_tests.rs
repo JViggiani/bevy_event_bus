@@ -6,9 +6,9 @@ use bevy_event_bus::{
     EventBusError, EventBusErrorQueue, EventBusErrorType, EventBusPlugin, EventBusPlugins,
     KafkaEventWriter,
 };
-use integration_tests::common::events::TestEvent;
-use integration_tests::common::helpers::unique_topic;
-use integration_tests::common::mock_backend::MockEventBusBackend;
+use integration_tests::utils::events::TestEvent;
+use integration_tests::utils::helpers::unique_topic;
+use integration_tests::utils::mock_backend::MockEventBusBackend;
 
 #[derive(Resource, Default)]
 struct InternalSeen(usize);

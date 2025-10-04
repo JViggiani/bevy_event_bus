@@ -1,10 +1,11 @@
 #![cfg(feature = "redis")]
 
 use bevy::prelude::*;
-use bevy_event_bus::config::redis::TrimStrategy;
+use bevy_event_bus::config::redis::{RedisStreamSpec, RedisTopologyBuilder, TrimStrategy};
 use bevy_event_bus::{EventBusPlugins, RedisEventWriter};
-use integration_tests::common::backend_factory::{setup_backend, BackendVariant, TestBackend};
-use integration_tests::common::TestEvent;
+use integration_tests::utils::helpers::unique_topic;
+use integration_tests::utils::redis_setup;
+use integration_tests::utils::TestEvent;
 
 #[derive(Resource)]
 struct TrimRequest {
@@ -27,18 +28,20 @@ fn trim_stream_once(mut writer: RedisEventWriter, mut request: ResMut<TrimReques
 
 #[test]
 fn writer_trim_stream_enforces_max_length() {
-    let (handle, context) = setup_backend(TestBackend::Redis).expect("redis backend setup");
-    let BackendVariant::Redis(writer_backend) = handle.writer_backend else {
-        panic!("expected redis writer backend");
-    };
-    let stream = handle.topic.clone();
+    let stream = unique_topic("redis-stream-trim");
+
+    let mut builder = RedisTopologyBuilder::default();
+    builder
+        .add_stream(RedisStreamSpec::new(stream.clone()))
+        .add_event_single::<TestEvent>(stream.clone());
+
+    let (backend, context) = redis_setup::setup_with_builder(builder)
+        .expect("Redis backend setup successful");
+    
+    let writer_backend = backend;
 
     // Seed the stream with multiple entries using a raw Redis connection.
-    let connection_string = context
-        .as_redis()
-        .expect("redis tests require redis context")
-        .connection_string()
-        .to_string();
+    let connection_string = context.connection_string().to_string();
 
     let client = redis::Client::open(connection_string.as_str())
         .expect("failed to open redis client for seeding");

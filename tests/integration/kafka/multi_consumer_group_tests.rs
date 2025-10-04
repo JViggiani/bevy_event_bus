@@ -10,11 +10,11 @@ use bevy_event_bus::{
         SendOptions,
     },
 };
-use integration_tests::common::events::TestEvent;
-use integration_tests::common::helpers::{
+use integration_tests::utils::events::TestEvent;
+use integration_tests::utils::helpers::{
     unique_consumer_group, unique_topic, wait_for_consumer_group_ready, wait_for_messages_in_group,
 };
-use integration_tests::common::setup::setup;
+use integration_tests::utils::setup::setup;
 
 async fn init_backend<F>(offset: &str, configure: F) -> (KafkaEventBusBackend, String)
 where

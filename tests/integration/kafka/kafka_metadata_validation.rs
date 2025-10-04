@@ -4,11 +4,11 @@ use bevy_event_bus::config::kafka::{
     KafkaTopicSpec,
 };
 use bevy_event_bus::{EventBusPlugins, EventWrapper, KafkaEventReader, KafkaEventWriter};
-use integration_tests::common::events::TestEvent;
-use integration_tests::common::helpers::{
+use integration_tests::utils::events::TestEvent;
+use integration_tests::utils::helpers::{
     unique_consumer_group, unique_topic, update_until, wait_for_events,
 };
-use integration_tests::common::setup::setup;
+use integration_tests::utils::setup::setup;
 use tracing::{info, info_span};
 
 /// Test that validates Kafka metadata propagation with real broker interaction

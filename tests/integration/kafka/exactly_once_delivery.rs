@@ -4,9 +4,9 @@ use bevy_event_bus::config::kafka::{
     KafkaTopicSpec,
 };
 use bevy_event_bus::{EventBusPlugins, KafkaEventReader, KafkaEventWriter};
-use integration_tests::common::events::TestEvent;
-use integration_tests::common::helpers::{unique_consumer_group, unique_topic, update_until};
-use integration_tests::common::setup::setup;
+use integration_tests::utils::events::TestEvent;
+use integration_tests::utils::helpers::{unique_consumer_group, unique_topic, update_until};
+use integration_tests::utils::setup::setup;
 
 /// Test that events are delivered exactly once - no duplication
 #[test]
@@ -43,7 +43,7 @@ fn no_event_duplication_exactly_once_delivery() {
     });
 
     // Create topic and wait for it to be fully ready
-    let topic_ready = integration_tests::common::setup::ensure_topic_ready(
+    let topic_ready = integration_tests::utils::setup::ensure_topic_ready(
         &bootstrap_reader,
         &topic,
         1, // partitions

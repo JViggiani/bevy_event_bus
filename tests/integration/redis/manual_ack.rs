@@ -1,11 +1,14 @@
 #![cfg(feature = "redis")]
 
 use bevy::prelude::*;
-use bevy_event_bus::config::redis::{RedisConsumerConfig, RedisProducerConfig};
+use bevy_event_bus::config::redis::{
+    RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
+    RedisTopologyBuilder,
+};
 use bevy_event_bus::{EventBusErrorQueue, EventBusPlugins, RedisAckWorkerStats, RedisEventReader, RedisEventWriter};
-use integration_tests::common::backend_factory::{setup_backend, BackendVariant, TestBackend};
-use integration_tests::common::helpers::{run_app_updates, update_until};
-use integration_tests::common::TestEvent;
+use integration_tests::utils::helpers::{run_app_updates, update_until, unique_consumer_group, unique_topic};
+use integration_tests::utils::redis_setup;
+use integration_tests::utils::TestEvent;
 
 #[derive(Resource, Clone)]
 struct Topic(String);
@@ -58,20 +61,26 @@ fn redis_reader_ack_system(
 
 #[test]
 fn manual_ack_clears_messages_and_tracks_success() {
-    let (handle, context) = setup_backend(TestBackend::Redis).expect("redis backend setup");
+    let stream = unique_topic("redis-manual-ack");
+    let group = unique_consumer_group("redis-manual-ack-group");
 
-    let BackendVariant::Redis(writer_backend) = handle.writer_backend else {
-        panic!("expected redis writer backend");
-    };
-    let BackendVariant::Redis(reader_backend) = handle.reader_backend else {
-        panic!("expected redis reader backend");
-    };
+    let mut builder = RedisTopologyBuilder::default();
+    builder
+        .add_stream(RedisStreamSpec::new(stream.clone()))
+        .add_consumer_group(
+            group.clone(),
+            RedisConsumerGroupSpec::new([stream.clone()], group.clone()).manual_ack(true),
+        )
+        .add_event_single::<TestEvent>(stream.clone());
 
-    let topic = handle.topic.clone();
-    let consumer_group = handle
-        .consumer_group
-        .clone()
-        .expect("redis backend should include a consumer group");
+    let (backend, context) = redis_setup::setup_with_builder(builder)
+        .expect("Redis backend setup successful");
+    
+    let writer_backend = backend.clone();
+    let reader_backend = backend;
+
+    let topic = stream;
+    let consumer_group = group;
 
     // Reader app drains events and acknowledges them immediately. Install the backend here first
     // so that the message stream and manual acknowledgement resources bind to the reader app.

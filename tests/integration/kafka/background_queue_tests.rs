@@ -6,8 +6,8 @@ use bevy_event_bus::{
     DrainedTopicMetadata, EventBusConsumerConfig, EventMetadata, KafkaEventReader, KafkaMetadata,
     ProcessedMessage,
 };
-use integration_tests::common::helpers::{unique_consumer_group, unique_topic};
-use integration_tests::common::setup::build_basic_app_simple;
+use integration_tests::utils::helpers::{unique_consumer_group, unique_topic};
+use integration_tests::utils::setup::build_basic_app_simple;
 use serde::{Deserialize, Serialize};
 
 #[derive(Event, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]

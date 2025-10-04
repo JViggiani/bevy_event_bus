@@ -14,8 +14,8 @@
 use bevy::prelude::*;
 use bevy_event_bus::config::kafka::{KafkaProducerConfig, KafkaTopologyEventBinding};
 use bevy_event_bus::{EventBusError, EventBusPlugins, KafkaEventWriter};
-use integration_tests::common::MockEventBusBackend;
-use integration_tests::common::helpers::unique_topic;
+use integration_tests::utils::MockEventBusBackend;
+use integration_tests::utils::helpers::unique_topic;
 use serde::{Deserialize, Serialize};
 
 // Event types for various test scenarios

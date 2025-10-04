@@ -4,9 +4,9 @@ use bevy_event_bus::config::kafka::{
     KafkaTopicSpec,
 };
 use bevy_event_bus::{EventBusPlugins, KafkaEventReader, KafkaEventWriter};
-use integration_tests::common::events::TestEvent;
-use integration_tests::common::helpers::{unique_consumer_group, unique_topic, update_until};
-use integration_tests::common::setup::setup;
+use integration_tests::utils::events::TestEvent;
+use integration_tests::utils::helpers::{unique_consumer_group, unique_topic, update_until};
+use integration_tests::utils::setup::setup;
 
 #[test]
 fn multi_topic_isolation() {

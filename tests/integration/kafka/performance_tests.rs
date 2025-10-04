@@ -13,8 +13,8 @@ use bevy_event_bus::{
         KafkaTopicSpec,
     },
 };
-use integration_tests::common::helpers::{unique_consumer_group, unique_topic};
-use integration_tests::common::setup::setup;
+use integration_tests::utils::helpers::{unique_consumer_group, unique_topic};
+use integration_tests::utils::setup::setup;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 use std::{

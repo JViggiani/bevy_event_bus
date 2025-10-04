@@ -1,5 +1,5 @@
 pub mod background_queue_tests;
-
+pub mod basic;
 pub mod configuration_tests;
 pub mod dual_writer_bridge;
 pub mod error_handling_tests;

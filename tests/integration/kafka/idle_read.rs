@@ -3,9 +3,9 @@ use bevy_event_bus::config::kafka::{
     KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec,
 };
 use bevy_event_bus::{EventBusPlugins, KafkaEventReader};
-use integration_tests::common::events::TestEvent;
-use integration_tests::common::helpers::{unique_consumer_group, unique_topic};
-use integration_tests::common::setup::setup;
+use integration_tests::utils::events::TestEvent;
+use integration_tests::utils::helpers::{unique_consumer_group, unique_topic};
+use integration_tests::utils::setup::setup;
 
 // Test that repeatedly reading an empty topic does not hang or block frames.
 #[test]
