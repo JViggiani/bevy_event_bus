@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded};
 use redis::aio::ConnectionManager;
 use redis::streams::{StreamId, StreamKey, StreamReadReply};
-use redis::{ConnectionInfo, Password, RedisError, Value as RedisValue, from_redis_value};
+use redis::{RedisError, Value as RedisValue, from_redis_value};
 use std::any::Any;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Debug;
@@ -33,7 +33,7 @@ use bevy_event_bus::{
 
 static CONSUMER_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default)]
 struct AckCounters {
     acknowledged: Arc<AtomicUsize>,
     failed: Arc<AtomicUsize>,
@@ -116,10 +116,6 @@ struct RedisBackendState {
 }
 
 impl RedisBackendState {
-    fn manual_ack_enabled(&self) -> bool {
-        self.ack_tx.is_some()
-    }
-
     fn take_receiver(&self) -> Option<Receiver<IncomingMessage>> {
         self.incoming_rx.lock().unwrap().take()
     }
@@ -190,17 +186,8 @@ impl Debug for RedisEventBusBackend {
 }
 
 fn build_client(connection: &RedisConnectionConfig) -> redis::Client {
-    let mut info: ConnectionInfo = connection
-        .connection_string()
-        .parse()
-        .expect("Invalid Redis connection string");
-    if let Some(username) = connection.username() {
-        info.redis.username = Some(username.to_string());
-    }
-    if let Some(password) = connection.password() {
-        info.redis.password = Some(Password::Plain(password.to_string()));
-    }
-    redis::Client::open(info).expect("Failed to create Redis client")
+    redis::Client::open(connection.connection_string())
+        .expect("Failed to create Redis client")
 }
 
 fn build_stream_write_map(topology: &RedisTopologyConfig) -> HashMap<String, StreamWriteConfig> {
@@ -631,6 +618,7 @@ impl RedisEventBusBackend {
                 Ok(m) => m,
                 Err(err) => {
                     error!(error = %err, "Failed to create Redis ack connection");
+                    println!("Redis ack connection failed: {err}");
                     return;
                 }
             };
@@ -831,6 +819,7 @@ impl EventBusBackend for RedisEventBusBackend {
             Ok(m) => m,
             Err(err) => {
                 error!(error = %err, "Redis connection failed");
+                println!("Redis connection failed: {err}");
                 self.state.running.store(false, Ordering::SeqCst);
                 return false;
             }

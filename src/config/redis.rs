@@ -1,6 +1,6 @@
 //! Redis-specific configuration objects for topology-driven backend setup
 
-use super::{BackendMarker, EventBusConfig, Redis};
+use super::{EventBusConfig, Redis};
 use crate::{
     BusEvent, EventBusError, backends::event_bus_backend::EventBusBackendConfig,
     decoder::DecoderRegistry,
@@ -406,12 +406,12 @@ impl RedisConsumerConfig {
         }
     }
 
-    pub fn consumer_group(mut self, group: impl Into<String>) -> Self {
+    pub fn set_consumer_group(mut self, group: impl Into<String>) -> Self {
         self.consumer_group = Some(group.into());
         self
     }
 
-    pub fn consumer_name(mut self, name: impl Into<String>) -> Self {
+    pub fn set_consumer_name(mut self, name: impl Into<String>) -> Self {
         self.consumer_name = Some(name.into());
         self
     }
@@ -472,7 +472,7 @@ impl RedisProducerConfig {
         self
     }
 
-    pub fn trim_strategy(mut self, strategy: TrimStrategy) -> Self {
+    pub fn set_trim_strategy(mut self, strategy: TrimStrategy) -> Self {
         self.trim_strategy = strategy;
         self
     }

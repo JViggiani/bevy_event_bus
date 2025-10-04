@@ -183,7 +183,7 @@ mod tests {
     fn resolve_send_options_preserves_trim_settings() {
         let config = RedisProducerConfig::new("orders")
             .maxlen(512)
-            .trim_strategy(TrimStrategy::Exact);
+            .set_trim_strategy(TrimStrategy::Exact);
 
         let options = RedisEventWriter::resolve_send_options(&config);
 
