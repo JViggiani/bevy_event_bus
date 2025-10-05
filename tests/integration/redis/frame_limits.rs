@@ -36,11 +36,11 @@ fn frame_limit_spreads_drain() {
         .add_stream(RedisStreamSpec::new(stream.clone()))
         .add_event_single::<TestEvent>(stream.clone());
 
-    let (backend_writer, _context1) = redis_setup::setup_with_builder(writer_builder)
-        .expect("Writer Redis backend setup successful");
+    let (backend_writer, _context1) =
+        redis_setup::setup(writer_builder).expect("Writer Redis backend setup successful");
 
     let (backend_reader, _context2) =
-        redis_setup::setup_with_builder(builder).expect("Reader Redis backend setup successful");
+        redis_setup::setup(builder).expect("Reader Redis backend setup successful");
 
     // Reader app with frame limit (start first to ensure it's ready)
     let mut reader = App::new();

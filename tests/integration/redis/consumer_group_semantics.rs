@@ -27,8 +27,8 @@ fn writer_only_without_consumer_groups() {
         .add_stream(RedisStreamSpec::new(stream.clone()))
         .add_event_single::<TestEvent>(stream.clone());
 
-    let (writer_backend, _context) = redis_setup::setup_with_builder(writer_builder)
-        .expect("Redis writer backend setup successful");
+    let (writer_backend, _context) =
+        redis_setup::setup(writer_builder).expect("Redis writer backend setup successful");
 
     // Setup writer app
     let mut writer = App::new();

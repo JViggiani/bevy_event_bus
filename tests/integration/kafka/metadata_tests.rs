@@ -1,14 +1,16 @@
 use bevy::prelude::*;
 use bevy_event_bus::config::kafka::{
     KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
-    KafkaTopicSpec,
+    KafkaTopicSpec, KafkaTopologyBuilder,
 };
-use bevy_event_bus::{EventBusPlugins, EventWrapper, KafkaEventReader, KafkaEventWriter};
+use bevy_event_bus::{
+    EventBusPlugins, EventWrapper, KafkaEventBusBackend, KafkaEventReader, KafkaEventWriter,
+};
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{
     run_app_updates, unique_consumer_group, unique_topic, wait_for_events,
 };
-use integration_tests::utils::setup::setup;
+use integration_tests::utils::kafka_setup;
 use std::collections::HashMap;
 use tracing::{info, info_span};
 
@@ -24,6 +26,13 @@ fn group_spec(topics: &[String], offset: KafkaInitialOffset) -> KafkaConsumerGro
     spec
 }
 
+fn setup_earliest<F>(configure: F) -> (KafkaEventBusBackend, String)
+where
+    F: FnOnce(&mut KafkaTopologyBuilder),
+{
+    kafka_setup::setup(kafka_setup::earliest(configure))
+}
+
 #[test]
 fn metadata_propagation_from_kafka_to_bevy() {
     let _span = info_span!("metadata_propagation_test").entered();
@@ -32,7 +41,7 @@ fn metadata_propagation_from_kafka_to_bevy() {
     let consumer_group = unique_consumer_group("metadata_propagation");
 
     let topic_for_writer = topic.clone();
-    let (backend_w, _b1) = setup("earliest", move |builder| {
+    let (backend_w, _b1) = setup_earliest(move |builder| {
         builder
             .add_topic(topic_spec(&topic_for_writer))
             .add_event_single::<TestEvent>(topic_for_writer.clone());
@@ -40,7 +49,7 @@ fn metadata_propagation_from_kafka_to_bevy() {
 
     let topic_for_reader = topic.clone();
     let consumer_group_for_reader = consumer_group.clone();
-    let (backend_r, _b2) = setup("earliest", move |builder| {
+    let (backend_r, _b2) = setup_earliest(move |builder| {
         builder.add_topic(topic_spec(&topic_for_reader));
         let topics_for_group = vec![topic_for_reader.clone()];
         builder
@@ -149,7 +158,7 @@ fn header_forwarding_producer_to_consumer() {
     let consumer_group = unique_consumer_group("header_forwarding");
 
     let topic_for_writer = topic.clone();
-    let (backend_w, _b1) = setup("earliest", move |builder| {
+    let (backend_w, _b1) = setup_earliest(move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic_for_writer.clone())
@@ -161,7 +170,7 @@ fn header_forwarding_producer_to_consumer() {
 
     let topic_for_reader = topic.clone();
     let consumer_group_for_reader = consumer_group.clone();
-    let (backend_r, _b2) = setup("earliest", move |builder| {
+    let (backend_r, _b2) = setup_earliest(move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_for_reader.clone())
                 .partitions(1)
@@ -276,7 +285,7 @@ fn timestamp_accuracy_for_latency_measurement() {
     let consumer_group = unique_consumer_group("metadata_timestamp");
 
     let topic_for_writer = topic.clone();
-    let (backend_w, _b1) = setup("earliest", move |builder| {
+    let (backend_w, _b1) = setup_earliest(move |builder| {
         builder
             .add_topic(topic_spec(&topic_for_writer))
             .add_event_single::<TestEvent>(topic_for_writer.clone());
@@ -284,7 +293,7 @@ fn timestamp_accuracy_for_latency_measurement() {
 
     let topic_for_reader = topic.clone();
     let consumer_group_for_reader = consumer_group.clone();
-    let (backend_r, _b2) = setup("earliest", move |builder| {
+    let (backend_r, _b2) = setup_earliest(move |builder| {
         builder.add_topic(topic_spec(&topic_for_reader));
         let topics_for_reader = vec![topic_for_reader.clone()];
         builder
@@ -386,13 +395,13 @@ fn mixed_metadata_and_regular_reading() {
     let metadata_group = unique_consumer_group("metadata_reader");
 
     let topic_for_writer = topic.clone();
-    let (backend_w, _b1) = setup("earliest", move |builder| {
+    let (backend_w, _b1) = setup_earliest(move |builder| {
         builder.add_topic(topic_spec(&topic_for_writer));
     });
 
     let topic_for_regular = topic.clone();
     let regular_group_for_reader = regular_group.clone();
-    let (backend_r1, _b2) = setup("earliest", move |builder| {
+    let (backend_r1, _b2) = setup_earliest(move |builder| {
         builder.add_topic(topic_spec(&topic_for_regular));
         let topics = vec![topic_for_regular.clone()];
         builder
@@ -405,7 +414,7 @@ fn mixed_metadata_and_regular_reading() {
 
     let topic_for_metadata = topic.clone();
     let metadata_group_for_reader = metadata_group.clone();
-    let (backend_r2, _b3) = setup("earliest", move |builder| {
+    let (backend_r2, _b3) = setup_earliest(move |builder| {
         builder.add_topic(topic_spec(&topic_for_metadata));
         let topics = vec![topic_for_metadata.clone()];
         builder

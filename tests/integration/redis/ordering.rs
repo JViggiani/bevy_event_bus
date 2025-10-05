@@ -21,8 +21,8 @@ fn per_stream_order_preserved() {
         .add_stream(RedisStreamSpec::new(stream.clone()))
         .add_event_single::<TestEvent>(stream.clone());
 
-    let (writer_backend, _context1) = redis_setup::setup_with_builder(writer_builder)
-        .expect("Writer Redis backend setup successful");
+    let (writer_backend, _context1) =
+        redis_setup::setup(writer_builder).expect("Writer Redis backend setup successful");
 
     // Create separate reader builder with consumer group
     let mut reader_builder = RedisTopologyBuilder::default();
@@ -34,8 +34,8 @@ fn per_stream_order_preserved() {
         )
         .add_event_single::<TestEvent>(stream.clone());
 
-    let (reader_backend, _context2) = redis_setup::setup_with_builder(reader_builder)
-        .expect("Reader Redis backend setup successful");
+    let (reader_backend, _context2) =
+        redis_setup::setup(reader_builder).expect("Reader Redis backend setup successful");
 
     let mut writer = App::new();
     let mut reader = App::new();
@@ -108,8 +108,8 @@ fn cross_stream_interleave_each_ordered() {
         .add_event_single::<TestEvent>(stream1.clone())
         .add_event_single::<TestEvent>(stream2.clone());
 
-    let (writer_backend, _context1) = redis_setup::setup_with_builder(writer_builder)
-        .expect("Writer Redis backend setup successful");
+    let (writer_backend, _context1) =
+        redis_setup::setup(writer_builder).expect("Writer Redis backend setup successful");
 
     // Create separate reader builder with consumer group
     let mut reader_builder = RedisTopologyBuilder::default();
@@ -123,8 +123,8 @@ fn cross_stream_interleave_each_ordered() {
         .add_event_single::<TestEvent>(stream1.clone())
         .add_event_single::<TestEvent>(stream2.clone());
 
-    let (reader_backend, _context2) = redis_setup::setup_with_builder(reader_builder)
-        .expect("Reader Redis backend setup successful");
+    let (reader_backend, _context2) =
+        redis_setup::setup(reader_builder).expect("Reader Redis backend setup successful");
 
     let mut writer = App::new();
     let mut reader = App::new();

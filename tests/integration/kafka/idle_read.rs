@@ -5,7 +5,7 @@ use bevy_event_bus::config::kafka::{
 use bevy_event_bus::{EventBusPlugins, KafkaEventReader};
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{unique_consumer_group, unique_topic};
-use integration_tests::utils::setup::setup;
+use integration_tests::utils::kafka_setup;
 
 // Test that repeatedly reading an empty topic does not hang or block frames.
 #[test]
@@ -15,20 +15,20 @@ fn idle_empty_topic_poll_does_not_block() {
 
     let topic_for_backend = topic.clone();
     let group_for_backend = consumer_group.clone();
-    let (backend, _) = setup("earliest", move |builder| {
-        builder.add_topic(
-            KafkaTopicSpec::new(topic_for_backend.clone())
-                .partitions(1)
-                .replication(1),
-        );
+    let (backend, _) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
         builder
+            .add_topic(
+                KafkaTopicSpec::new(topic_for_backend.clone())
+                    .partitions(1)
+                    .replication(1),
+            )
             .add_consumer_group(
                 group_for_backend.clone(),
                 KafkaConsumerGroupSpec::new([topic_for_backend.clone()])
                     .initial_offset(KafkaInitialOffset::Earliest),
             )
             .add_event_single::<TestEvent>(topic_for_backend.clone());
-    });
+    }));
     let mut app = App::new();
     app.add_plugins(EventBusPlugins(backend));
     #[derive(Resource, Default)]

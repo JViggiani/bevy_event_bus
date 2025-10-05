@@ -14,16 +14,25 @@ use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{
     unique_consumer_group, unique_topic, wait_for_consumer_group_ready, wait_for_messages_in_group,
 };
-use integration_tests::utils::setup::setup;
+use integration_tests::utils::kafka_setup;
 
 async fn init_backend<F>(offset: &str, configure: F) -> (KafkaEventBusBackend, String)
 where
     F: FnOnce(&mut KafkaTopologyBuilder) + Send + 'static,
 {
     let offset_owned = offset.to_string();
-    tokio::task::spawn_blocking(move || setup(offset_owned.as_str(), configure))
-        .await
-        .expect("setup panicked")
+    let options = match offset_owned.as_str() {
+        "earliest" => kafka_setup::SetupOptions::earliest(),
+        "latest" => kafka_setup::SetupOptions::latest(),
+        other => kafka_setup::SetupOptions::new().auto_offset_reset(other.to_string()),
+    };
+
+    tokio::task::spawn_blocking(move || {
+        let request = kafka_setup::build_request(options, configure);
+        kafka_setup::setup(request)
+    })
+    .await
+    .expect("setup panicked")
 }
 #[tokio::test]
 async fn test_create_consumer_group() {

@@ -8,7 +8,7 @@ use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{
     unique_consumer_group, unique_topic, update_until, wait_for_events,
 };
-use integration_tests::utils::setup::setup;
+use integration_tests::utils::kafka_setup;
 use tracing::{info, info_span};
 
 /// Test that validates Kafka metadata propagation with real broker interaction
@@ -26,7 +26,7 @@ fn kafka_metadata_end_to_end_validation() {
     let consumer_group = unique_consumer_group("kafka_metadata_validation_reader");
 
     let topic_for_writer = topic.clone();
-    let (backend_w, _b1) = setup("earliest", move |builder| {
+    let (backend_w, _b1) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic_for_writer.clone())
@@ -34,11 +34,11 @@ fn kafka_metadata_end_to_end_validation() {
                     .replication(1),
             )
             .add_event_single::<TestEvent>(topic_for_writer.clone());
-    });
+    }));
 
     let topic_for_reader = topic.clone();
     let consumer_group_for_reader = consumer_group.clone();
-    let (backend_r, _b2) = setup("earliest", move |builder| {
+    let (backend_r, _b2) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_for_reader.clone())
                 .partitions(1)
@@ -51,7 +51,7 @@ fn kafka_metadata_end_to_end_validation() {
                     .initial_offset(KafkaInitialOffset::Earliest),
             )
             .add_event_single::<TestEvent>(topic_for_reader.clone());
-    });
+    }));
 
     info!("Testing Kafka metadata validation with topic: {}", topic);
 
@@ -248,7 +248,7 @@ fn kafka_metadata_topic_isolation() {
 
     let topic_a_for_writer = topic_a.clone();
     let topic_b_for_writer = topic_b.clone();
-    let (backend_w, _b1) = setup("earliest", move |builder| {
+    let (backend_w, _b1) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic_a_for_writer.clone())
@@ -263,12 +263,12 @@ fn kafka_metadata_topic_isolation() {
                     .replication(1),
             )
             .add_event_single::<TestEvent>(topic_b_for_writer.clone());
-    });
+    }));
 
     let topic_a_for_reader = topic_a.clone();
     let topic_b_for_reader = topic_b.clone();
     let consumer_group_for_reader = consumer_group.clone();
-    let (backend_r, _b2) = setup("earliest", move |builder| {
+    let (backend_r, _b2) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_a_for_reader.clone())
                 .partitions(1)
@@ -288,7 +288,7 @@ fn kafka_metadata_topic_isolation() {
             )
             .add_event_single::<TestEvent>(topic_a_for_reader.clone())
             .add_event_single::<TestEvent>(topic_b_for_reader.clone());
-    });
+    }));
 
     info!(
         "Testing metadata isolation between topics: {} and {}",
@@ -449,7 +449,7 @@ fn kafka_metadata_consistency_under_load() {
     let consumer_group = unique_consumer_group("kafka_metadata_consistency");
 
     let topic_for_writer = topic.clone();
-    let (backend_w, _b1) = setup("earliest", move |builder| {
+    let (backend_w, _b1) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic_for_writer.clone())
@@ -457,11 +457,11 @@ fn kafka_metadata_consistency_under_load() {
                     .replication(1),
             )
             .add_event_single::<TestEvent>(topic_for_writer.clone());
-    });
+    }));
 
     let topic_for_reader = topic.clone();
     let consumer_group_for_reader = consumer_group.clone();
-    let (backend_r, _b2) = setup("earliest", move |builder| {
+    let (backend_r, _b2) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_for_reader.clone())
                 .partitions(1)
@@ -474,7 +474,7 @@ fn kafka_metadata_consistency_under_load() {
                     .initial_offset(KafkaInitialOffset::Earliest),
             )
             .add_event_single::<TestEvent>(topic_for_reader.clone());
-    });
+    }));
 
     info!(
         "Testing metadata consistency under load with topic: {}",

@@ -41,10 +41,10 @@ fn unlimited_buffer_separate_backends() {
         .add_stream(RedisStreamSpec::new(stream.clone()))
         .add_event_single::<TestEvent>(stream.clone());
 
-    let (writer_backend, _context1) = redis_setup::setup_with_builder(writer_builder)
-        .expect("Writer Redis backend setup successful");
+    let (writer_backend, _context1) =
+        redis_setup::setup(writer_builder).expect("Writer Redis backend setup successful");
     let (reader_backend, _context2) =
-        redis_setup::setup_with_builder(builder).expect("Reader Redis backend setup successful");
+        redis_setup::setup(builder).expect("Reader Redis backend setup successful");
 
     let mut writer = App::new();
     writer.add_plugins(EventBusPlugins(writer_backend));
@@ -133,10 +133,10 @@ fn drain_metrics_separate_backends() {
         .add_stream(RedisStreamSpec::new(stream.clone()))
         .add_event_single::<TestEvent>(stream.clone());
 
-    let (writer_backend, _context1) = redis_setup::setup_with_builder(writer_builder)
-        .expect("Writer Redis backend setup successful");
+    let (writer_backend, _context1) =
+        redis_setup::setup(writer_builder).expect("Writer Redis backend setup successful");
     let (reader_backend, _context2) =
-        redis_setup::setup_with_builder(builder).expect("Reader Redis backend setup successful");
+        redis_setup::setup(builder).expect("Reader Redis backend setup successful");
 
     let mut writer = App::new();
     writer.add_plugins(EventBusPlugins(writer_backend));
@@ -230,8 +230,7 @@ fn drain_empty_separate_backends() {
         )
         .add_event_single::<TestEvent>(stream.clone());
 
-    let (backend, _context) =
-        redis_setup::setup_with_builder(builder).expect("Redis backend setup successful");
+    let (backend, _context) = redis_setup::setup(builder).expect("Redis backend setup successful");
 
     let mut reader = App::new();
     reader.add_plugins(EventBusPlugins(backend));
@@ -294,10 +293,10 @@ fn frame_limit_separate_backends() {
         .add_stream(RedisStreamSpec::new(stream.clone()))
         .add_event_single::<TestEvent>(stream.clone());
 
-    let (writer_backend, _context1) = redis_setup::setup_with_builder(writer_builder)
-        .expect("Writer Redis backend setup successful");
+    let (writer_backend, _context1) =
+        redis_setup::setup(writer_builder).expect("Writer Redis backend setup successful");
     let (reader_backend, _context2) =
-        redis_setup::setup_with_builder(builder).expect("Reader Redis backend setup successful");
+        redis_setup::setup(builder).expect("Reader Redis backend setup successful");
 
     let mut writer = App::new();
     writer.add_plugins(EventBusPlugins(writer_backend));

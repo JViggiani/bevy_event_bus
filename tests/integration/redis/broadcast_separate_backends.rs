@@ -35,7 +35,7 @@ fn test_broadcast_with_separate_backends() {
         .add_event_single::<TestEvent>(stream.clone());
 
     let (backend1, _context1) =
-        redis_setup::setup_with_builder(builder1).expect("Redis backend1 setup successful");
+        redis_setup::setup(builder1).expect("Redis backend1 setup successful");
 
     // Backend for group2
     let mut builder2 = RedisTopologyBuilder::default();
@@ -48,7 +48,7 @@ fn test_broadcast_with_separate_backends() {
         .add_event_single::<TestEvent>(stream.clone());
 
     let (backend2, _context2) =
-        redis_setup::setup_with_builder(builder2).expect("Redis backend2 setup successful");
+        redis_setup::setup(builder2).expect("Redis backend2 setup successful");
 
     // Writer backend (no consumer groups)
     let mut writer_builder = RedisTopologyBuilder::default();
@@ -56,8 +56,8 @@ fn test_broadcast_with_separate_backends() {
         .add_stream(RedisStreamSpec::new(stream.clone()))
         .add_event_single::<TestEvent>(stream.clone());
 
-    let (writer_backend, _writer_context) = redis_setup::setup_with_builder(writer_builder)
-        .expect("Redis writer backend setup successful");
+    let (writer_backend, _writer_context) =
+        redis_setup::setup(writer_builder).expect("Redis writer backend setup successful");
 
     // Setup reader1 app with backend1
     let mut reader1 = App::new();

@@ -29,8 +29,7 @@ fn test_read_from_topology_defined_consumer_group() {
         )
         .add_event_single::<TestEvent>(stream.clone());
 
-    let (backend, _context) =
-        redis_setup::setup_with_builder(builder).expect("Redis backend setup successful");
+    let (backend, _context) = redis_setup::setup(builder).expect("Redis backend setup successful");
 
     // Setup reader that uses the topology-defined consumer group
     let mut reader = App::new();
@@ -116,8 +115,7 @@ fn test_read_from_non_topology_consumer_group_should_fail() {
         )
         .add_event_single::<TestEvent>(stream.clone());
 
-    let (backend, _context) =
-        redis_setup::setup_with_builder(builder).expect("Redis backend setup successful");
+    let (backend, _context) = redis_setup::setup(builder).expect("Redis backend setup successful");
 
     // Setup reader that tries to use a DIFFERENT consumer group (not in topology)
     let mut reader = App::new();
@@ -210,8 +208,7 @@ fn test_topology_setup_principle() {
         )
         .add_event_single::<TestEvent>(stream.clone());
 
-    let (backend, _context) =
-        redis_setup::setup_with_builder(builder).expect("Redis backend setup successful");
+    let (backend, _context) = redis_setup::setup(builder).expect("Redis backend setup successful");
 
     let setup_time = start_setup.elapsed();
     println!("Backend setup took: {:?} (expensive, one-time)", setup_time);

@@ -31,8 +31,7 @@ fn test_working_consumer_group_patterns() {
         )
         .add_event_single::<TestEvent>(stream.clone());
 
-    let (backend, _context) =
-        redis_setup::setup_with_builder(builder).expect("Redis backend setup successful");
+    let (backend, _context) = redis_setup::setup(builder).expect("Redis backend setup successful");
 
     // Setup reader1 app WITHOUT consumer name (working pattern)
     let mut reader1 = App::new();
@@ -176,8 +175,7 @@ fn test_broadcast_with_different_groups_working_pattern() {
         )
         .add_event_single::<TestEvent>(stream.clone());
 
-    let (backend, _context) =
-        redis_setup::setup_with_builder(builder).expect("Redis backend setup successful");
+    let (backend, _context) = redis_setup::setup(builder).expect("Redis backend setup successful");
 
     // Setup reader1 app in group1 (working pattern)
     let mut reader1 = App::new();

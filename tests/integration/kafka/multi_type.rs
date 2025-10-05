@@ -6,7 +6,7 @@ use bevy_event_bus::config::kafka::{
 use bevy_event_bus::{EventBusPlugins, KafkaEventReader, KafkaEventWriter};
 use integration_tests::utils::events::{TestEvent, UserLoginEvent};
 use integration_tests::utils::helpers::{unique_consumer_group, unique_topic, update_until};
-use integration_tests::utils::setup::setup;
+use integration_tests::utils::kafka_setup;
 
 #[test]
 fn single_topic_multiple_types_same_frame() {
@@ -14,7 +14,7 @@ fn single_topic_multiple_types_same_frame() {
     let consumer_group = unique_consumer_group("multi_type_same_frame");
 
     let topic_for_writer = topic.clone();
-    let (backend_w, _b1) = setup("earliest", move |builder| {
+    let (backend_w, _b1) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic_for_writer.clone())
@@ -23,11 +23,11 @@ fn single_topic_multiple_types_same_frame() {
             )
             .add_event::<TestEvent>([topic_for_writer.clone()])
             .add_event::<UserLoginEvent>([topic_for_writer.clone()]);
-    });
+    }));
 
     let topic_for_reader = topic.clone();
     let group_for_reader = consumer_group.clone();
-    let (backend_r, _b2) = setup("earliest", move |builder| {
+    let (backend_r, _b2) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_for_reader.clone())
                 .partitions(1)
@@ -41,7 +41,7 @@ fn single_topic_multiple_types_same_frame() {
             )
             .add_event_single::<TestEvent>(topic_for_reader.clone())
             .add_event_single::<UserLoginEvent>(topic_for_reader.clone());
-    });
+    }));
 
     let mut writer = App::new();
     writer.add_plugins(EventBusPlugins(backend_w));
@@ -126,7 +126,7 @@ fn single_topic_multiple_types_interleaved_frames() {
     let consumer_group2 = unique_consumer_group("multi_type_interleaved");
 
     let topic_for_writer = topic.clone();
-    let (backend_w, _b1) = setup("earliest", move |builder| {
+    let (backend_w, _b1) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic_for_writer.clone())
@@ -135,11 +135,11 @@ fn single_topic_multiple_types_interleaved_frames() {
             )
             .add_event::<TestEvent>([topic_for_writer.clone()])
             .add_event::<UserLoginEvent>([topic_for_writer.clone()]);
-    });
+    }));
 
     let topic_for_reader = topic.clone();
     let group_for_reader = consumer_group2.clone();
-    let (backend_r, _b2) = setup("earliest", move |builder| {
+    let (backend_r, _b2) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_for_reader.clone())
                 .partitions(1)
@@ -153,7 +153,7 @@ fn single_topic_multiple_types_interleaved_frames() {
             )
             .add_event_single::<TestEvent>(topic_for_reader.clone())
             .add_event_single::<UserLoginEvent>(topic_for_reader.clone());
-    });
+    }));
 
     let mut writer = App::new();
     writer.add_plugins(EventBusPlugins(backend_w));

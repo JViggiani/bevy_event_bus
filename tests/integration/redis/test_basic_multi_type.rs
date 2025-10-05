@@ -26,8 +26,7 @@ fn test_basic_multi_type_redis() {
         .add_event_single::<TestEvent>(stream.clone())
         .add_event_single::<UserLoginEvent>(stream.clone());
 
-    let (backend, _context) =
-        redis_setup::setup_with_builder(builder).expect("Redis backend setup successful");
+    let (backend, _context) = redis_setup::setup(builder).expect("Redis backend setup successful");
 
     let backend_reader = backend.clone();
     let backend_writer = backend;

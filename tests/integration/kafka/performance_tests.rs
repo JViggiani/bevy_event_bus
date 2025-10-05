@@ -14,8 +14,8 @@ use bevy_event_bus::{
     },
 };
 use integration_tests::utils::helpers::{unique_consumer_group, unique_topic};
+use integration_tests::utils::kafka_setup;
 use integration_tests::utils::performance::record_performance_results;
-use integration_tests::utils::setup::setup;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -56,7 +56,7 @@ fn test_message_throughput() {
     let topic_for_config = topic.clone();
     let group_for_config = consumer_group.clone();
 
-    let (backend, _container) = setup("earliest", move |builder| {
+    let (backend, _container) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic_for_config.clone())
@@ -69,7 +69,7 @@ fn test_message_throughput() {
                     .initial_offset(KafkaInitialOffset::Earliest),
             )
             .add_event_single::<PerformanceTestEvent>(topic_for_config.clone());
-    });
+    }));
 
     // Configuration for the performance test
     let message_count = 10_000;
@@ -95,7 +95,7 @@ fn test_large_message_throughput() {
     let topic_for_config = topic.clone();
     let group_for_config = consumer_group.clone();
 
-    let (backend, _container) = setup("earliest", move |builder| {
+    let (backend, _container) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic_for_config.clone())
@@ -108,7 +108,7 @@ fn test_large_message_throughput() {
                     .initial_offset(KafkaInitialOffset::Earliest),
             )
             .add_event_single::<PerformanceTestEvent>(topic_for_config.clone());
-    });
+    }));
 
     // Test with larger messages
     let message_count = 1_000;
@@ -134,7 +134,7 @@ fn test_high_volume_small_messages() {
     let topic_for_config = topic.clone();
     let group_for_config = consumer_group.clone();
 
-    let (backend, _container) = setup("earliest", move |builder| {
+    let (backend, _container) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic_for_config.clone())
@@ -147,7 +147,7 @@ fn test_high_volume_small_messages() {
                     .initial_offset(KafkaInitialOffset::Earliest),
             )
             .add_event_single::<PerformanceTestEvent>(topic_for_config.clone());
-    });
+    }));
 
     // Test with many small messages
     let message_count = 50_000;

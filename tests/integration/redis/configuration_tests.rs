@@ -24,8 +24,7 @@ fn configuration_with_readers_writers_works() {
         )
         .add_event_single::<TestEvent>(stream.clone());
 
-    let (backend, _context) =
-        redis_setup::setup_with_builder(builder).expect("Redis backend setup successful");
+    let (backend, _context) = redis_setup::setup(builder).expect("Redis backend setup successful");
 
     let backend_reader = backend.clone();
     let backend_writer = backend;
@@ -113,8 +112,7 @@ fn redis_specific_methods_work() {
         )
         .add_event_single::<TestEvent>(stream.clone());
 
-    let (backend, _context) =
-        redis_setup::setup_with_builder(builder).expect("Redis backend setup successful");
+    let (backend, _context) = redis_setup::setup(builder).expect("Redis backend setup successful");
 
     let mut app = App::new();
     app.add_plugins(EventBusPlugins(backend));

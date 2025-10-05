@@ -36,8 +36,7 @@ fn writer_trim_stream_enforces_max_length() {
         .add_stream(RedisStreamSpec::new(stream.clone()))
         .add_event_single::<TestEvent>(stream.clone());
 
-    let (backend, context) =
-        redis_setup::setup_with_builder(builder).expect("Redis backend setup successful");
+    let (backend, context) = redis_setup::setup(builder).expect("Redis backend setup successful");
 
     let writer_backend = backend;
 

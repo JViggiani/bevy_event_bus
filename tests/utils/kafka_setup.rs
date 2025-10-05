@@ -3,12 +3,15 @@
 //! These helpers manage a lightweight Kafka container (when docker is available) and
 //! construct ready-to-use backends with sane defaults for the test suite.
 
-use super::helpers::kafka_backend_config_for_tests;
-use bevy_event_bus::{KafkaEventBusBackend, config::kafka::KafkaTopologyBuilder};
+use bevy_event_bus::{
+    KafkaBackendConfig, KafkaConnectionConfig, KafkaEventBusBackend,
+    config::kafka::KafkaTopologyBuilder,
+};
 use once_cell::sync::Lazy;
 use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
 use rdkafka::client::DefaultClientContext;
 use rdkafka::producer::Producer as _;
+use std::collections::HashMap;
 use std::process::Command;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
@@ -18,6 +21,83 @@ use tracing::{debug, info, info_span, warn};
 const DEFAULT_IMAGE: &str = "redpandadata/redpanda:v23.3.16";
 const CONTAINER_NAME: &str = "bevy_event_bus_test_kafka";
 const DEFAULT_OFFSET: &str = "latest";
+
+/// Additional configuration controls for Kafka test backend construction.
+#[derive(Clone, Debug)]
+pub struct SetupOptions {
+    auto_offset_reset: Option<String>,
+    additional_connection_config: HashMap<String, String>,
+}
+
+impl SetupOptions {
+    /// Create a new options struct with sensible defaults.
+    /// By default the consumer offset reset policy is set to `latest`.
+    pub fn new() -> Self {
+        Self {
+            auto_offset_reset: Some(DEFAULT_OFFSET.to_string()),
+            additional_connection_config: HashMap::new(),
+        }
+    }
+
+    /// Override the `auto.offset.reset` policy for the backend connection.
+    pub fn auto_offset_reset(mut self, offset: impl Into<String>) -> Self {
+        self.auto_offset_reset = Some(offset.into());
+        self
+    }
+
+    /// Remove the `auto.offset.reset` override, falling back to the broker default.
+    pub fn disable_auto_offset_reset(mut self) -> Self {
+        self.auto_offset_reset = None;
+        self
+    }
+
+    /// Append an additional key/value pair to the Kafka connection configuration.
+    pub fn insert_connection_config(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        self.additional_connection_config
+            .insert(key.into(), value.into());
+        self
+    }
+
+    /// Convenience helper returning an options struct configured for `earliest` offset behaviour.
+    pub fn earliest() -> Self {
+        Self::new().auto_offset_reset("earliest")
+    }
+
+    /// Convenience helper returning an options struct configured for `latest` offset behaviour.
+    pub fn latest() -> Self {
+        Self::new().auto_offset_reset("latest")
+    }
+}
+
+impl Default for SetupOptions {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub struct SetupRequest {
+    builder: KafkaTopologyBuilder,
+    options: SetupOptions,
+}
+
+impl From<KafkaTopologyBuilder> for SetupRequest {
+    fn from(builder: KafkaTopologyBuilder) -> Self {
+        Self {
+            builder,
+            options: SetupOptions::default(),
+        }
+    }
+}
+
+impl From<(KafkaTopologyBuilder, SetupOptions)> for SetupRequest {
+    fn from((builder, options): (KafkaTopologyBuilder, SetupOptions)) -> Self {
+        Self { builder, options }
+    }
+}
 
 /// Holds lifecycle data for the ephemeral Kafka container used in tests
 #[derive(Default, Debug, Clone)]
@@ -238,10 +318,19 @@ fn wait_metadata(bootstrap: &str, max_wait: Duration) -> (bool, u128) {
     (false, start.elapsed().as_millis())
 }
 
-pub fn setup<F>(offset: &str, configure_topology: F) -> (KafkaEventBusBackend, String)
+/// Construct a Kafka backend for integration tests using a prepared topology builder.
+/// Tests may provide either a builder directly or pair it with [`SetupOptions`] for
+/// additional connection-level tweaks.
+pub fn setup<S>(input: S) -> (KafkaEventBusBackend, String)
 where
-    F: FnOnce(&mut KafkaTopologyBuilder),
+    S: Into<SetupRequest>,
 {
+    let SetupRequest { builder, options } = input.into();
+    let SetupOptions {
+        auto_offset_reset,
+        additional_connection_config,
+    } = options;
+
     let container_bootstrap = ensure_container();
     let bootstrap = container_bootstrap.unwrap_or_else(|| {
         std::env::var("KAFKA_BOOTSTRAP_SERVERS").unwrap_or_else(|_| "localhost:9092".into())
@@ -256,7 +345,7 @@ where
         );
     }
 
-    // Require metadata readiness once per test process; subsequent setup() calls skip wait.
+    // Require metadata readiness once per test process; subsequent setup calls skip wait.
     if !METADATA_READY.load(std::sync::atomic::Ordering::SeqCst) {
         // Allow more generous window for fresh Kafka container internal initialization (KRaft can take >20s cold)
         let (metadata_ok, _elapsed) = wait_metadata(&bootstrap, Duration::from_secs(30));
@@ -270,28 +359,64 @@ where
         debug!("Metadata already confirmed ready earlier; skipping wait");
     }
 
-    // Build config with shorter timeout for quicker negative path
-    // Ensure each backend created via setup() uses a distinct consumer group id so that
-    // writer and reader apps both receive all messages (Kafka replicates to distinct groups).
+    // Build config with shorter timeout for quicker negative path.
+    // Ensure each backend created via `setup` uses a distinct
+    // consumer group id so that writer and reader apps both receive all messages (Kafka replicates to distinct groups).
     static GROUP_COUNTER: AtomicUsize = AtomicUsize::new(0);
     let unique = GROUP_COUNTER.fetch_add(1, AtomicOrdering::SeqCst);
-    let mut additional_config = std::collections::HashMap::new();
 
-    // Set offset configuration
-    additional_config.insert("auto.offset.reset".to_string(), offset.to_string());
+    let topology = builder.build();
+    let mut connection = KafkaConnectionConfig::new(&bootstrap)
+        .set_client_id(format!("bevy_event_bus_test_client_{}", unique))
+        .set_timeout_ms(5000);
 
-    let mut config = kafka_backend_config_for_tests(
-        &bootstrap,
-        Some(format!("bevy_event_bus_test_client_{}", unique)),
-        configure_topology,
-    );
-    for (key, value) in additional_config {
-        config.connection = config.connection.insert_additional_config(key, value);
+    if let Some(offset) = auto_offset_reset {
+        connection = connection.insert_additional_config("auto.offset.reset", offset);
     }
+    for (key, value) in additional_connection_config {
+        connection = connection.insert_additional_config(key, value);
+    }
+
+    let config = KafkaBackendConfig::new(connection, topology, Duration::from_secs(1));
 
     let backend = KafkaEventBusBackend::new(config);
     info!("Kafka test setup complete (ready)");
     (backend, bootstrap)
+}
+
+/// Helper to obtain a [`KafkaTopologyBuilder`] by applying a closure, allowing tests to keep
+/// concise configuration blocks while still passing a fully-constructed builder into [`setup`].
+pub fn build_topology<F>(configure: F) -> KafkaTopologyBuilder
+where
+    F: FnOnce(&mut KafkaTopologyBuilder),
+{
+    let mut builder = KafkaTopologyBuilder::default();
+    configure(&mut builder);
+    builder
+}
+
+/// Create a [`SetupRequest`] from a configuration closure and [`SetupOptions`].
+pub fn build_request<F>(options: SetupOptions, configure: F) -> SetupRequest
+where
+    F: FnOnce(&mut KafkaTopologyBuilder),
+{
+    SetupRequest::from((build_topology(configure), options))
+}
+
+/// Convenience helper producing a [`SetupRequest`] configured with `earliest` offset semantics.
+pub fn earliest<F>(configure: F) -> SetupRequest
+where
+    F: FnOnce(&mut KafkaTopologyBuilder),
+{
+    build_request(SetupOptions::earliest(), configure)
+}
+
+/// Convenience helper producing a [`SetupRequest`] configured with `latest` offset semantics.
+pub fn latest<F>(configure: F) -> SetupRequest
+where
+    F: FnOnce(&mut KafkaTopologyBuilder),
+{
+    build_request(SetupOptions::latest(), configure)
 }
 
 /// Same as `setup` but allows providing a unique suffix for the consumer group id so that
@@ -412,14 +537,14 @@ pub fn ensure_topic_ready(
     false
 }
 
-/// Build a baseline Bevy `App` with the event bus plugins wired to a fresh Kafka backend from `setup()`.
+/// Build a baseline Bevy `App` with the event bus plugins wired to a fresh Kafka backend from [`setup`].
 /// An optional customization closure can further configure the `App` (e.g., inserting resources, systems).
 /// This centralizes construction so tests share identical initialization semantics.
 pub fn build_basic_app<F>(customize: F) -> bevy::prelude::App
 where
     F: FnOnce(&mut bevy::prelude::App),
 {
-    let (backend, _bootstrap) = setup(DEFAULT_OFFSET, |_| {});
+    let (backend, _bootstrap) = setup(latest(|_| {}));
     let mut app = bevy::prelude::App::new();
     app.add_plugins(bevy_event_bus::EventBusPlugins(backend));
     customize(&mut app);
@@ -429,4 +554,24 @@ where
 /// Convenience overload when no customization is needed.
 pub fn build_basic_app_simple() -> bevy::prelude::App {
     build_basic_app(|_| {})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn setup_options_can_disable_offset_reset() {
+        let options = SetupOptions::new().disable_auto_offset_reset();
+        assert!(options.auto_offset_reset.is_none());
+    }
+
+    #[test]
+    fn setup_options_can_add_connection_config() {
+        let options = SetupOptions::new().insert_connection_config("foo", "bar");
+        assert_eq!(
+            options.additional_connection_config.get("foo"),
+            Some(&"bar".to_string())
+        );
+    }
 }

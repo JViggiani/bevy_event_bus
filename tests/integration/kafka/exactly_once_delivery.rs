@@ -6,7 +6,7 @@ use bevy_event_bus::config::kafka::{
 use bevy_event_bus::{EventBusPlugins, KafkaEventReader, KafkaEventWriter};
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{unique_consumer_group, unique_topic, update_until};
-use integration_tests::utils::setup::setup;
+use integration_tests::utils::kafka_setup;
 
 /// Test that events are delivered exactly once - no duplication
 #[test]
@@ -15,35 +15,37 @@ fn no_event_duplication_exactly_once_delivery() {
     let consumer_group = unique_consumer_group("exactly_once_reader");
 
     let topic_for_writer = topic.clone();
-    let (backend_writer, _bootstrap_writer) = setup("earliest", move |builder| {
-        builder
-            .add_topic(
-                KafkaTopicSpec::new(topic_for_writer.clone())
-                    .partitions(1)
-                    .replication(1),
-            )
-            .add_event_single::<TestEvent>(topic_for_writer.clone());
-    });
+    let (backend_writer, _bootstrap_writer) =
+        kafka_setup::setup(kafka_setup::earliest(move |builder| {
+            builder
+                .add_topic(
+                    KafkaTopicSpec::new(topic_for_writer.clone())
+                        .partitions(1)
+                        .replication(1),
+                )
+                .add_event_single::<TestEvent>(topic_for_writer.clone());
+        }));
 
     let topic_for_reader = topic.clone();
     let group_for_reader = consumer_group.clone();
-    let (backend_reader, bootstrap_reader) = setup("earliest", move |builder| {
-        builder.add_topic(
-            KafkaTopicSpec::new(topic_for_reader.clone())
-                .partitions(1)
-                .replication(1),
-        );
-        builder
-            .add_consumer_group(
-                group_for_reader.clone(),
-                KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
-                    .initial_offset(KafkaInitialOffset::Earliest),
-            )
-            .add_event_single::<TestEvent>(topic_for_reader.clone());
-    });
+    let (backend_reader, bootstrap_reader) =
+        kafka_setup::setup(kafka_setup::earliest(move |builder| {
+            builder
+                .add_topic(
+                    KafkaTopicSpec::new(topic_for_reader.clone())
+                        .partitions(1)
+                        .replication(1),
+                )
+                .add_consumer_group(
+                    group_for_reader.clone(),
+                    KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
+                        .initial_offset(KafkaInitialOffset::Earliest),
+                )
+                .add_event_single::<TestEvent>(topic_for_reader.clone());
+        }));
 
     // Create topic and wait for it to be fully ready
-    let topic_ready = integration_tests::utils::setup::ensure_topic_ready(
+    let topic_ready = kafka_setup::ensure_topic_ready(
         &bootstrap_reader,
         &topic,
         1, // partitions

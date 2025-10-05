@@ -35,11 +35,11 @@ fn multiple_event_types_same_stream() {
         .add_event_single::<TestEvent>(stream.clone())
         .add_event_single::<UserLoginEvent>(stream.clone());
 
-    let (backend_writer, _context1) = redis_setup::setup_with_builder(writer_builder)
-        .expect("Writer Redis backend setup successful");
+    let (backend_writer, _context1) =
+        redis_setup::setup(writer_builder).expect("Writer Redis backend setup successful");
 
     let (backend_reader, _context2) =
-        redis_setup::setup_with_builder(builder).expect("Reader Redis backend setup successful");
+        redis_setup::setup(builder).expect("Reader Redis backend setup successful");
 
     // Reader app using proper system pattern
     #[derive(Resource, Default)]
@@ -169,11 +169,11 @@ fn interleaved_multi_type_frames() {
         .add_event_single::<TestEvent>(stream.clone())
         .add_event_single::<UserLoginEvent>(stream.clone());
 
-    let (writer_backend, _context1) = redis_setup::setup_with_builder(writer_builder)
-        .expect("Writer Redis backend setup successful");
+    let (writer_backend, _context1) =
+        redis_setup::setup(writer_builder).expect("Writer Redis backend setup successful");
 
     let (reader_backend, _context2) =
-        redis_setup::setup_with_builder(builder).expect("Reader Redis backend setup successful");
+        redis_setup::setup(builder).expect("Reader Redis backend setup successful");
 
     let mut writer = App::new();
     writer.add_plugins(EventBusPlugins(writer_backend));

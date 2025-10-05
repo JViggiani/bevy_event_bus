@@ -34,8 +34,7 @@ fn test_coordinated_consumer_names() {
         )
         .add_event_single::<TestEvent>(stream.clone());
 
-    let (backend, _context) =
-        redis_setup::setup_with_builder(builder).expect("Redis backend setup successful");
+    let (backend, _context) = redis_setup::setup(builder).expect("Redis backend setup successful");
 
     // Setup reader1 app with MATCHING consumer name
     let mut reader1 = App::new();

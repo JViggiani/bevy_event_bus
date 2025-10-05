@@ -39,12 +39,12 @@ fn external_redis_events_independent_operation() {
         .add_stream(RedisStreamSpec::new(stream.clone()))
         .add_event_single::<TestEvent>(stream.clone());
 
-    let (writer1_backend, _context1) = redis_setup::setup_with_builder(writer1_builder)
-        .expect("Writer1 Redis backend setup successful");
-    let (writer2_backend, _context2) = redis_setup::setup_with_builder(writer2_builder)
-        .expect("Writer2 Redis backend setup successful");
+    let (writer1_backend, _context1) =
+        redis_setup::setup(writer1_builder).expect("Writer1 Redis backend setup successful");
+    let (writer2_backend, _context2) =
+        redis_setup::setup(writer2_builder).expect("Writer2 Redis backend setup successful");
     let (reader_backend, _context3) =
-        redis_setup::setup_with_builder(builder).expect("Reader Redis backend setup successful");
+        redis_setup::setup(builder).expect("Reader Redis backend setup successful");
 
     // Two separate writer apps with independent backends
     let mut writer1 = App::new();

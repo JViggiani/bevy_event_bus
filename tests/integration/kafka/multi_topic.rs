@@ -6,7 +6,7 @@ use bevy_event_bus::config::kafka::{
 use bevy_event_bus::{EventBusPlugins, KafkaEventReader, KafkaEventWriter};
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{unique_consumer_group, unique_topic, update_until};
-use integration_tests::utils::setup::setup;
+use integration_tests::utils::kafka_setup;
 
 #[test]
 fn multi_topic_isolation() {
@@ -16,7 +16,7 @@ fn multi_topic_isolation() {
 
     let topic_a_writer = topic_a.clone();
     let topic_b_writer = topic_b.clone();
-    let (backend_w, _b1) = setup("earliest", move |builder| {
+    let (backend_w, _b1) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic_a_writer.clone())
@@ -31,12 +31,12 @@ fn multi_topic_isolation() {
                     .replication(1),
             )
             .add_event_single::<TestEvent>(topic_b_writer.clone());
-    });
+    }));
 
     let topic_a_reader = topic_a.clone();
     let topic_b_reader = topic_b.clone();
     let group_for_reader = consumer_group.clone();
-    let (backend_r, _b2) = setup("earliest", move |builder| {
+    let (backend_r, _b2) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_a_reader.clone())
                 .partitions(1)
@@ -55,7 +55,7 @@ fn multi_topic_isolation() {
             )
             .add_event_single::<TestEvent>(topic_a_reader.clone())
             .add_event_single::<TestEvent>(topic_b_reader.clone());
-    });
+    }));
 
     let mut writer = App::new();
     writer.add_plugins(EventBusPlugins(backend_w));

@@ -10,7 +10,7 @@ use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
     run_app_updates, unique_consumer_group, unique_topic, update_until,
 };
-use integration_tests::utils::setup::setup;
+use integration_tests::utils::kafka_setup;
 
 #[derive(Resource, Default)]
 struct EventCollector(Vec<TestEvent>);
@@ -23,50 +23,52 @@ fn same_consumer_group_distributes_messages_round_robin() {
 
     // Writer topology - no consumer groups (write-only)
     let topic_for_writer = topic.clone();
-    let (writer_backend, _bootstrap1) = setup("earliest", move |builder| {
+    let (writer_backend, _bootstrap1) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_for_writer.clone())
                 .partitions(1)
                 .replication(1),
         );
         builder.add_event_single::<TestEvent>(topic_for_writer.clone());
-    });
+    }));
 
     let topic_for_runtime_writer = topic.clone();
 
     // Reader1 topology - with consumer group
     let topic_for_reader1 = topic.clone();
     let group_for_reader1 = consumer_group.clone();
-    let (reader1_backend, _bootstrap2) = setup("earliest", move |builder| {
-        builder.add_topic(
-            KafkaTopicSpec::new(topic_for_reader1.clone())
-                .partitions(1)
-                .replication(1),
-        );
-        builder.add_consumer_group(
-            group_for_reader1.clone(),
-            KafkaConsumerGroupSpec::new([topic_for_reader1.clone()])
-                .initial_offset(KafkaInitialOffset::Earliest),
-        );
-        builder.add_event_single::<TestEvent>(topic_for_reader1.clone());
-    });
+    let (reader1_backend, _bootstrap2) =
+        kafka_setup::setup(kafka_setup::earliest(move |builder| {
+            builder.add_topic(
+                KafkaTopicSpec::new(topic_for_reader1.clone())
+                    .partitions(1)
+                    .replication(1),
+            );
+            builder.add_consumer_group(
+                group_for_reader1.clone(),
+                KafkaConsumerGroupSpec::new([topic_for_reader1.clone()])
+                    .initial_offset(KafkaInitialOffset::Earliest),
+            );
+            builder.add_event_single::<TestEvent>(topic_for_reader1.clone());
+        }));
 
     // Reader2 topology - same consumer group
     let topic_for_reader2 = topic.clone();
     let group_for_reader2 = consumer_group.clone();
-    let (reader2_backend, _bootstrap3) = setup("earliest", move |builder| {
-        builder.add_topic(
-            KafkaTopicSpec::new(topic_for_reader2.clone())
-                .partitions(1)
-                .replication(1),
-        );
-        builder.add_consumer_group(
-            group_for_reader2.clone(),
-            KafkaConsumerGroupSpec::new([topic_for_reader2.clone()])
-                .initial_offset(KafkaInitialOffset::Earliest),
-        );
-        builder.add_event_single::<TestEvent>(topic_for_reader2.clone());
-    });
+    let (reader2_backend, _bootstrap3) =
+        kafka_setup::setup(kafka_setup::earliest(move |builder| {
+            builder.add_topic(
+                KafkaTopicSpec::new(topic_for_reader2.clone())
+                    .partitions(1)
+                    .replication(1),
+            );
+            builder.add_consumer_group(
+                group_for_reader2.clone(),
+                KafkaConsumerGroupSpec::new([topic_for_reader2.clone()])
+                    .initial_offset(KafkaInitialOffset::Earliest),
+            );
+            builder.add_event_single::<TestEvent>(topic_for_reader2.clone());
+        }));
 
     // Setup writer app
     let mut writer = App::new();
@@ -181,50 +183,52 @@ fn different_consumer_groups_broadcast_all_messages() {
 
     // Writer topology - no consumer groups (write-only)
     let topic_for_writer = topic.clone();
-    let (writer_backend, _bootstrap1) = setup("earliest", move |builder| {
+    let (writer_backend, _bootstrap1) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_for_writer.clone())
                 .partitions(1)
                 .replication(1),
         );
         builder.add_event_single::<TestEvent>(topic_for_writer.clone());
-    });
+    }));
 
     let topic_for_runtime_writer = topic.clone();
 
     // Reader1 topology - with consumer group 1
     let topic_for_reader1 = topic.clone();
     let group_for_reader1 = consumer_group1.clone();
-    let (reader1_backend, _bootstrap2) = setup("earliest", move |builder| {
-        builder.add_topic(
-            KafkaTopicSpec::new(topic_for_reader1.clone())
-                .partitions(1)
-                .replication(1),
-        );
-        builder.add_consumer_group(
-            group_for_reader1.clone(),
-            KafkaConsumerGroupSpec::new([topic_for_reader1.clone()])
-                .initial_offset(KafkaInitialOffset::Earliest),
-        );
-        builder.add_event_single::<TestEvent>(topic_for_reader1.clone());
-    });
+    let (reader1_backend, _bootstrap2) =
+        kafka_setup::setup(kafka_setup::earliest(move |builder| {
+            builder.add_topic(
+                KafkaTopicSpec::new(topic_for_reader1.clone())
+                    .partitions(1)
+                    .replication(1),
+            );
+            builder.add_consumer_group(
+                group_for_reader1.clone(),
+                KafkaConsumerGroupSpec::new([topic_for_reader1.clone()])
+                    .initial_offset(KafkaInitialOffset::Earliest),
+            );
+            builder.add_event_single::<TestEvent>(topic_for_reader1.clone());
+        }));
 
     // Reader2 topology - with different consumer group 2
     let topic_for_reader2 = topic.clone();
     let group_for_reader2 = consumer_group2.clone();
-    let (reader2_backend, _bootstrap3) = setup("earliest", move |builder| {
-        builder.add_topic(
-            KafkaTopicSpec::new(topic_for_reader2.clone())
-                .partitions(1)
-                .replication(1),
-        );
-        builder.add_consumer_group(
-            group_for_reader2.clone(),
-            KafkaConsumerGroupSpec::new([topic_for_reader2.clone()])
-                .initial_offset(KafkaInitialOffset::Earliest),
-        );
-        builder.add_event_single::<TestEvent>(topic_for_reader2.clone());
-    });
+    let (reader2_backend, _bootstrap3) =
+        kafka_setup::setup(kafka_setup::earliest(move |builder| {
+            builder.add_topic(
+                KafkaTopicSpec::new(topic_for_reader2.clone())
+                    .partitions(1)
+                    .replication(1),
+            );
+            builder.add_consumer_group(
+                group_for_reader2.clone(),
+                KafkaConsumerGroupSpec::new([topic_for_reader2.clone()])
+                    .initial_offset(KafkaInitialOffset::Earliest),
+            );
+            builder.add_event_single::<TestEvent>(topic_for_reader2.clone());
+        }));
 
     // Setup writer app
     let mut writer = App::new();
@@ -329,14 +333,14 @@ fn writer_only_no_consumer_groups_works() {
 
     // Writer topology - no consumer groups, just topic and event binding
     let topic_for_writer = topic.clone();
-    let (writer_backend, _bootstrap) = setup("earliest", move |builder| {
+    let (writer_backend, _bootstrap) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_for_writer.clone())
                 .partitions(1)
                 .replication(1),
         );
         builder.add_event_single::<TestEvent>(topic_for_writer.clone());
-    });
+    }));
 
     // Setup writer app
     let mut writer = App::new();

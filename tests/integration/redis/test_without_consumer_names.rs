@@ -31,8 +31,7 @@ fn test_consumer_groups_without_names() {
         )
         .add_event_single::<TestEvent>(stream.clone());
 
-    let (backend, _context) =
-        redis_setup::setup_with_builder(builder).expect("Redis backend setup successful");
+    let (backend, _context) = redis_setup::setup(builder).expect("Redis backend setup successful");
 
     // Setup reader1 app WITHOUT consumer name (like basic.rs)
     let mut reader1 = App::new();

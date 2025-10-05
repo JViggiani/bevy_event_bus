@@ -424,9 +424,7 @@ pub fn ensure_shared_redis() -> Result<SharedRedisDatabase> {
 }
 
 /// Construct a Redis backend and accompanying context from the supplied topology builder.
-pub fn setup_with_builder(
-    builder: RedisTopologyBuilder,
-) -> Result<(RedisEventBusBackend, RedisTestContext)> {
+pub fn setup(builder: RedisTopologyBuilder) -> Result<(RedisEventBusBackend, RedisTestContext)> {
     bevy_event_bus::runtime();
 
     let (connection, context) = ensure_connection()?;

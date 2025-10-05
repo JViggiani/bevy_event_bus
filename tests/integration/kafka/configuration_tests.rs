@@ -11,7 +11,7 @@ use integration_tests::utils::helpers::{
     kafka_backend_config_for_tests, run_app_updates, unique_consumer_group, unique_topic,
     update_until,
 };
-use integration_tests::utils::setup::setup;
+use integration_tests::utils::kafka_setup;
 
 #[derive(Resource, Default)]
 struct Collected(Vec<TestEvent>);
@@ -24,30 +24,32 @@ fn configuration_with_readers_writers_works() {
 
     // Create separate backends for writer and reader to simulate separate machines
     let topic_for_writer = topic.clone();
-    let (backend_writer, _bootstrap_writer) = setup("earliest", move |builder| {
-        builder.add_topic(
-            KafkaTopicSpec::new(topic_for_writer.clone())
-                .partitions(1)
-                .replication(1),
-        );
-        builder.add_event_single::<TestEvent>(topic_for_writer.clone());
-    });
+    let (backend_writer, _bootstrap_writer) =
+        kafka_setup::setup(kafka_setup::earliest(move |builder| {
+            builder.add_topic(
+                KafkaTopicSpec::new(topic_for_writer.clone())
+                    .partitions(1)
+                    .replication(1),
+            );
+            builder.add_event_single::<TestEvent>(topic_for_writer.clone());
+        }));
 
     let topic_for_reader = topic.clone();
     let group_for_reader = consumer_group.clone();
-    let (backend_reader, _bootstrap_reader) = setup("earliest", move |builder| {
-        builder.add_topic(
-            KafkaTopicSpec::new(topic_for_reader.clone())
-                .partitions(1)
-                .replication(1),
-        );
-        builder.add_consumer_group(
-            group_for_reader.clone(),
-            KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
-                .initial_offset(KafkaInitialOffset::Earliest),
-        );
-        builder.add_event_single::<TestEvent>(topic_for_reader.clone());
-    });
+    let (backend_reader, _bootstrap_reader) =
+        kafka_setup::setup(kafka_setup::earliest(move |builder| {
+            builder.add_topic(
+                KafkaTopicSpec::new(topic_for_reader.clone())
+                    .partitions(1)
+                    .replication(1),
+            );
+            builder.add_consumer_group(
+                group_for_reader.clone(),
+                KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
+                    .initial_offset(KafkaInitialOffset::Earliest),
+            );
+            builder.add_event_single::<TestEvent>(topic_for_reader.clone());
+        }));
 
     // Producer app
     let mut producer_app = {
@@ -128,7 +130,7 @@ fn configuration_with_readers_writers_works() {
 #[test]
 fn kafka_specific_methods_work() {
     let topic = unique_topic("kafka_methods");
-    let (_backend, bootstrap) = setup("latest", |_| {});
+    let (_backend, bootstrap) = kafka_setup::setup(kafka_setup::latest(|_| {}));
     let consumer_group = unique_consumer_group("kafka_methods");
 
     let topic_for_config = topic.clone();

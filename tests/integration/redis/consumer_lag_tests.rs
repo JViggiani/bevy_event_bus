@@ -29,11 +29,11 @@ fn consumer_lag_and_stream_trimming() {
         )
         .add_event_single::<TestEvent>(stream.clone());
 
-    let (writer_backend, _context1) = redis_setup::setup_with_builder(writer_builder)
-        .expect("Writer Redis backend setup successful");
+    let (writer_backend, _context1) =
+        redis_setup::setup(writer_builder).expect("Writer Redis backend setup successful");
 
     let (reader_backend, _context2) =
-        redis_setup::setup_with_builder(builder).expect("Reader Redis backend setup successful");
+        redis_setup::setup(builder).expect("Reader Redis backend setup successful");
 
     let mut writer = App::new();
     writer.add_plugins(EventBusPlugins(writer_backend));
@@ -108,7 +108,7 @@ fn stream_memory_optimization() {
         .add_event_single::<TestEvent>(stream.clone());
 
     let (writer_backend, _context) =
-        redis_setup::setup_with_builder(builder).expect("Writer Redis backend setup successful");
+        redis_setup::setup(builder).expect("Writer Redis backend setup successful");
 
     let mut writer = App::new();
     writer.add_plugins(EventBusPlugins(writer_backend));

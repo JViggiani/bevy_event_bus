@@ -8,7 +8,7 @@ use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{
     run_app_updates, unique_consumer_group, unique_topic, wait_for_events,
 };
-use integration_tests::utils::setup::setup;
+use integration_tests::utils::kafka_setup;
 use tracing::{info, info_span};
 use tracing_subscriber::EnvFilter;
 
@@ -79,32 +79,34 @@ fn external_bus_events_flow_from_both_writers() {
     let consumer_group = unique_consumer_group("dual-writer-group");
 
     let topic_for_writer = topic.clone();
-    let (backend_writer, _bootstrap_w) = setup("earliest", move |builder| {
-        builder
-            .add_topic(
-                KafkaTopicSpec::new(topic_for_writer.clone())
-                    .partitions(1)
-                    .replication(1),
-            )
-            .add_event_single::<TestEvent>(topic_for_writer.clone());
-    });
+    let (backend_writer, _bootstrap_w) =
+        kafka_setup::setup(kafka_setup::earliest(move |builder| {
+            builder
+                .add_topic(
+                    KafkaTopicSpec::new(topic_for_writer.clone())
+                        .partitions(1)
+                        .replication(1),
+                )
+                .add_event_single::<TestEvent>(topic_for_writer.clone());
+        }));
 
     let topic_for_reader = topic.clone();
     let group_for_reader = consumer_group.clone();
-    let (backend_reader, _bootstrap_r) = setup("earliest", move |builder| {
-        builder.add_topic(
-            KafkaTopicSpec::new(topic_for_reader.clone())
-                .partitions(1)
-                .replication(1),
-        );
-        builder
-            .add_consumer_group(
-                group_for_reader.clone(),
-                KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
-                    .initial_offset(KafkaInitialOffset::Earliest),
-            )
-            .add_event_single::<TestEvent>(topic_for_reader.clone());
-    });
+    let (backend_reader, _bootstrap_r) =
+        kafka_setup::setup(kafka_setup::earliest(move |builder| {
+            builder
+                .add_topic(
+                    KafkaTopicSpec::new(topic_for_reader.clone())
+                        .partitions(1)
+                        .replication(1),
+                )
+                .add_consumer_group(
+                    group_for_reader.clone(),
+                    KafkaConsumerGroupSpec::new([topic_for_reader.clone()])
+                        .initial_offset(KafkaInitialOffset::Earliest),
+                )
+                .add_event_single::<TestEvent>(topic_for_reader.clone());
+        }));
 
     // Writer app configuration
     let mut writer_app = App::new();

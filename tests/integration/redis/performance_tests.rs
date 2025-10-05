@@ -80,8 +80,7 @@ fn test_message_throughput() {
         )
         .add_event_single::<TestEvent>(stream.clone());
 
-    let (backend, _context) =
-        redis_setup::setup_with_builder(builder).expect("Redis backend setup successful");
+    let (backend, _context) = redis_setup::setup(builder).expect("Redis backend setup successful");
 
     let mut reader = App::new();
     reader.add_plugins(EventBusPlugins(backend.clone()));
@@ -253,8 +252,7 @@ fn test_high_volume_small_messages() {
         )
         .add_event_single::<TestEvent>(stream.clone());
 
-    let (backend, _context) =
-        redis_setup::setup_with_builder(builder).expect("Redis backend setup successful");
+    let (backend, _context) = redis_setup::setup(builder).expect("Redis backend setup successful");
 
     let mut reader = App::new();
     reader.add_plugins(EventBusPlugins(backend.clone()));
@@ -420,8 +418,7 @@ fn test_large_message_throughput() {
         )
         .add_event_single::<LargeEvent>(stream.clone());
 
-    let (backend, _context) =
-        redis_setup::setup_with_builder(builder).expect("Redis backend setup successful");
+    let (backend, _context) = redis_setup::setup(builder).expect("Redis backend setup successful");
 
     let mut reader = App::new();
     reader.add_plugins(EventBusPlugins(backend.clone()));

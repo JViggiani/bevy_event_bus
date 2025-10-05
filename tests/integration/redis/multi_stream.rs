@@ -28,7 +28,7 @@ fn multi_stream_isolation() {
         .add_event_single::<TestEvent>(stream1.clone());
 
     let (backend1, _context1) =
-        redis_setup::setup_with_builder(builder1).expect("Redis backend1 setup successful");
+        redis_setup::setup(builder1).expect("Redis backend1 setup successful");
 
     // Setup stream2 with group2
     let mut builder2 = RedisTopologyBuilder::default();
@@ -41,7 +41,7 @@ fn multi_stream_isolation() {
         .add_event_single::<TestEvent>(stream2.clone());
 
     let (backend2, _context2) =
-        redis_setup::setup_with_builder(builder2).expect("Redis backend2 setup successful");
+        redis_setup::setup(builder2).expect("Redis backend2 setup successful");
 
     // Create separate writer backends without consumer groups
     let mut writer1_builder = RedisTopologyBuilder::default();
@@ -49,16 +49,16 @@ fn multi_stream_isolation() {
         .add_stream(RedisStreamSpec::new(stream1.clone()))
         .add_event_single::<TestEvent>(stream1.clone());
 
-    let (writer1_backend, _context_w1) = redis_setup::setup_with_builder(writer1_builder)
-        .expect("Writer1 Redis backend setup successful");
+    let (writer1_backend, _context_w1) =
+        redis_setup::setup(writer1_builder).expect("Writer1 Redis backend setup successful");
 
     let mut writer2_builder = RedisTopologyBuilder::default();
     writer2_builder
         .add_stream(RedisStreamSpec::new(stream2.clone()))
         .add_event_single::<TestEvent>(stream2.clone());
 
-    let (writer2_backend, _context_w2) = redis_setup::setup_with_builder(writer2_builder)
-        .expect("Writer2 Redis backend setup successful");
+    let (writer2_backend, _context_w2) =
+        redis_setup::setup(writer2_builder).expect("Writer2 Redis backend setup successful");
 
     // Writer apps with separate backends
     let mut writer1 = App::new();
