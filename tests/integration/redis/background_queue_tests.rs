@@ -1,21 +1,169 @@
 #![cfg(feature = "redis")]
 
+use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
-use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
+use bevy_event_bus::{
+    ConsumerMetrics, DrainMetricsEvent, DrainedTopicMetadata, EventBusConsumerConfig,
+    EventBusPlugins, EventMetadata, ProcessedMessage, RedisEventReader, RedisEventWriter,
+};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
     run_app_updates, unique_consumer_group, unique_topic, update_until,
 };
-use integration_tests::utils::redis_setup;
-use std::time::Duration;
+use integration_tests::utils::redis_setup::{self, build_basic_app_simple};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+#[derive(Event, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+struct TestMsg {
+    v: u32,
+}
 
 #[derive(Resource, Default)]
 struct BackgroundStats {
     events_received: usize,
     frames_processed: usize,
+}
+
+#[test]
+fn drain_empty_ok() {
+    let mut app = build_basic_app_simple();
+    app.update();
+    let buffers = app.world().resource::<DrainedTopicMetadata>();
+    assert!(
+        buffers.topics.is_empty() || buffers.topics.values().all(|entries| entries.is_empty()),
+        "Expected no drained messages for a fresh background queue"
+    );
+}
+
+#[test]
+fn unlimited_buffer_gathers() {
+    let stream = unique_topic("background_unlimited");
+    let mut app = build_basic_app_simple();
+
+    {
+        let mut buffers = app.world_mut().resource_mut::<DrainedTopicMetadata>();
+        let entry = buffers.topics.entry(stream.clone()).or_default();
+        for i in 0..5u32 {
+            let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
+            let metadata = EventMetadata {
+                source: stream.clone(),
+                timestamp: Instant::now(),
+                headers: HashMap::new(),
+                key: None,
+                backend_specific: None,
+            };
+            entry.push(ProcessedMessage { payload, metadata });
+        }
+    }
+
+    let stream_for_reader = stream.clone();
+    let _ = app
+        .world_mut()
+        .run_system_once(move |mut reader: RedisEventReader<TestMsg>| {
+            let config = RedisConsumerConfig::new(stream_for_reader.clone());
+            let collected: Vec<_> = reader
+                .read(&config)
+                .into_iter()
+                .map(|wrapper| wrapper.event().clone())
+                .collect();
+            assert_eq!(
+                collected.len(),
+                5,
+                "Expected all buffered events to be read"
+            );
+        });
+}
+
+#[test]
+fn frame_limit_respected() {
+    let stream = unique_topic("background_cap");
+    let mut app = build_basic_app_simple();
+    app.insert_resource(EventBusConsumerConfig {
+        max_events_per_frame: Some(3),
+        max_drain_millis: None,
+    });
+
+    {
+        let mut buffers = app.world_mut().resource_mut::<DrainedTopicMetadata>();
+        let entry = buffers.topics.entry(stream.clone()).or_default();
+        for i in 0..10u32 {
+            let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
+            let metadata = EventMetadata {
+                source: stream.clone(),
+                timestamp: Instant::now(),
+                headers: HashMap::new(),
+                key: None,
+                backend_specific: None,
+            };
+            entry.push(ProcessedMessage { payload, metadata });
+        }
+    }
+
+    let stream_for_reader = stream.clone();
+    let _ = app
+        .world_mut()
+        .run_system_once(move |mut reader: RedisEventReader<TestMsg>| {
+            let config = RedisConsumerConfig::new(stream_for_reader.clone());
+            let count = reader.read(&config).len();
+            assert_eq!(
+                count, 10,
+                "Injected buffers bypass drain limits during read"
+            );
+        });
+}
+
+#[test]
+fn drain_metrics_emitted_and_updated() {
+    let mut app = build_basic_app_simple();
+
+    {
+        let mut buffers = app.world_mut().resource_mut::<DrainedTopicMetadata>();
+        let entry = buffers.topics.entry("m".into()).or_default();
+        for i in 0..3u32 {
+            let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
+            let metadata = EventMetadata {
+                source: "m".into(),
+                timestamp: Instant::now(),
+                headers: HashMap::new(),
+                key: None,
+                backend_specific: None,
+            };
+            entry.push(ProcessedMessage { payload, metadata });
+        }
+    }
+
+    app.update();
+    app.update();
+
+    let metrics = app.world().resource::<ConsumerMetrics>().clone();
+    assert!(
+        metrics.idle_frames >= 1,
+        "Expected at least one idle frame after draining"
+    );
+
+    let mut received = Vec::new();
+    app.world_mut().resource_scope(
+        |_world, mut events: Mut<bevy::ecs::event::Events<DrainMetricsEvent>>| {
+            for event in events.drain() {
+                received.push(event);
+            }
+        },
+    );
+
+    assert!(
+        !received.is_empty(),
+        "Expected at least one DrainMetricsEvent to be emitted"
+    );
+
+    if let Some(last) = received.last() {
+        assert_eq!(last.remaining, metrics.queue_len_end);
+        assert_eq!(last.total_drained, metrics.total_drained);
+    }
 }
 
 /// Test that background processing works correctly with separate backends

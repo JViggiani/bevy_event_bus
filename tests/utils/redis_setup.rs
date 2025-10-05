@@ -1,6 +1,8 @@
 #![cfg(feature = "redis")]
 
 use anyhow::{Context, Result, anyhow};
+use bevy::prelude::{App, Resource};
+use bevy_event_bus::EventBusPlugins;
 use bevy_event_bus::backends::RedisEventBusBackend;
 use bevy_event_bus::config::redis::{
     RedisBackendConfig, RedisConnectionConfig, RedisTopologyBuilder, RedisTopologyConfig,
@@ -102,6 +104,38 @@ impl Drop for SharedRedisDatabaseInner {
             redis.release_db(*db_index);
         }
     }
+}
+
+/// Resource wrapper that keeps the Redis test context alive for the lifetime of a Bevy `App`.
+#[derive(Resource)]
+pub struct RedisBackendContext(pub RedisTestContext);
+
+impl RedisBackendContext {
+    pub fn connection_string(&self) -> &str {
+        self.0.connection_string()
+    }
+}
+
+/// Build a baseline Bevy `App` wired to a fresh Redis backend created from the shared pool.
+/// Tests can provide a customization closure to insert additional resources or systems.
+pub fn build_basic_app<F>(customize: F) -> App
+where
+    F: FnOnce(&mut App),
+{
+    let shared = ensure_shared_redis().expect("shared Redis available for tests");
+    let (backend, context) = setup(&shared, |_| {}).expect("Redis backend setup");
+    let guard = RedisBackendContext(context);
+    let _ = guard.connection_string();
+    let mut app = App::new();
+    app.add_plugins(EventBusPlugins(backend));
+    app.insert_resource(guard);
+    customize(&mut app);
+    app
+}
+
+/// Convenience helper when no additional customization is required.
+pub fn build_basic_app_simple() -> App {
+    build_basic_app(|_| {})
 }
 
 static SHARED_REDIS: OnceCell<Arc<SharedRedisInner>> = OnceCell::new();
