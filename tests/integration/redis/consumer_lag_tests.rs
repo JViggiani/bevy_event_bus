@@ -1,9 +1,7 @@
 #![cfg(feature = "redis")]
 
 use bevy::prelude::*;
-use bevy_event_bus::config::redis::{
-    RedisConsumerConfig, RedisProducerConfig, RedisStreamSpec, RedisTopologyBuilder,
-};
+use bevy_event_bus::config::redis::{RedisConsumerConfig, RedisProducerConfig, RedisStreamSpec};
 use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::unique_topic;
@@ -14,26 +12,26 @@ use integration_tests::utils::redis_setup;
 fn consumer_lag_and_stream_trimming() {
     let stream = unique_topic("lag_test");
 
-    let mut builder = RedisTopologyBuilder::default();
-    builder
-        .add_stream(
-            RedisStreamSpec::new(stream.clone()).maxlen(10), // Limit stream to 10 messages for testing trimming
-        )
-        .add_event_single::<TestEvent>(stream.clone());
+    let writer_db =
+        redis_setup::ensure_shared_redis().expect("Writer Redis backend setup successful");
+    let reader_db =
+        redis_setup::ensure_shared_redis().expect("Reader Redis backend setup successful");
 
-    // Create separate writer backend
-    let mut writer_builder = RedisTopologyBuilder::default();
-    writer_builder
-        .add_stream(
-            RedisStreamSpec::new(stream.clone()).maxlen(10), // Limit stream to 10 messages for testing trimming
-        )
-        .add_event_single::<TestEvent>(stream.clone());
+    let writer_stream = stream.clone();
+    let (writer_backend, _context1) = redis_setup::setup(&writer_db, move |builder| {
+        builder
+            .add_stream(RedisStreamSpec::new(writer_stream.clone()).maxlen(10))
+            .add_event_single::<TestEvent>(writer_stream.clone());
+    })
+    .expect("Writer Redis backend setup successful");
 
-    let (writer_backend, _context1) =
-        redis_setup::setup(writer_builder).expect("Writer Redis backend setup successful");
-
-    let (reader_backend, _context2) =
-        redis_setup::setup(builder).expect("Reader Redis backend setup successful");
+    let reader_stream = stream.clone();
+    let (reader_backend, _context2) = redis_setup::setup(&reader_db, move |builder| {
+        builder
+            .add_stream(RedisStreamSpec::new(reader_stream.clone()).maxlen(10))
+            .add_event_single::<TestEvent>(reader_stream.clone());
+    })
+    .expect("Reader Redis backend setup successful");
 
     let mut writer = App::new();
     writer.add_plugins(EventBusPlugins(writer_backend));
@@ -100,15 +98,16 @@ fn consumer_lag_and_stream_trimming() {
 fn stream_memory_optimization() {
     let stream = unique_topic("memory_opt");
 
-    let mut builder = RedisTopologyBuilder::default();
-    builder
-        .add_stream(
-            RedisStreamSpec::new(stream.clone()).maxlen(5), // Small limit for testing
-        )
-        .add_event_single::<TestEvent>(stream.clone());
+    let shared_db =
+        redis_setup::ensure_shared_redis().expect("Writer Redis backend setup successful");
 
-    let (writer_backend, _context) =
-        redis_setup::setup(builder).expect("Writer Redis backend setup successful");
+    let stream_clone = stream.clone();
+    let (writer_backend, _context) = redis_setup::setup(&shared_db, move |builder| {
+        builder
+            .add_stream(RedisStreamSpec::new(stream_clone.clone()).maxlen(5))
+            .add_event_single::<TestEvent>(stream_clone.clone());
+    })
+    .expect("Writer Redis backend setup successful");
 
     let mut writer = App::new();
     writer.add_plugins(EventBusPlugins(writer_backend));

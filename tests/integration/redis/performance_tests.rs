@@ -3,7 +3,6 @@
 use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
-    RedisTopologyBuilder,
 };
 use bevy_event_bus::{BackendStatus, EventBusPlugins, RedisEventReader, RedisEventWriter};
 use integration_tests::utils::TestEvent;
@@ -71,16 +70,23 @@ fn test_message_throughput() {
     let consumer_group = unique_consumer_group("perf_group");
     let consumer_name = unique_consumer_group_member("perf_consumer");
 
-    let mut builder = RedisTopologyBuilder::default();
-    builder
-        .add_stream(RedisStreamSpec::new(stream.clone()))
-        .add_consumer_group(
-            consumer_group.clone(),
-            RedisConsumerGroupSpec::new([stream.clone()], consumer_group.clone()),
-        )
-        .add_event_single::<TestEvent>(stream.clone());
+    let shared_db = redis_setup::ensure_shared_redis().expect("Redis backend setup successful");
 
-    let (backend, _context) = redis_setup::setup(builder).expect("Redis backend setup successful");
+    let stream_clone_for_topology = stream.clone();
+    let consumer_group_clone_for_topology = consumer_group.clone();
+    let (backend, _context) = redis_setup::setup(&shared_db, move |builder| {
+        builder
+            .add_stream(RedisStreamSpec::new(stream_clone_for_topology.clone()))
+            .add_consumer_group(
+                consumer_group_clone_for_topology.clone(),
+                RedisConsumerGroupSpec::new(
+                    [stream_clone_for_topology.clone()],
+                    consumer_group_clone_for_topology.clone(),
+                ),
+            )
+            .add_event_single::<TestEvent>(stream_clone_for_topology.clone());
+    })
+    .expect("Redis backend setup successful");
 
     let mut reader = App::new();
     reader.add_plugins(EventBusPlugins(backend.clone()));
@@ -243,16 +249,23 @@ fn test_high_volume_small_messages() {
     let consumer_group = unique_consumer_group("perf_small_group");
     let consumer_name = unique_consumer_group_member("perf_small_consumer");
 
-    let mut builder = RedisTopologyBuilder::default();
-    builder
-        .add_stream(RedisStreamSpec::new(stream.clone()))
-        .add_consumer_group(
-            consumer_group.clone(),
-            RedisConsumerGroupSpec::new([stream.clone()], consumer_group.clone()),
-        )
-        .add_event_single::<TestEvent>(stream.clone());
+    let shared_db = redis_setup::ensure_shared_redis().expect("Redis backend setup successful");
 
-    let (backend, _context) = redis_setup::setup(builder).expect("Redis backend setup successful");
+    let stream_clone_for_topology = stream.clone();
+    let consumer_group_clone_for_topology = consumer_group.clone();
+    let (backend, _context) = redis_setup::setup(&shared_db, move |builder| {
+        builder
+            .add_stream(RedisStreamSpec::new(stream_clone_for_topology.clone()))
+            .add_consumer_group(
+                consumer_group_clone_for_topology.clone(),
+                RedisConsumerGroupSpec::new(
+                    [stream_clone_for_topology.clone()],
+                    consumer_group_clone_for_topology.clone(),
+                ),
+            )
+            .add_event_single::<TestEvent>(stream_clone_for_topology.clone());
+    })
+    .expect("Redis backend setup successful");
 
     let mut reader = App::new();
     reader.add_plugins(EventBusPlugins(backend.clone()));
@@ -409,16 +422,23 @@ fn test_large_message_throughput() {
         metadata: String,
     }
 
-    let mut builder = RedisTopologyBuilder::default();
-    builder
-        .add_stream(RedisStreamSpec::new(stream.clone()))
-        .add_consumer_group(
-            consumer_group.clone(),
-            RedisConsumerGroupSpec::new([stream.clone()], consumer_group.clone()),
-        )
-        .add_event_single::<LargeEvent>(stream.clone());
+    let shared_db = redis_setup::ensure_shared_redis().expect("Redis backend setup successful");
 
-    let (backend, _context) = redis_setup::setup(builder).expect("Redis backend setup successful");
+    let stream_clone_for_topology = stream.clone();
+    let consumer_group_clone_for_topology = consumer_group.clone();
+    let (backend, _context) = redis_setup::setup(&shared_db, move |builder| {
+        builder
+            .add_stream(RedisStreamSpec::new(stream_clone_for_topology.clone()))
+            .add_consumer_group(
+                consumer_group_clone_for_topology.clone(),
+                RedisConsumerGroupSpec::new(
+                    [stream_clone_for_topology.clone()],
+                    consumer_group_clone_for_topology.clone(),
+                ),
+            )
+            .add_event_single::<LargeEvent>(stream_clone_for_topology.clone());
+    })
+    .expect("Redis backend setup successful");
 
     let mut reader = App::new();
     reader.add_plugins(EventBusPlugins(backend.clone()));

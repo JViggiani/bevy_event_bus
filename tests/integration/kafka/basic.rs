@@ -5,13 +5,15 @@ use bevy_event_bus::config::kafka::{
 };
 use bevy_event_bus::{EventBusPlugins, KafkaEventReader, KafkaEventWriter};
 use integration_tests::utils::TestEvent;
-use integration_tests::utils::helpers::{unique_consumer_group, unique_topic, update_until};
+use integration_tests::utils::helpers::{
+    run_app_updates, unique_consumer_group, unique_topic, update_two_apps_until, update_until,
+};
 use integration_tests::utils::kafka_setup;
 
 #[test]
-fn test_basic_kafka_event_bus() {
-    let topic = unique_topic("bevy-event-bus-test");
-    let consumer_group = unique_consumer_group("basic_reader_group");
+fn kafka_single_direction_writer_reader_flow() {
+    let topic = unique_topic("kafka-basic-writer-reader");
+    let consumer_group = unique_consumer_group("kafka_basic_reader");
 
     let topic_for_writer = topic.clone();
     let (backend_writer, _bootstrap_writer) =
@@ -43,27 +45,6 @@ fn test_basic_kafka_event_bus() {
                 .add_event_single::<TestEvent>(topic_for_reader.clone());
         }));
 
-    // Writer app
-    let mut writer_app = App::new();
-    writer_app.add_plugins(EventBusPlugins(backend_writer));
-
-    #[derive(Resource, Clone)]
-    struct ToSend(TestEvent, String);
-
-    let event_to_send = TestEvent {
-        message: "From Bevy!".into(),
-        value: 100,
-    };
-    writer_app.insert_resource(ToSend(event_to_send.clone(), topic.clone()));
-
-    fn writer_system(mut w: KafkaEventWriter, data: Res<ToSend>) {
-        let config = KafkaProducerConfig::new([data.1.clone()]);
-        let _ = w.write(&config, data.0.clone());
-    }
-    writer_app.add_systems(Update, writer_system);
-    writer_app.update();
-
-    // Reader app (separate consumer group with separate backend)
     let mut reader_app = App::new();
     reader_app.add_plugins(EventBusPlugins(backend_reader));
 
@@ -75,33 +56,189 @@ fn test_basic_kafka_event_bus() {
     #[derive(Resource, Clone)]
     struct ConsumerGroup(String);
     reader_app.insert_resource(Topic(topic.clone()));
-    reader_app.insert_resource(ConsumerGroup(consumer_group));
+    reader_app.insert_resource(ConsumerGroup(consumer_group.clone()));
 
     fn reader_system(
-        mut r: KafkaEventReader<TestEvent>,
+        mut reader: KafkaEventReader<TestEvent>,
         topic: Res<Topic>,
         group: Res<ConsumerGroup>,
         mut collected: ResMut<Collected>,
     ) {
         let config = KafkaConsumerConfig::new(group.0.clone(), [topic.0.clone()]);
-        for wrapper in r.read(&config) {
+        for wrapper in reader.read(&config) {
             collected.0.push(wrapper.event().clone());
         }
     }
     reader_app.add_systems(Update, reader_system);
 
-    // Poll until message received or timeout
-    let (received, _) = update_until(&mut reader_app, 5000, |app| {
+    let mut writer_app = App::new();
+    writer_app.add_plugins(EventBusPlugins(backend_writer));
+
+    #[derive(Resource, Clone)]
+    struct Outgoing(TestEvent, String);
+
+    let event_to_send = TestEvent {
+        message: "From Kafka Writer".into(),
+        value: 100,
+    };
+    writer_app.insert_resource(Outgoing(event_to_send.clone(), topic.clone()));
+
+    fn writer_system(mut writer: KafkaEventWriter, data: Res<Outgoing>, mut sent: Local<bool>) {
+        if *sent {
+            return;
+        }
+        let config = KafkaProducerConfig::new([data.1.clone()]);
+        let _ = writer.write(&config, data.0.clone());
+        *sent = true;
+    }
+    writer_app.add_systems(Update, writer_system);
+
+    run_app_updates(&mut writer_app, 20);
+
+    let expected_event = event_to_send.clone();
+    let (received, _) = update_until(&mut reader_app, 8_000, move |app| {
         let collected = app.world().resource::<Collected>();
-        !collected.0.is_empty()
+        collected.0.iter().any(|event| event == &expected_event)
     });
 
-    assert!(received, "Expected to receive event within timeout");
+    assert!(received, "Expected reader to observe the writer's event");
+}
 
-    let collected = reader_app.world().resource::<Collected>();
+#[test]
+fn kafka_bidirectional_apps_exchange_events() {
+    let topic = unique_topic("kafka-bidirectional");
+    let group_a = unique_consumer_group("kafka_app_a");
+    let group_b = unique_consumer_group("kafka_app_b");
+
+    let topic_for_app_a = topic.clone();
+    let group_for_app_a = group_a.clone();
+    let (backend_a, _bootstrap_a) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
+        builder
+            .add_topic(
+                KafkaTopicSpec::new(topic_for_app_a.clone())
+                    .partitions(1)
+                    .replication(1),
+            )
+            .add_consumer_group(
+                group_for_app_a.clone(),
+                KafkaConsumerGroupSpec::new([topic_for_app_a.clone()])
+                    .initial_offset(KafkaInitialOffset::Earliest),
+            )
+            .add_event_single::<TestEvent>(topic_for_app_a.clone());
+    }));
+
+    let topic_for_app_b = topic.clone();
+    let group_for_app_b = group_b.clone();
+    let (backend_b, _bootstrap_b) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
+        builder
+            .add_topic(
+                KafkaTopicSpec::new(topic_for_app_b.clone())
+                    .partitions(1)
+                    .replication(1),
+            )
+            .add_consumer_group(
+                group_for_app_b.clone(),
+                KafkaConsumerGroupSpec::new([topic_for_app_b.clone()])
+                    .initial_offset(KafkaInitialOffset::Earliest),
+            )
+            .add_event_single::<TestEvent>(topic_for_app_b.clone());
+    }));
+
+    #[derive(Resource, Default)]
+    struct Received(Vec<TestEvent>);
+
+    #[derive(Resource, Clone)]
+    struct TopicName(String);
+
+    #[derive(Resource, Clone)]
+    struct GroupName(String);
+
+    #[derive(Resource, Clone)]
+    struct OutgoingEvents {
+        topic: String,
+        events: Vec<TestEvent>,
+        sent: bool,
+    }
+
+    fn reader_system(
+        mut reader: KafkaEventReader<TestEvent>,
+        topic: Res<TopicName>,
+        group: Res<GroupName>,
+        mut received: ResMut<Received>,
+    ) {
+        let config = KafkaConsumerConfig::new(group.0.clone(), [topic.0.clone()]);
+        for wrapper in reader.read(&config) {
+            received.0.push(wrapper.event().clone());
+        }
+    }
+
+    fn writer_system(mut writer: KafkaEventWriter, mut outgoing: ResMut<OutgoingEvents>) {
+        if outgoing.sent {
+            return;
+        }
+        let config = KafkaProducerConfig::new([outgoing.topic.clone()]);
+        for event in outgoing.events.clone() {
+            let _ = writer.write(&config, event);
+        }
+        outgoing.sent = true;
+    }
+
+    let mut app_a = App::new();
+    app_a.add_plugins(EventBusPlugins(backend_a));
+    let event_from_a = TestEvent {
+        message: "event-from-kafka-app-a".into(),
+        value: 1,
+    };
+    app_a.insert_resource(Received::default());
+    app_a.insert_resource(TopicName(topic.clone()));
+    app_a.insert_resource(GroupName(group_a));
+    app_a.insert_resource(OutgoingEvents {
+        topic: topic.clone(),
+        events: vec![event_from_a.clone()],
+        sent: false,
+    });
+    app_a.add_systems(Update, (reader_system, writer_system));
+
+    let mut app_b = App::new();
+    app_b.add_plugins(EventBusPlugins(backend_b));
+    let event_from_b = TestEvent {
+        message: "event-from-kafka-app-b".into(),
+        value: 2,
+    };
+    app_b.insert_resource(Received::default());
+    app_b.insert_resource(TopicName(topic.clone()));
+    app_b.insert_resource(GroupName(group_b));
+    app_b.insert_resource(OutgoingEvents {
+        topic,
+        events: vec![event_from_b.clone()],
+        sent: false,
+    });
+    app_b.add_systems(Update, (reader_system, writer_system));
+
+    let expected_events = vec![event_from_a.clone(), event_from_b.clone()];
+
+    let (success, _) = update_two_apps_until(&mut app_a, &mut app_b, 10_000, |app_a, app_b| {
+        let app_a_has_all = {
+            let world_a = app_a.world();
+            let received_a = world_a.resource::<Received>();
+            expected_events
+                .iter()
+                .all(|event| received_a.0.iter().any(|seen| seen == event))
+        };
+
+        let app_b_has_all = {
+            let world_b = app_b.world();
+            let received_b = world_b.resource::<Received>();
+            expected_events
+                .iter()
+                .all(|event| received_b.0.iter().any(|seen| seen == event))
+        };
+
+        app_a_has_all && app_b_has_all
+    });
+
     assert!(
-        collected.0.iter().any(|e| e == &event_to_send),
-        "Expected to find sent event in collected list (collected={:?})",
-        collected.0
+        success,
+        "Both Kafka apps should observe each other's events"
     );
 }

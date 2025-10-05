@@ -72,6 +72,27 @@ pub fn update_until(
     (false, frames)
 }
 
+/// Spin updates on two apps until predicate true or timeout (ms). Returns (success, frames_run).
+pub fn update_two_apps_until(
+    app_a: &mut App,
+    app_b: &mut App,
+    timeout_ms: u64,
+    mut predicate: impl FnMut(&mut App, &mut App) -> bool,
+) -> (bool, u32) {
+    let start = Instant::now();
+    let mut frames = 0u32;
+    while start.elapsed() < Duration::from_millis(timeout_ms) {
+        app_a.update();
+        app_b.update();
+        frames += 1;
+        if predicate(app_a, app_b) {
+            return (true, frames);
+        }
+        std::thread::sleep(Duration::from_millis(15));
+    }
+    (false, frames)
+}
+
 /// Convenience: wait for exact count with optional strict ordering check function.
 pub fn wait_for_events<T>(
     app: &mut App,

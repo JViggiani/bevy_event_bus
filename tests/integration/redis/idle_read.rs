@@ -1,9 +1,7 @@
 #![cfg(feature = "redis")]
 
 use bevy::prelude::*;
-use bevy_event_bus::config::redis::{
-    RedisConsumerConfig, RedisConsumerGroupSpec, RedisStreamSpec, RedisTopologyBuilder,
-};
+use bevy_event_bus::config::redis::{RedisConsumerConfig, RedisConsumerGroupSpec, RedisStreamSpec};
 use bevy_event_bus::{EventBusPlugins, RedisEventReader};
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{unique_consumer_group, unique_topic};
@@ -14,16 +12,22 @@ fn idle_empty_stream_poll_does_not_block() {
     let stream = unique_topic("idle_test");
     let consumer_group = unique_consumer_group("idle_group");
 
-    let mut builder = RedisTopologyBuilder::default();
-    builder
-        .add_stream(RedisStreamSpec::new(stream.clone()))
-        .add_consumer_group(
-            consumer_group.clone(),
-            RedisConsumerGroupSpec::new([stream.clone()], consumer_group.clone()),
-        )
-        .add_event_single::<TestEvent>(stream.clone());
-
-    let (backend, _context) = redis_setup::setup(builder).expect("Redis backend setup successful");
+    let shared_db = redis_setup::ensure_shared_redis().expect("Shared Redis setup should succeed");
+    let stream_for_backend = stream.clone();
+    let group_for_backend = consumer_group.clone();
+    let (backend, _context) = redis_setup::setup(&shared_db, move |builder| {
+        builder
+            .add_stream(RedisStreamSpec::new(stream_for_backend.clone()))
+            .add_consumer_group(
+                group_for_backend.clone(),
+                RedisConsumerGroupSpec::new(
+                    [stream_for_backend.clone()],
+                    group_for_backend.clone(),
+                ),
+            )
+            .add_event_single::<TestEvent>(stream_for_backend.clone());
+    })
+    .expect("Redis backend setup successful");
 
     let mut app = App::new();
     app.add_plugins(EventBusPlugins(backend));

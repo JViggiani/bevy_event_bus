@@ -3,7 +3,6 @@
 use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
-    RedisTopologyBuilder,
 };
 use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
 use integration_tests::utils::TestEvent;
@@ -16,49 +15,48 @@ fn no_event_duplication_exactly_once_delivery() {
     let stream = unique_topic("exactly_once");
     let consumer_group = unique_consumer_group("exactly_once_group");
 
-    let mut builder = RedisTopologyBuilder::default();
-    builder
-        .add_stream(RedisStreamSpec::new(stream.clone()))
-        .add_consumer_group(
-            consumer_group.clone(),
-            RedisConsumerGroupSpec::new([stream.clone()], consumer_group.clone()).manual_ack(true), // Enable manual acknowledgment for exactly-once
-        )
-        .add_event_single::<TestEvent>(stream.clone());
+    let writer_db =
+        redis_setup::ensure_shared_redis().expect("Writer Redis backend setup successful");
+    let reader1_db =
+        redis_setup::ensure_shared_redis().expect("Reader1 Redis backend setup successful");
+    let reader2_db =
+        redis_setup::ensure_shared_redis().expect("Reader2 Redis backend setup successful");
 
-    // Create separate writer backend without consumer groups
-    let mut writer_builder = RedisTopologyBuilder::default();
-    writer_builder
-        .add_stream(RedisStreamSpec::new(stream.clone()))
-        .add_event_single::<TestEvent>(stream.clone());
+    let writer_stream = stream.clone();
+    let (writer_backend, _context1) = redis_setup::setup(&writer_db, move |builder| {
+        builder
+            .add_stream(RedisStreamSpec::new(writer_stream.clone()))
+            .add_event_single::<TestEvent>(writer_stream.clone());
+    })
+    .expect("Writer Redis backend setup successful");
 
-    let (writer_backend, _context1) =
-        redis_setup::setup(writer_builder).expect("Writer Redis backend setup successful");
+    let reader1_stream = stream.clone();
+    let reader1_group = consumer_group.clone();
+    let (reader1_backend, _context2) = redis_setup::setup(&reader1_db, move |builder| {
+        builder
+            .add_stream(RedisStreamSpec::new(reader1_stream.clone()))
+            .add_consumer_group(
+                reader1_group.clone(),
+                RedisConsumerGroupSpec::new([reader1_stream.clone()], reader1_group.clone())
+                    .manual_ack(true),
+            )
+            .add_event_single::<TestEvent>(reader1_stream.clone());
+    })
+    .expect("Reader1 Redis backend setup successful");
 
-    // Create separate reader1 backend with consumer group
-    let mut reader1_builder = RedisTopologyBuilder::default();
-    reader1_builder
-        .add_stream(RedisStreamSpec::new(stream.clone()))
-        .add_consumer_group(
-            consumer_group.clone(),
-            RedisConsumerGroupSpec::new([stream.clone()], consumer_group.clone()).manual_ack(true), // Enable manual acknowledgment for exactly-once
-        )
-        .add_event_single::<TestEvent>(stream.clone());
-
-    let (reader1_backend, _context2) =
-        redis_setup::setup(reader1_builder).expect("Reader1 Redis backend setup successful");
-
-    // Create separate reader2 backend with consumer group
-    let mut reader2_builder = RedisTopologyBuilder::default();
-    reader2_builder
-        .add_stream(RedisStreamSpec::new(stream.clone()))
-        .add_consumer_group(
-            consumer_group.clone(),
-            RedisConsumerGroupSpec::new([stream.clone()], consumer_group.clone()).manual_ack(true), // Enable manual acknowledgment for exactly-once
-        )
-        .add_event_single::<TestEvent>(stream.clone());
-
-    let (reader2_backend, _context3) =
-        redis_setup::setup(reader2_builder).expect("Reader2 Redis backend setup successful");
+    let reader2_stream = stream.clone();
+    let reader2_group = consumer_group.clone();
+    let (reader2_backend, _context3) = redis_setup::setup(&reader2_db, move |builder| {
+        builder
+            .add_stream(RedisStreamSpec::new(reader2_stream.clone()))
+            .add_consumer_group(
+                reader2_group.clone(),
+                RedisConsumerGroupSpec::new([reader2_stream.clone()], reader2_group.clone())
+                    .manual_ack(true),
+            )
+            .add_event_single::<TestEvent>(reader2_stream.clone());
+    })
+    .expect("Reader2 Redis backend setup successful");
 
     let mut writer = App::new();
     writer.add_plugins(EventBusPlugins(writer_backend));

@@ -3,7 +3,6 @@
 use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
-    RedisTopologyBuilder,
 };
 use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
 use integration_tests::utils::TestEvent;
@@ -24,17 +23,22 @@ fn test_coordinated_consumer_names() {
     let consumer_name1 = unique_consumer_group_member("coord-consumer-1");
 
     // Backend with SPECIFIC consumer names in topology spec
-    let mut builder = RedisTopologyBuilder::default();
-    builder
-        .add_stream(RedisStreamSpec::new(stream.clone()))
-        .add_consumer_group(
-            consumer_group.clone(),
-            RedisConsumerGroupSpec::new([stream.clone()], consumer_group.clone())
-                .consumer_name(consumer_name1.clone()), // Set name in topology!
-        )
-        .add_event_single::<TestEvent>(stream.clone());
+    let shared_db = redis_setup::ensure_shared_redis().expect("Redis backend setup successful");
 
-    let (backend, _context) = redis_setup::setup(builder).expect("Redis backend setup successful");
+    let stream_clone = stream.clone();
+    let consumer_group_clone = consumer_group.clone();
+    let consumer_name_clone = consumer_name1.clone();
+    let (backend, _context) = redis_setup::setup(&shared_db, move |builder| {
+        builder
+            .add_stream(RedisStreamSpec::new(stream_clone.clone()))
+            .add_consumer_group(
+                consumer_group_clone.clone(),
+                RedisConsumerGroupSpec::new([stream_clone.clone()], consumer_group_clone.clone())
+                    .consumer_name(consumer_name_clone.clone()),
+            )
+            .add_event_single::<TestEvent>(stream_clone.clone());
+    })
+    .expect("Redis backend setup successful");
 
     // Setup reader1 app with MATCHING consumer name
     let mut reader1 = App::new();

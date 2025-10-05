@@ -39,13 +39,6 @@ pub struct RedisTestContext {
 }
 
 impl RedisTestContext {
-    fn new_external(connection_string: String) -> Self {
-        Self {
-            connection_string,
-            _shared: None,
-        }
-    }
-
     fn new_shared(database: SharedRedisDatabase) -> Self {
         let connection_string = database.connection_string().to_string();
         Self {
@@ -423,33 +416,8 @@ pub fn ensure_shared_redis() -> Result<SharedRedisDatabase> {
     acquire_shared_database()
 }
 
-/// Construct a Redis backend and accompanying context from the supplied topology builder.
-pub fn setup(builder: RedisTopologyBuilder) -> Result<(RedisEventBusBackend, RedisTestContext)> {
-    bevy_event_bus::runtime();
-
-    let (connection, context) = ensure_connection()?;
-    let topology = builder.build();
-    ensure_topology_provisioned(connection.connection_string(), &topology)?;
-    let config = RedisBackendConfig::new(connection, topology, Duration::from_millis(250));
-
-    Ok((RedisEventBusBackend::new(config), context))
-}
-
-fn ensure_connection() -> Result<(RedisConnectionConfig, RedisTestContext)> {
-    if let Ok(url) = std::env::var("BEB_REDIS_URL") {
-        let connection = RedisConnectionConfig::new(url.clone());
-        let context = RedisTestContext::new_external(url);
-        return Ok((connection, context));
-    }
-
-    let database = acquire_shared_database()?;
-    let connection = RedisConnectionConfig::new(database.connection_string().to_string());
-    let context = RedisTestContext::new_shared(database);
-    Ok((connection, context))
-}
-
 /// Construct a Redis backend bound to the specified shared database.
-pub fn setup_backend_with_shared_redis<F>(
+pub fn setup<F>(
     shared_database: &SharedRedisDatabase,
     configure_topology: F,
 ) -> Result<(RedisEventBusBackend, RedisTestContext)>
