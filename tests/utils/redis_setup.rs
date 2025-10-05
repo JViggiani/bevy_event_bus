@@ -21,6 +21,7 @@ const SHARED_DATABASES: usize = 64;
 const WAIT_RETRIES: usize = 50;
 const WAIT_BASE_DELAY_MS: u64 = 25;
 const WAIT_MAX_DELAY_MS: u64 = 400;
+const DATABASE_VALIDATION_ATTEMPTS: usize = 5;
 const MAX_CONTAINER_SETUP_ATTEMPTS: usize = 3;
 
 #[derive(Clone, Debug)]
@@ -321,11 +322,17 @@ fn wait_for_redis(endpoint: &str) -> Result<()> {
     let mut delay = WAIT_BASE_DELAY_MS;
     for attempt in 0..WAIT_RETRIES {
         match redis::Client::open(endpoint) {
-            Ok(client) => {
-                if client.get_connection().is_ok() {
-                    return Ok(());
+            Ok(client) => match client.get_connection() {
+                Ok(mut connection) => match redis::cmd("PING").query::<String>(&mut connection) {
+                    Ok(_) => return Ok(()),
+                    Err(err) => {
+                        tracing::debug!(?err, "Redis PING failed while waiting for readiness");
+                    }
+                },
+                Err(err) => {
+                    tracing::debug!(?err, "Redis connection acquisition failed during wait");
                 }
-            }
+            },
             Err(err) => {
                 tracing::debug!(?err, "Redis client creation failed");
             }
@@ -339,6 +346,32 @@ fn wait_for_redis(endpoint: &str) -> Result<()> {
 }
 
 fn verify_database_support(endpoint: &str) -> Result<()> {
+    let mut last_error: Option<anyhow::Error> = None;
+    let mut delay = WAIT_BASE_DELAY_MS;
+
+    for attempt in 1..=DATABASE_VALIDATION_ATTEMPTS {
+        match verify_database_support_once(endpoint) {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                last_error = Some(err);
+                if attempt == DATABASE_VALIDATION_ATTEMPTS {
+                    break;
+                }
+
+                thread::sleep(Duration::from_millis(delay));
+                delay = (delay * 2).min(WAIT_MAX_DELAY_MS);
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| {
+        anyhow!(
+            "failed to verify Redis database support after {DATABASE_VALIDATION_ATTEMPTS} attempts"
+        )
+    }))
+}
+
+fn verify_database_support_once(endpoint: &str) -> Result<()> {
     let client = redis::Client::open(endpoint)
         .with_context(|| format!("failed to create Redis client for {endpoint}"))?;
     let mut connection = client
