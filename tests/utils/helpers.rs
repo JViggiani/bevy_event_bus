@@ -48,6 +48,11 @@ pub fn unique_consumer_group(base: &str) -> String {
     format!("{}-{}", base, next_unique_suffix())
 }
 
+/// Generate a unique consumer group member name to avoid conflicts.
+pub fn unique_consumer_group_member(group_base: &str) -> String {
+    format!("{}-member-{}", group_base, next_unique_suffix())
+}
+
 /// Spin update frames on a reader app until predicate true or timeout (ms). Returns (success, frames_run).
 pub fn update_until(
     reader_app: &mut App,
@@ -194,7 +199,6 @@ where
 pub fn run_app_updates(app: &mut App, iterations: u32) {
     for _ in 0..iterations {
         app.update();
-        // Yield to prevent busy waiting without a fixed delay
-        std::thread::yield_now();
+        std::thread::sleep(Duration::from_millis(1)); // Minimal delay
     }
 }

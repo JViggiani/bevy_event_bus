@@ -1,7 +1,7 @@
 #![cfg(feature = "redis")]
 
 use async_trait::async_trait;
-use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded};
+use crossbeam_channel::{Receiver, SendTimeoutError, Sender, TryRecvError, TrySendError, bounded};
 use redis::aio::ConnectionManager;
 use redis::streams::{StreamId, StreamKey, StreamReadReply};
 use redis::{RedisError, Value as RedisValue, from_redis_value};
@@ -40,12 +40,16 @@ struct AckCounters {
 }
 
 impl AckCounters {
-    fn mark_success(&self) {
-        self.acknowledged.fetch_add(1, Ordering::Relaxed);
+    fn record_success(&self, count: usize) {
+        if count > 0 {
+            self.acknowledged.fetch_add(count, Ordering::Relaxed);
+        }
     }
 
-    fn mark_failure(&self) {
-        self.failed.fetch_add(1, Ordering::Relaxed);
+    fn record_failure(&self, count: usize) {
+        if count > 0 {
+            self.failed.fetch_add(count, Ordering::Relaxed);
+        }
     }
 }
 
@@ -97,6 +101,12 @@ struct StreamWriteConfig {
     trim_strategy: TrimStrategy,
 }
 
+struct RedisTrimRequest {
+    stream: String,
+    maxlen: usize,
+    strategy: TrimStrategy,
+}
+
 /// Shared runtime state for the Redis backend so cloned backends operate over the same queues and tasks.
 struct RedisBackendState {
     config: RedisBackendConfig,
@@ -108,6 +118,8 @@ struct RedisBackendState {
     pending_messages: Mutex<VecDeque<IncomingMessage>>,
     ack_tx: Option<Sender<RedisAckRequest>>,
     ack_rx: Mutex<Option<Receiver<RedisAckRequest>>>,
+    trim_tx: Sender<RedisTrimRequest>,
+    trim_rx: Mutex<Option<Receiver<RedisTrimRequest>>>,
     ack_counters: AckCounters,
     handles: Mutex<Vec<JoinHandle<()>>>,
     running: Arc<AtomicBool>,
@@ -126,6 +138,14 @@ impl RedisBackendState {
 
     fn take_ack_receiver(&self) -> Option<Receiver<RedisAckRequest>> {
         self.ack_rx.lock().unwrap().take()
+    }
+
+    fn trim_sender(&self) -> Sender<RedisTrimRequest> {
+        self.trim_tx.clone()
+    }
+
+    fn take_trim_receiver(&self) -> Option<Receiver<RedisTrimRequest>> {
+        self.trim_rx.lock().unwrap().take()
     }
 
     fn writer(&self) -> Option<Arc<tokio::sync::Mutex<ConnectionManager>>> {
@@ -186,8 +206,7 @@ impl Debug for RedisEventBusBackend {
 }
 
 fn build_client(connection: &RedisConnectionConfig) -> redis::Client {
-    redis::Client::open(connection.connection_string())
-        .expect("Failed to create Redis client")
+    redis::Client::open(connection.connection_string()).expect("Failed to create Redis client")
 }
 
 fn build_stream_write_map(topology: &RedisTopologyConfig) -> HashMap<String, StreamWriteConfig> {
@@ -332,6 +351,7 @@ impl RedisEventBusBackend {
         } else {
             (None, None)
         };
+        let (trim_tx, trim_rx) = bounded(runtime.trim_channel_capacity);
 
         let state = RedisBackendState {
             config,
@@ -343,6 +363,8 @@ impl RedisEventBusBackend {
             pending_messages: Mutex::new(VecDeque::new()),
             ack_tx,
             ack_rx: Mutex::new(ack_rx),
+            trim_tx,
+            trim_rx: Mutex::new(Some(trim_rx)),
             ack_counters: AckCounters::default(),
             handles: Mutex::new(Vec::new()),
             running: Arc::new(AtomicBool::new(false)),
@@ -359,6 +381,7 @@ impl RedisEventBusBackend {
         self.spawn_group_readers();
         self.spawn_plain_stream_readers();
         self.spawn_ack_worker();
+        self.spawn_trim_worker();
     }
 
     fn spawn_group_readers(&self) {
@@ -408,8 +431,11 @@ impl RedisEventBusBackend {
                     .arg("COUNT")
                     .arg(batch_size)
                     .arg("BLOCK")
-                    .arg(block_ms)
-                    .arg("STREAMS");
+                    .arg(block_ms);
+                if !manual_ack {
+                    cmd.arg("NOACK");
+                }
+                cmd.arg("STREAMS");
                 for stream in &spec.streams {
                     cmd.arg(stream);
                 }
@@ -430,46 +456,12 @@ impl RedisEventBusBackend {
                             }
 
                             for message in messages {
-                                let entry_id = message
-                                    .backend_metadata
-                                    .as_ref()
-                                    .and_then(|meta| meta.as_any().downcast_ref::<RedisMetadata>())
-                                    .map(|meta| meta.entry_id.clone());
-                                let stream_name = message.source.clone();
-
-                                match incoming.try_send(message) {
-                                    Ok(_) => {
-                                        if !manual_ack {
-                                            if let Some(entry_id) = entry_id {
-                                                let mut ack_cmd = redis::cmd("XACK");
-                                                ack_cmd
-                                                    .arg(&stream_name)
-                                                    .arg(&consumer_group)
-                                                    .arg(&entry_id);
-                                                if let Err(err) =
-                                                    ack_cmd.query_async::<_, i64>(&mut manager).await
-                                                {
-                                                    warn!(
-                                                        stream = %stream_name,
-                                                        group = %consumer_group,
-                                                        entry = %entry_id,
-                                                        error = %err,
-                                                        "Failed to auto-ack Redis entry"
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                    Err(TrySendError::Full(_)) => {
-                                        dropped.fetch_add(1, Ordering::Relaxed);
-                                    }
-                                    Err(TrySendError::Disconnected(_)) => {
-                                        warn!(
-                                            "Message channel disconnected while sending Redis message"
-                                        );
-                                        return;
-                                    }
-                                }
+                                RedisEventBusBackend::dispatch_message(
+                                    &incoming,
+                                    message,
+                                    &running,
+                                    &dropped,
+                                );
                             }
                         }
                         Err(err) => {
@@ -568,19 +560,12 @@ impl RedisEventBusBackend {
                             }
 
                             for message in messages.drain(..) {
-                                match incoming.try_send(message) {
-                                    Ok(_) => {}
-                                    Err(TrySendError::Full(_)) => {
-                                        dropped.fetch_add(1, Ordering::Relaxed);
-                                    }
-                                    Err(TrySendError::Disconnected(_)) => {
-                                        warn!(
-                                            stream = %stream,
-                                            "Message channel disconnected while sending Redis message"
-                                        );
-                                        return;
-                                    }
-                                }
+                                RedisEventBusBackend::dispatch_message(
+                                    &incoming,
+                                    message,
+                                    &running,
+                                    &dropped,
+                                );
                             }
                         }
                         Err(err) => {
@@ -611,7 +596,10 @@ impl RedisEventBusBackend {
         let running = self.state.running.clone();
         let counters = self.state.ack_counters.clone();
 
-        let empty_backoff = self.state.runtime.empty_read_backoff;
+        let runtime = self.state.runtime.clone();
+        let empty_backoff = runtime.empty_read_backoff;
+        let ack_batch_size = runtime.ack_batch_size.max(1);
+        let ack_flush_interval = runtime.ack_flush_interval;
 
         let handle = runtime::runtime().spawn(async move {
             let mut manager = match ConnectionManager::new(client).await {
@@ -623,34 +611,60 @@ impl RedisEventBusBackend {
                 }
             };
 
+            let mut pending = Vec::with_capacity(ack_batch_size);
+            let mut last_enqueue = Instant::now();
+
             loop {
-                match receiver.try_recv() {
-                    Ok(request) => {
-                        let mut cmd = redis::cmd("XACK");
-                        cmd.arg(&request.stream)
-                            .arg(&request.consumer_group)
-                            .arg(&request.entry_id);
-                        match cmd.query_async::<_, i64>(&mut manager).await {
-                            Ok(_) => counters.mark_success(),
-                            Err(err) => {
-                                counters.mark_failure();
-                                warn!(
-                                    stream = %request.stream,
-                                    group = %request.consumer_group,
-                                    entry = %request.entry_id,
-                                    error = %err,
-                                    "Redis XACK failed"
-                                );
+                let mut saw_disconnect = false;
+
+                loop {
+                    match receiver.try_recv() {
+                        Ok(request) => {
+                            pending.push(request);
+                            last_enqueue = Instant::now();
+
+                            if pending.len() >= ack_batch_size {
+                                RedisEventBusBackend::flush_ack_requests(
+                                    &mut manager,
+                                    &counters,
+                                    &mut pending,
+                                )
+                                .await;
+                                last_enqueue = Instant::now();
                             }
                         }
-                    }
-                    Err(TryRecvError::Empty) => {
-                        if !running.load(Ordering::SeqCst) && receiver.is_empty() {
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => {
+                            saw_disconnect = true;
                             break;
                         }
-                        tokio::time::sleep(empty_backoff).await;
                     }
-                    Err(TryRecvError::Disconnected) => break,
+                }
+
+                let running_flag = running.load(Ordering::SeqCst);
+                let flush_due = !pending.is_empty()
+                    && (saw_disconnect
+                        || !running_flag
+                        || last_enqueue.elapsed() >= ack_flush_interval);
+
+                if flush_due {
+                    RedisEventBusBackend::flush_ack_requests(&mut manager, &counters, &mut pending)
+                        .await;
+                    last_enqueue = Instant::now();
+                }
+
+                if saw_disconnect && pending.is_empty() {
+                    break;
+                }
+
+                if !running_flag && receiver.is_empty() && pending.is_empty() {
+                    break;
+                }
+
+                if pending.is_empty() {
+                    tokio::time::sleep(empty_backoff).await;
+                } else {
+                    tokio::task::yield_now().await;
                 }
             }
         });
@@ -658,31 +672,175 @@ impl RedisEventBusBackend {
         self.state.push_handle(handle);
     }
 
+    fn spawn_trim_worker(&self) {
+        let Some(receiver) = self.state.take_trim_receiver() else {
+            return;
+        };
+
+        let client = self.state.client.clone();
+        let running = self.state.running.clone();
+        let runtime = self.state.runtime.clone();
+        let idle_backoff = runtime.empty_read_backoff;
+
+        let handle = runtime::runtime().spawn(async move {
+            let mut manager = match ConnectionManager::new(client).await {
+                Ok(m) => m,
+                Err(err) => {
+                    error!(error = %err, "Failed to create Redis trim connection");
+                    return;
+                }
+            };
+
+            loop {
+                let mut drained = Vec::new();
+                let mut saw_disconnect = false;
+
+                loop {
+                    match receiver.try_recv() {
+                        Ok(request) => drained.push(request),
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => {
+                            saw_disconnect = true;
+                            break;
+                        }
+                    }
+                }
+
+                for request in drained.drain(..) {
+                    let mut cmd = redis::cmd("XTRIM");
+                    cmd.arg(&request.stream).arg("MAXLEN");
+                    if matches!(request.strategy, TrimStrategy::Approximate) {
+                        cmd.arg("~");
+                    }
+                    cmd.arg(request.maxlen as usize);
+
+                    if let Err(err) = cmd.query_async::<_, RedisValue>(&mut manager).await {
+                        warn!(
+                            stream = %request.stream,
+                            maxlen = request.maxlen,
+                            error = %err,
+                            "Redis XTRIM request failed"
+                        );
+                    } else {
+                        debug!(
+                            stream = %request.stream,
+                            maxlen = request.maxlen,
+                            "Redis XTRIM request applied"
+                        );
+                    }
+                }
+
+                let running_flag = running.load(Ordering::SeqCst);
+                if saw_disconnect && receiver.is_empty() {
+                    break;
+                }
+
+                if !running_flag && receiver.is_empty() {
+                    break;
+                }
+
+                if receiver.is_empty() {
+                    tokio::time::sleep(idle_backoff).await;
+                } else {
+                    tokio::task::yield_now().await;
+                }
+            }
+        });
+
+        self.state.push_handle(handle);
+    }
+
+    async fn flush_ack_requests(
+        manager: &mut ConnectionManager,
+        counters: &AckCounters,
+        pending: &mut Vec<RedisAckRequest>,
+    ) {
+        if pending.is_empty() {
+            return;
+        }
+
+        let mut grouped: HashMap<(String, String), Vec<String>> = HashMap::new();
+        for request in pending.drain(..) {
+            grouped
+                .entry((request.stream, request.consumer_group))
+                .or_insert_with(Vec::new)
+                .push(request.entry_id);
+        }
+
+        for ((stream, group), entry_ids) in grouped {
+            let mut cmd = redis::cmd("XACK");
+            cmd.arg(&stream).arg(&group);
+            for entry_id in &entry_ids {
+                cmd.arg(entry_id);
+            }
+
+            match cmd.query_async::<_, i64>(manager).await {
+                Ok(acked) => {
+                    let acked_count = acked.max(0) as usize;
+                    if acked_count >= entry_ids.len() {
+                        counters.record_success(entry_ids.len());
+                    } else {
+                        counters.record_success(acked_count);
+                        counters.record_failure(entry_ids.len() - acked_count);
+                        warn!(
+                            stream = %stream,
+                            group = %group,
+                            expected = entry_ids.len(),
+                            acknowledged = acked_count,
+                            "Redis XACK acknowledged fewer messages than requested"
+                        );
+                    }
+                }
+                Err(err) => {
+                    counters.record_failure(entry_ids.len());
+                    warn!(
+                        stream = %stream,
+                        group = %group,
+                        count = entry_ids.len(),
+                        error = %err,
+                        "Redis XACK batch failed"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Enqueue a trim request for the supplied stream. Execution occurs in the trim worker
+    /// to keep writers free from direct network calls.
     pub fn trim_stream(
         &self,
         stream: &str,
         maxlen: usize,
         strategy: TrimStrategy,
     ) -> Result<(), String> {
-        let manager = self
-            .state
-            .writer()
-            .ok_or_else(|| "Redis writer connection not available".to_string())?;
+        if self.state.writer().is_none() {
+            return Err("Redis writer connection not available".to_string());
+        }
 
-        runtime::block_on(async move {
-            let mut guard = manager.lock().await;
-            let mut cmd = redis::cmd("XTRIM");
-            cmd.arg(stream).arg("MAXLEN");
-            if matches!(strategy, TrimStrategy::Approximate) {
-                cmd.arg("~");
+        let sender = self.state.trim_sender();
+        let request = RedisTrimRequest {
+            stream: stream.to_string(),
+            maxlen,
+            strategy,
+        };
+
+        match sender.try_send(request) {
+            Ok(_) => Ok(()),
+            Err(TrySendError::Full(request)) => {
+                match sender.send_timeout(request, Duration::from_millis(50)) {
+                    Ok(()) => Ok(()),
+                    Err(SendTimeoutError::Timeout(_)) => {
+                        Err("Redis trim queue is full; try again later".to_string())
+                    }
+                    Err(SendTimeoutError::Disconnected(_)) => {
+                        Err("Redis trim queue is unavailable".to_string())
+                    }
+                }
             }
-            cmd.arg(maxlen as usize);
-
-            cmd.query_async::<_, RedisValue>(&mut *guard)
-                .await
-                .map(|_| ())
-                .map_err(|err| err.to_string())
-        })
+            Err(TrySendError::Disconnected(_)) => {
+                Err("Redis trim queue is unavailable".to_string())
+            }
+        }
     }
 
     fn drain_matching_messages(&self, stream: &str, group: Option<&str>) -> Vec<Vec<u8>> {
@@ -753,6 +911,46 @@ impl RedisEventBusBackend {
 
     fn stream_write_cfg(&self, stream: &str) -> Option<StreamWriteConfig> {
         self.state.stream_writes.get(stream).cloned()
+    }
+
+    fn dispatch_message(
+        tx: &Sender<IncomingMessage>,
+        mut message: IncomingMessage,
+        running: &Arc<AtomicBool>,
+        dropped: &Arc<AtomicUsize>,
+    ) {
+        loop {
+            match tx.try_send(message) {
+                Ok(_) => break,
+                Err(TrySendError::Full(returned)) => {
+                    if !running.load(Ordering::Relaxed) {
+                        dropped.fetch_add(1, Ordering::Relaxed);
+                        break;
+                    }
+
+                    match tokio::task::block_in_place(|| {
+                        tx.send_timeout(returned, Duration::from_millis(50))
+                    }) {
+                        Ok(()) => break,
+                        Err(SendTimeoutError::Timeout(returned_again)) => {
+                            if !running.load(Ordering::Relaxed) {
+                                dropped.fetch_add(1, Ordering::Relaxed);
+                                break;
+                            }
+                            message = returned_again;
+                        }
+                        Err(SendTimeoutError::Disconnected(_)) => {
+                            dropped.fetch_add(1, Ordering::Relaxed);
+                            break;
+                        }
+                    }
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    dropped.fetch_add(1, Ordering::Relaxed);
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -906,6 +1104,24 @@ impl EventBusBackend for RedisEventBusBackend {
     }
 
     async fn receive_serialized(&self, stream: &str, options: ReceiveOptions<'_>) -> Vec<Vec<u8>> {
+        // Validate that the consumer group is defined in the topology if specified
+        if let Some(consumer_group) = options.consumer_group {
+            let topology_groups = self.state.config.topology.consumer_groups();
+            let is_topology_defined = topology_groups
+                .values()
+                .any(|spec| spec.consumer_group == consumer_group);
+
+            if !is_topology_defined {
+                error!(
+                    consumer_group = %consumer_group,
+                    stream = %stream,
+                    "BLOCKED: Attempted to read from consumer group not defined in topology - this is not allowed"
+                );
+                // Return empty result for non-topology groups - they should not receive any messages
+                return Vec::new();
+            }
+        }
+
         self.drain_matching_messages(stream, options.consumer_group)
     }
 

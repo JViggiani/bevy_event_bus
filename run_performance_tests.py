@@ -19,7 +19,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, List, Optional, Sequence
 
-DEFAULT_TESTS: Sequence[str] = (
+BACKENDS: Sequence[str] = ("kafka", "redis")
+PERFORMANCE_TEST_NAMES: Sequence[str] = (
     "test_message_throughput",
     "test_high_volume_small_messages",
     "test_large_message_throughput",
@@ -31,6 +32,7 @@ CSV_DEFAULT_PATH = Path("event_bus_perf_results.csv")
 @dataclass
 class PerfRecord:
     run_name: str
+    backend: str
     test_name: str
     payload_size_bytes: int
     send_rate_per_sec: float
@@ -38,20 +40,29 @@ class PerfRecord:
 
     @classmethod
     def from_csv_row(cls, row: Sequence[str]) -> Optional["PerfRecord"]:
-        if len(row) < 13:
+        if len(row) < 14:
             return None
 
         try:
-            payload = int(float(row[5]))
-            send_rate = float(row[8])
-            receive_rate = float(row[9])
+            if len(row) >= 15:
+                payload = int(float(row[6]))
+                send_rate = float(row[9])
+                receive_rate = float(row[10])
+                backend = row[3].strip()
+                test_name = row[13].strip()
+            else:
+                payload = int(float(row[5]))
+                send_rate = float(row[8])
+                receive_rate = float(row[9])
+                backend = "kafka"
+                test_name = row[12].strip()
         except ValueError:
             return None
 
         run_name = row[2].strip()
-        test_name = row[12].strip()
         return cls(
             run_name=run_name,
+            backend=backend,
             test_name=test_name,
             payload_size_bytes=payload,
             send_rate_per_sec=send_rate,
@@ -72,6 +83,13 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="Label recorded in the CSV (default: timestamped)",
     )
     parser.add_argument(
+        "--backend",
+        dest="backends",
+        choices=BACKENDS,
+        action="append",
+        help="Limit the run to one or more specific backends (default: all)",
+    )
+    parser.add_argument(
         "--csv-path",
         default=str(CSV_DEFAULT_PATH),
         help="Path to the results CSV (default: event_bus_perf_results.csv)",
@@ -86,31 +104,40 @@ def build_bench_name(explicit: Optional[str]) -> str:
     return f"performance_run_{datetime.utcnow():%Y%m%d_%H%M%S}"  # UTC for reproducibility
 
 
-def run_cargo_test(test: str) -> None:
+def build_test_selector(backend: str, test: str) -> str:
+    if "::" in test:
+        return test
+    return f"integration::{backend}::performance_tests::{test}"
+
+
+def run_cargo_test(backend: str, test: str) -> None:
+    selector = build_test_selector(backend, test)
     cmd = [
         "cargo",
         "test",
         "--test",
         "integration_tests",
-        f"performance_tests::{test}",
+        selector,
         "--release",
         "--",
         "--ignored",
         "--nocapture",
     ]
 
-    print(f"\033[0;32mRunning {test}...\033[0m")
-    result = subprocess.run(cmd, check=False)
+    print(f"\033[0;32mRunning {backend}::{test}...\033[0m")
+    env = os.environ.copy()
+    env["BENCH_BACKEND"] = backend
+    result = subprocess.run(cmd, check=False, env=env)
     if result.returncode != 0:
         raise SystemExit(result.returncode)
     print()
 
 
-def run_selected_tests(tests: Iterable[str]) -> List[str]:
-    executed: List[str] = []
-    for test in tests:
-        run_cargo_test(test)
-        executed.append(test)
+def run_selected_tests(tests: Iterable[tuple[str, str]]) -> List[tuple[str, str]]:
+    executed: List[tuple[str, str]] = []
+    for backend, test in tests:
+        run_cargo_test(backend, test)
+        executed.append((backend, test))
     return executed
 
 
@@ -132,22 +159,25 @@ def read_records(csv_path: Path) -> List[PerfRecord]:
     return records
 
 
-def summarise_runs(records: List[PerfRecord], tests: Sequence[str]) -> None:
+def summarise_runs(records: List[PerfRecord], tests: Sequence[tuple[str, str]]) -> None:
     if not records:
         print("No performance history available yet.")
         return
 
-    history: dict[str, List[PerfRecord]] = {}
+    history: dict[tuple[str, str], List[PerfRecord]] = {}
     for record in records:
-        history.setdefault(record.test_name, []).append(record)
+        key = (record.backend, record.test_name)
+        history.setdefault(key, []).append(record)
 
     print("\n\033[0;32m📊 Latest Results Summary:\033[0m")
     print("----------------------------------------")
 
-    for test in tests:
-        entries = history.get(test)
+    for backend, test in tests:
+        test_name = test.rsplit("::", 1)[-1]
+        key = (backend, test_name)
+        entries = history.get(key)
         if not entries:
-            print(f"{test}: no entries recorded in {len(records)} rows yet.")
+            print(f"{backend}::{test_name}: no entries recorded in {len(records)} rows yet.")
             continue
 
         previous = entries[-2] if len(entries) >= 2 else None
@@ -155,7 +185,7 @@ def summarise_runs(records: List[PerfRecord], tests: Sequence[str]) -> None:
 
         if previous:
             print(
-                f"Test: {test}\n"
+                f"Test: {backend}::{test_name}\n"
                 f"  Previous run '{previous.run_name}': send {previous.send_rate_per_sec:,.0f} msg/s, "
                 f"receive {previous.receive_rate_per_sec:,.0f} msg/s (payload {previous.payload_size_bytes} bytes)"
             )
@@ -190,15 +220,31 @@ def main(argv: Sequence[str]) -> None:
     os.environ["BENCH_NAME"] = bench_name
     os.environ["BENCH_CSV_PATH"] = str(csv_path)
 
-    tests_to_run: Sequence[str]
-    if args.test_name:
-        tests_to_run = (args.test_name,)
+    selected_backends: Sequence[str]
+    if args.backends:
+        # Preserve the order in which the user specified backends.
+        seen = []
+        for backend in args.backends:
+            if backend not in seen:
+                seen.append(backend)
+        selected_backends = tuple(seen)
     else:
-        tests_to_run = DEFAULT_TESTS
+        selected_backends = BACKENDS
+
+    if args.test_name:
+        base_test_name = args.test_name.rsplit("::", 1)[-1]
+        tests_to_run = [(backend, base_test_name) for backend in selected_backends]
+    else:
+        tests_to_run = [
+            (backend, test_name)
+            for backend in selected_backends
+            for test_name in PERFORMANCE_TEST_NAMES
+        ]
 
     print("\033[0;32m🚀 Running Event Bus Performance Tests\033[0m")
     print(f"Benchmark Name: {bench_name}")
     print(f"CSV Output: {csv_path}")
+    print(f"Backends: {', '.join(selected_backends)}")
     print()
 
     try:

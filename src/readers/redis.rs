@@ -62,6 +62,17 @@ pub struct RedisEventReader<'w, 's, T: BusEvent + Event> {
 impl<'w, 's, T: BusEvent + Event> RedisEventReader<'w, 's, T> {
     /// Read all messages for the supplied Redis configuration.
     pub fn read<C: EventBusConfig>(&mut self, config: &C) -> Vec<EventWrapper<T>> {
+        // Extract consumer group from Redis config if available
+        let required_consumer_group = if let Some(redis_config) =
+            config
+                .as_any()
+                .downcast_ref::<crate::config::redis::RedisConsumerConfig>()
+        {
+            redis_config.consumer_group()
+        } else {
+            None
+        };
+
         let mut all_events = Vec::new();
         let topics = config.topics();
 
@@ -73,14 +84,35 @@ impl<'w, 's, T: BusEvent + Event> RedisEventReader<'w, 's, T> {
                     let start = *self.metadata_offsets.get(topic).unwrap_or(&0);
                     if start < messages.len() {
                         for processed_msg in messages.iter().skip(start) {
-                            match serde_json::from_slice::<T>(&processed_msg.payload) {
-                                Ok(event) => self
-                                    .wrapped_events
-                                    .push(EventWrapper::new(event, processed_msg.metadata.clone())),
-                                Err(_) => tracing::warn!(
-                                    "Failed to deserialize event from stream {}",
-                                    topic
-                                ),
+                            // Filter by consumer group if specified
+                            let message_matches_group = match required_consumer_group {
+                                Some(required_group) => {
+                                    // Check if message is from the required consumer group
+                                    let message_group = processed_msg
+                                        .metadata
+                                        .backend_specific
+                                        .as_ref()
+                                        .and_then(|meta| meta.as_any().downcast_ref::<crate::resources::backend_metadata::RedisMetadata>())
+                                        .and_then(|redis_meta| redis_meta.consumer_group.as_deref());
+
+                                    message_group
+                                        .map(|msg_group| msg_group == required_group)
+                                        .unwrap_or(false)
+                                }
+                                None => true, // No filter - accept all messages
+                            };
+
+                            if message_matches_group {
+                                match serde_json::from_slice::<T>(&processed_msg.payload) {
+                                    Ok(event) => self.wrapped_events.push(EventWrapper::new(
+                                        event,
+                                        processed_msg.metadata.clone(),
+                                    )),
+                                    Err(_) => tracing::warn!(
+                                        "Failed to deserialize event from stream {}",
+                                        topic
+                                    ),
+                                }
                             }
                         }
                         self.metadata_offsets.insert(topic.clone(), messages.len());

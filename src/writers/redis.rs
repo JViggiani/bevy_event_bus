@@ -54,7 +54,7 @@ impl<'w> RedisEventWriter<'w> {
         <Self as BusEventWriter<T>>::write(self, config, event);
     }
 
-    /// Trim a Redis stream to the provided length using the chosen strategy.
+    /// Schedule a Redis stream trim using the backend's asynchronous worker.
     pub fn trim_stream(
         &mut self,
         stream: &str,

@@ -297,22 +297,31 @@ impl RedisTopologyBuilder {
 pub struct RedisRuntimeTuning {
     pub message_channel_capacity: usize,
     pub ack_channel_capacity: usize,
+    pub trim_channel_capacity: usize,
     pub read_batch_size: usize,
     pub empty_read_backoff: Duration,
+    pub ack_batch_size: usize,
+    pub ack_flush_interval: Duration,
 }
 
 impl RedisRuntimeTuning {
     pub fn new(
         message_channel_capacity: usize,
         ack_channel_capacity: usize,
+        trim_channel_capacity: usize,
         read_batch_size: usize,
         empty_read_backoff: Duration,
+        ack_batch_size: usize,
+        ack_flush_interval: Duration,
     ) -> Self {
         Self {
             message_channel_capacity,
             ack_channel_capacity,
+            trim_channel_capacity,
             read_batch_size,
             empty_read_backoff,
+            ack_batch_size,
+            ack_flush_interval,
         }
     }
 
@@ -326,6 +335,11 @@ impl RedisRuntimeTuning {
         self
     }
 
+    pub fn trim_channel_capacity(mut self, capacity: usize) -> Self {
+        self.trim_channel_capacity = capacity;
+        self
+    }
+
     pub fn read_batch_size(mut self, batch: usize) -> Self {
         self.read_batch_size = batch;
         self
@@ -335,6 +349,16 @@ impl RedisRuntimeTuning {
         self.empty_read_backoff = backoff;
         self
     }
+
+    pub fn ack_batch_size(mut self, batch: usize) -> Self {
+        self.ack_batch_size = batch;
+        self
+    }
+
+    pub fn ack_flush_interval(mut self, interval: Duration) -> Self {
+        self.ack_flush_interval = interval;
+        self
+    }
 }
 
 impl Default for RedisRuntimeTuning {
@@ -342,8 +366,11 @@ impl Default for RedisRuntimeTuning {
         Self {
             message_channel_capacity: 10_000,
             ack_channel_capacity: 2_048,
+            trim_channel_capacity: 128,
             read_batch_size: 128,
             empty_read_backoff: Duration::from_millis(5),
+            ack_batch_size: 128,
+            ack_flush_interval: Duration::from_millis(2),
         }
     }
 }
@@ -448,6 +475,10 @@ impl EventBusConfig for RedisConsumerConfig {
     fn config_id(&self) -> String {
         format!("redis:{}", self.stream)
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 /// Producer configuration for Redis-backed writers.
@@ -499,6 +530,10 @@ impl EventBusConfig for RedisProducerConfig {
 
     fn config_id(&self) -> String {
         format!("redis_producer:{}", self.stream)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 

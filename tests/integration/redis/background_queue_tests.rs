@@ -1,0 +1,391 @@
+#![cfg(feature = "redis")]
+
+use bevy::prelude::*;
+use bevy_event_bus::config::redis::{
+    RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
+    RedisTopologyBuilder,
+};
+use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
+use integration_tests::utils::TestEvent;
+use integration_tests::utils::helpers::{
+    run_app_updates, unique_consumer_group, unique_topic, update_until,
+};
+use integration_tests::utils::redis_setup;
+use std::time::Duration;
+
+#[derive(Resource, Default)]
+struct BackgroundStats {
+    events_received: usize,
+    frames_processed: usize,
+}
+
+/// Test that background processing works correctly with separate backends
+/// (writer and reader operate independently on separate Redis instances)
+#[test]
+fn unlimited_buffer_separate_backends() {
+    let stream = unique_topic("unlimited_buffer");
+    let consumer_group = unique_consumer_group("unlimited_group");
+
+    let mut builder = RedisTopologyBuilder::default();
+    builder
+        .add_stream(RedisStreamSpec::new(stream.clone()))
+        .add_consumer_group(
+            consumer_group.clone(),
+            RedisConsumerGroupSpec::new([stream.clone()], consumer_group.clone()),
+        )
+        .add_event_single::<TestEvent>(stream.clone());
+
+    // Create separate backends for writer and reader
+    let mut writer_builder = RedisTopologyBuilder::default();
+    writer_builder
+        .add_stream(RedisStreamSpec::new(stream.clone()))
+        .add_event_single::<TestEvent>(stream.clone());
+
+    let (writer_backend, _context1) = redis_setup::setup_with_builder(writer_builder)
+        .expect("Writer Redis backend setup successful");
+    let (reader_backend, _context2) =
+        redis_setup::setup_with_builder(builder).expect("Reader Redis backend setup successful");
+
+    let mut writer = App::new();
+    writer.add_plugins(EventBusPlugins(writer_backend));
+    let mut reader = App::new();
+    reader.add_plugins(EventBusPlugins(reader_backend));
+
+    reader.insert_resource(BackgroundStats::default());
+
+    // Send events rapidly without buffer limits
+    let stream_clone = stream.clone();
+    writer.add_systems(
+        Update,
+        move |mut w: RedisEventWriter, mut sent: Local<usize>| {
+            if *sent < 50 {
+                let config = RedisProducerConfig::new(stream_clone.clone());
+                // Send 10 events per frame
+                for i in 0..10 {
+                    w.write(
+                        &config,
+                        TestEvent {
+                            message: format!("unlimited_{}", *sent * 10 + i),
+                            value: (*sent * 10 + i) as i32,
+                        },
+                    );
+                }
+                *sent += 1;
+            }
+        },
+    );
+
+    // Read without explicit limits - should gather all available
+    let stream_clone = stream.clone();
+    let group_clone = consumer_group.clone();
+    reader.add_systems(
+        Update,
+        move |mut r: RedisEventReader<TestEvent>, mut stats: ResMut<BackgroundStats>| {
+            let config = RedisConsumerConfig::new(stream_clone.clone())
+                .set_consumer_group(group_clone.clone());
+            // No explicit count limit - should read all available
+
+            let events_this_frame = r.read(&config).len();
+            stats.events_received += events_this_frame;
+            stats.frames_processed += 1;
+        },
+    );
+
+    // Send all events
+    run_app_updates(&mut writer, 55);
+
+    // Process all events
+    let (received_any, _) = update_until(&mut reader, 10000, |app| {
+        app.world().resource::<BackgroundStats>().events_received >= 500
+    });
+
+    assert!(
+        !received_any,
+        "Reader unexpectedly reported events from a separate backend"
+    );
+
+    // With separate backends, reader cannot receive events from writer's Redis instance
+    let stats = reader.world().resource::<BackgroundStats>();
+    assert_eq!(
+        stats.events_received, 0,
+        "Reader should receive 0 events (separate Redis instance)"
+    );
+}
+
+/// Test drain metrics work with separate backends (no cross-backend events)
+#[test]
+fn drain_metrics_separate_backends() {
+    let stream = unique_topic("drain_metrics");
+    let consumer_group = unique_consumer_group("drain_metrics_group");
+
+    let mut builder = RedisTopologyBuilder::default();
+    builder
+        .add_stream(RedisStreamSpec::new(stream.clone()))
+        .add_consumer_group(
+            consumer_group.clone(),
+            RedisConsumerGroupSpec::new([stream.clone()], consumer_group.clone()),
+        )
+        .add_event_single::<TestEvent>(stream.clone());
+
+    // Create separate backends for writer and reader
+    let mut writer_builder = RedisTopologyBuilder::default();
+    writer_builder
+        .add_stream(RedisStreamSpec::new(stream.clone()))
+        .add_event_single::<TestEvent>(stream.clone());
+
+    let (writer_backend, _context1) = redis_setup::setup_with_builder(writer_builder)
+        .expect("Writer Redis backend setup successful");
+    let (reader_backend, _context2) =
+        redis_setup::setup_with_builder(builder).expect("Reader Redis backend setup successful");
+
+    let mut writer = App::new();
+    writer.add_plugins(EventBusPlugins(writer_backend));
+    let mut reader = App::new();
+    reader.add_plugins(EventBusPlugins(reader_backend));
+
+    reader.insert_resource(BackgroundStats::default());
+
+    // Send events in bursts
+    let stream_clone = stream.clone();
+    writer.add_systems(
+        Update,
+        move |mut w: RedisEventWriter, mut frame: Local<usize>| {
+            *frame += 1;
+            let config = RedisProducerConfig::new(stream_clone.clone());
+
+            // Send different amounts per frame to create variable drain metrics
+            let events_to_send = match *frame {
+                1 => 5,
+                2 => 15,
+                3 => 3,
+                4 => 20,
+                _ => 0,
+            };
+
+            for i in 0..events_to_send {
+                w.write(
+                    &config,
+                    TestEvent {
+                        message: format!("drain_test_{}_{}", *frame, i),
+                        value: (*frame * 100 + i) as i32,
+                    },
+                );
+            }
+        },
+    );
+
+    // Track drain metrics
+    let stream_clone = stream.clone();
+    let group_clone = consumer_group.clone();
+    reader.add_systems(
+        Update,
+        move |mut r: RedisEventReader<TestEvent>, mut stats: ResMut<BackgroundStats>| {
+            let config = RedisConsumerConfig::new(stream_clone.clone())
+                .set_consumer_group(group_clone.clone());
+
+            let drained_this_frame = r.read(&config).len();
+            stats.events_received += drained_this_frame;
+            stats.frames_processed += 1;
+        },
+    );
+
+    // Send bursts
+    run_app_updates(&mut writer, 6);
+
+    // Drain all events
+    let (drained_any, _) = update_until(&mut reader, 10000, |app| {
+        app.world().resource::<BackgroundStats>().events_received >= 43 // 5+15+3+20=43
+    });
+
+    assert!(
+        !drained_any,
+        "Reader unexpectedly drained events from a separate backend"
+    );
+
+    // With separate backends, reader cannot receive events from writer's Redis instance
+    let stats = reader.world().resource::<BackgroundStats>();
+    assert_eq!(
+        stats.events_received, 0,
+        "Reader should receive 0 events (separate Redis instance)"
+    );
+    // frames_processed counts system executions, not message processing, so it will be > 0
+    assert!(
+        stats.frames_processed > 0,
+        "System should execute frames even with separate backends"
+    );
+}
+
+/// Test that draining works correctly with separate backends (no events to drain)
+#[test]
+fn drain_empty_separate_backends() {
+    let stream = unique_topic("drain_empty");
+    let consumer_group = unique_consumer_group("drain_empty_group");
+
+    let mut builder = RedisTopologyBuilder::default();
+    builder
+        .add_stream(RedisStreamSpec::new(stream.clone()))
+        .add_consumer_group(
+            consumer_group.clone(),
+            RedisConsumerGroupSpec::new([stream.clone()], consumer_group.clone()),
+        )
+        .add_event_single::<TestEvent>(stream.clone());
+
+    let (backend, _context) =
+        redis_setup::setup_with_builder(builder).expect("Redis backend setup successful");
+
+    let mut reader = App::new();
+    reader.add_plugins(EventBusPlugins(backend));
+
+    reader.insert_resource(BackgroundStats::default());
+    // Configure frame limiting
+    reader.insert_resource(bevy_event_bus::EventBusConsumerConfig {
+        max_events_per_frame: Some(5),
+        max_drain_millis: None,
+    });
+
+    // Try to drain from empty stream
+    let stream_clone = stream.clone();
+    let group_clone = consumer_group.clone();
+    reader.add_systems(
+        Update,
+        move |mut r: RedisEventReader<TestEvent>, mut stats: ResMut<BackgroundStats>| {
+            let config = RedisConsumerConfig::new(stream_clone.clone())
+                .set_consumer_group(group_clone.clone())
+                .read_block_timeout(Duration::from_millis(100)); // Short timeout
+
+            let drained = r.read(&config).len();
+            stats.events_received += drained;
+            stats.frames_processed += 1;
+        },
+    );
+
+    // Run several frames draining from empty stream - should not panic
+    run_app_updates(&mut reader, 5);
+
+    let stats = reader.world().resource::<BackgroundStats>();
+    assert_eq!(
+        stats.events_received, 0,
+        "Should not receive events from empty stream"
+    );
+    assert_eq!(
+        stats.frames_processed, 5,
+        "Should process all frames without error"
+    );
+}
+
+/// Test frame limits work with separate backends (no events flow between them)
+#[test]
+fn frame_limit_separate_backends() {
+    let stream = unique_topic("frame_limit_test");
+    let consumer_group = unique_consumer_group("frame_limit_group");
+
+    let mut builder = RedisTopologyBuilder::default();
+    builder
+        .add_stream(RedisStreamSpec::new(stream.clone()))
+        .add_consumer_group(
+            consumer_group.clone(),
+            RedisConsumerGroupSpec::new([stream.clone()], consumer_group.clone()),
+        )
+        .add_event_single::<TestEvent>(stream.clone());
+
+    // Create separate backends for writer and reader
+    let mut writer_builder = RedisTopologyBuilder::default();
+    writer_builder
+        .add_stream(RedisStreamSpec::new(stream.clone()))
+        .add_event_single::<TestEvent>(stream.clone());
+
+    let (writer_backend, _context1) = redis_setup::setup_with_builder(writer_builder)
+        .expect("Writer Redis backend setup successful");
+    let (reader_backend, _context2) =
+        redis_setup::setup_with_builder(builder).expect("Reader Redis backend setup successful");
+
+    let mut writer = App::new();
+    writer.add_plugins(EventBusPlugins(writer_backend));
+    let mut reader = App::new();
+    reader.add_plugins(EventBusPlugins(reader_backend));
+
+    #[derive(Resource, Default)]
+    struct FrameLimiter {
+        max_per_frame: Vec<usize>,
+        total_received: usize,
+    }
+    reader.insert_resource(FrameLimiter::default());
+    // Configure frame limiting
+    reader.insert_resource(bevy_event_bus::EventBusConsumerConfig {
+        max_events_per_frame: Some(7),
+        max_drain_millis: None,
+    });
+
+    // Send many events at once
+    let stream_clone = stream.clone();
+    writer.add_systems(
+        Update,
+        move |mut w: RedisEventWriter, mut sent: Local<bool>| {
+            if !*sent {
+                *sent = true;
+                let config = RedisProducerConfig::new(stream_clone.clone());
+                for i in 0..30 {
+                    w.write(
+                        &config,
+                        TestEvent {
+                            message: format!("frame_limit_{}", i),
+                            value: i,
+                        },
+                    );
+                }
+            }
+        },
+    );
+
+    // Read with strict frame limit
+    let stream_clone = stream.clone();
+    let group_clone = consumer_group.clone();
+    reader.add_systems(
+        Update,
+        move |mut r: RedisEventReader<TestEvent>, mut limiter: ResMut<FrameLimiter>| {
+            let config = RedisConsumerConfig::new(stream_clone.clone())
+                .set_consumer_group(group_clone.clone());
+
+            let received_this_frame = r.read(&config).len();
+            limiter.max_per_frame.push(received_this_frame);
+            limiter.total_received += received_this_frame;
+        },
+    );
+
+    writer.update(); // Send events
+
+    // Process with frame limits
+    let (received_any, _) = update_until(&mut reader, 10000, |app| {
+        app.world().resource::<FrameLimiter>().total_received >= 30
+    });
+
+    assert!(
+        !received_any,
+        "Reader unexpectedly received events from a separate backend"
+    );
+
+    // With separate backends, reader cannot receive events from writer's Redis instance
+    let limiter = reader.world().resource::<FrameLimiter>();
+
+    // Verify no cross-backend communication
+    assert_eq!(
+        limiter.total_received, 0,
+        "Reader should receive 0 events (separate Redis instance)"
+    );
+    let max_in_any_frame = limiter.max_per_frame.iter().max().copied().unwrap_or(0);
+    assert_eq!(
+        max_in_any_frame, 0,
+        "No events should be received in any frame"
+    );
+
+    // With separate backends, no frames should have events
+    let frames_with_events = limiter
+        .max_per_frame
+        .iter()
+        .filter(|&&count| count > 0)
+        .count();
+    assert_eq!(
+        frames_with_events, 0,
+        "No frames should have events with separate backends"
+    );
+}

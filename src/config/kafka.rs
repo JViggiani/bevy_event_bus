@@ -481,6 +481,10 @@ impl EventBusConfig for KafkaConsumerConfig {
     fn config_id(&self) -> String {
         format!("kafka_consumer_{}", self.consumer_group)
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 /// Configuration for Kafka producers with production-ready options
@@ -674,6 +678,10 @@ impl EventBusConfig for KafkaProducerConfig {
 
     fn config_id(&self) -> String {
         "kafka_producer".to_string()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 

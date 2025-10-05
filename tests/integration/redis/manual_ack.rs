@@ -5,10 +5,14 @@ use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
     RedisTopologyBuilder,
 };
-use bevy_event_bus::{EventBusErrorQueue, EventBusPlugins, RedisAckWorkerStats, RedisEventReader, RedisEventWriter};
-use integration_tests::utils::helpers::{run_app_updates, update_until, unique_consumer_group, unique_topic};
-use integration_tests::utils::redis_setup;
+use bevy_event_bus::{
+    EventBusErrorQueue, EventBusPlugins, RedisAckWorkerStats, RedisEventReader, RedisEventWriter,
+};
 use integration_tests::utils::TestEvent;
+use integration_tests::utils::helpers::{
+    run_app_updates, unique_consumer_group, unique_topic, update_until,
+};
+use integration_tests::utils::redis_setup;
 
 #[derive(Resource, Clone)]
 struct Topic(String);
@@ -29,6 +33,13 @@ struct WriterPayload {
     dispatched: bool,
 }
 
+#[derive(Resource)]
+struct WriterBatchPayload {
+    events: Vec<TestEvent>,
+    topic: String,
+    dispatched: usize,
+}
+
 fn redis_writer_emit_once(mut writer: RedisEventWriter, mut payload: ResMut<WriterPayload>) {
     if payload.dispatched {
         return;
@@ -37,6 +48,24 @@ fn redis_writer_emit_once(mut writer: RedisEventWriter, mut payload: ResMut<Writ
     let config = RedisProducerConfig::new(payload.topic.clone());
     writer.write(&config, payload.event.clone());
     payload.dispatched = true;
+}
+
+fn redis_writer_emit_batch(mut writer: RedisEventWriter, mut payload: ResMut<WriterBatchPayload>) {
+    if payload.dispatched >= payload.events.len() {
+        return;
+    }
+
+    let config = RedisProducerConfig::new(payload.topic.clone());
+    let remaining = payload.events.len() - payload.dispatched;
+    let batch = remaining.min(128);
+    let start = payload.dispatched;
+    let end = start + batch;
+
+    for event in payload.events[start..end].iter().cloned() {
+        writer.write(&config, event);
+    }
+
+    payload.dispatched = end;
 }
 
 fn redis_reader_ack_system(
@@ -73,9 +102,9 @@ fn manual_ack_clears_messages_and_tracks_success() {
         )
         .add_event_single::<TestEvent>(stream.clone());
 
-    let (backend, context) = redis_setup::setup_with_builder(builder)
-        .expect("Redis backend setup successful");
-    
+    let (backend, context) =
+        redis_setup::setup_with_builder(builder).expect("Redis backend setup successful");
+
     let writer_backend = backend.clone();
     let reader_backend = backend;
 
@@ -100,7 +129,7 @@ fn manual_ack_clears_messages_and_tracks_success() {
             message: "redis-manual-ack".to_string(),
             value: 7,
         },
-    topic: topic.clone(),
+        topic: topic.clone(),
         dispatched: false,
     });
     writer_app.add_systems(Update, redis_writer_emit_once);
@@ -131,7 +160,10 @@ fn manual_ack_clears_messages_and_tracks_success() {
             .expect("ack worker stats should be available");
         stats.acknowledged() >= 1
     });
-    assert!(acked, "expected redis ack worker to record a successful acknowledgement");
+    assert!(
+        acked,
+        "expected redis ack worker to record a successful acknowledgement"
+    );
     let stats = reader_app
         .world()
         .get_resource::<RedisAckWorkerStats>()
@@ -142,6 +174,101 @@ fn manual_ack_clears_messages_and_tracks_success() {
     let received = reader_app.world().resource::<Received>();
     assert_eq!(received.events.len(), 1);
     assert_eq!(received.ack_attempts, 1);
+
+    drop(context);
+}
+
+#[test]
+fn manual_ack_batches_multiple_messages() {
+    const TOTAL_MESSAGES: usize = 64;
+
+    let stream = unique_topic("redis-manual-ack-batch");
+    let group = unique_consumer_group("redis-manual-ack-batch-group");
+
+    let mut builder = RedisTopologyBuilder::default();
+    builder
+        .add_stream(RedisStreamSpec::new(stream.clone()))
+        .add_consumer_group(
+            group.clone(),
+            RedisConsumerGroupSpec::new([stream.clone()], group.clone()).manual_ack(true),
+        )
+        .add_event_single::<TestEvent>(stream.clone());
+
+    let (backend, context) =
+        redis_setup::setup_with_builder(builder).expect("Redis backend setup successful");
+
+    let reader_backend = backend.clone();
+    let writer_backend = backend;
+
+    let mut reader_app = App::new();
+    reader_app.add_plugins(EventBusPlugins(reader_backend));
+    reader_app.insert_resource(Topic(stream.clone()));
+    reader_app.insert_resource(ConsumerGroup(Some(group.clone())));
+    reader_app.insert_resource(Received::default());
+    reader_app.add_systems(Update, redis_reader_ack_system);
+
+    let mut writer_app = App::new();
+    writer_app.add_plugins(EventBusPlugins(writer_backend));
+    writer_app.insert_resource(WriterBatchPayload {
+        events: (0..TOTAL_MESSAGES)
+            .map(|value| TestEvent {
+                message: format!("redis-manual-ack-batch-{value}"),
+                value: value as i32,
+            })
+            .collect(),
+        topic: stream.clone(),
+        dispatched: 0,
+    });
+    writer_app.add_systems(Update, redis_writer_emit_batch);
+
+    while writer_app
+        .world()
+        .resource::<WriterBatchPayload>()
+        .dispatched
+        < TOTAL_MESSAGES
+    {
+        writer_app.update();
+    }
+    run_app_updates(&mut writer_app, 6);
+
+    let pending_errors = {
+        let queue = writer_app.world_mut().resource::<EventBusErrorQueue>();
+        queue.drain_pending()
+    };
+    assert!(
+        pending_errors.is_empty(),
+        "redis writer emitted {} errors",
+        pending_errors.len()
+    );
+
+    let (received_all, _) = update_until(&mut reader_app, 15_000, |app| {
+        app.world().resource::<Received>().events.len() >= TOTAL_MESSAGES
+    });
+    assert!(
+        received_all,
+        "expected to receive all redis events for batch acknowledgement"
+    );
+    let (acks_complete, _) = update_until(&mut reader_app, 15_000, |app| {
+        app.world()
+            .get_resource::<RedisAckWorkerStats>()
+            .map(|stats| stats.acknowledged() >= TOTAL_MESSAGES)
+            .unwrap_or(false)
+    });
+    assert!(
+        acks_complete,
+        "expected redis ack worker to flush all batched acknowledgements"
+    );
+
+    let stats = reader_app
+        .world()
+        .get_resource::<RedisAckWorkerStats>()
+        .expect("ack worker stats should be available");
+    assert_eq!(stats.acknowledged(), TOTAL_MESSAGES);
+    assert_eq!(stats.failed(), 0);
+
+    let received = reader_app.world().resource::<Received>();
+    assert_eq!(received.events.len(), TOTAL_MESSAGES);
+    assert_eq!(received.ack_attempts, TOTAL_MESSAGES);
 
     drop(context);
 }

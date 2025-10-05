@@ -1,5 +1,4 @@
 #![cfg(feature = "redis")]
-
 #![cfg(feature = "redis")]
 
 use bevy::prelude::*;
@@ -26,9 +25,9 @@ fn test_basic_redis_event_bus() {
         )
         .add_event_single::<TestEvent>(stream.clone());
 
-    let (backend, _context) = redis_setup::setup_with_builder(builder)
-        .expect("Redis backend setup successful");
-    
+    let (backend, _context) =
+        redis_setup::setup_with_builder(builder).expect("Redis backend setup successful");
+
     let backend_reader = backend.clone();
     let backend_writer = backend;
 
@@ -52,8 +51,7 @@ fn test_basic_redis_event_bus() {
         group: Res<ConsumerGroup>,
         mut collected: ResMut<Collected>,
     ) {
-        let config = RedisConsumerConfig::new(stream.0.clone())
-            .set_consumer_group(group.0.clone());
+        let config = RedisConsumerConfig::new(stream.0.clone()).set_consumer_group(group.0.clone());
         for wrapper in reader.read(&config) {
             collected.0.push(wrapper.event().clone());
         }

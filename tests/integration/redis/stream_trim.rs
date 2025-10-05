@@ -3,9 +3,10 @@
 use bevy::prelude::*;
 use bevy_event_bus::config::redis::{RedisStreamSpec, RedisTopologyBuilder, TrimStrategy};
 use bevy_event_bus::{EventBusPlugins, RedisEventWriter};
-use integration_tests::utils::helpers::unique_topic;
-use integration_tests::utils::redis_setup;
 use integration_tests::utils::TestEvent;
+use integration_tests::utils::helpers::{self, unique_topic};
+use integration_tests::utils::redis_setup;
+use std::cell::RefCell;
 
 #[derive(Resource)]
 struct TrimRequest {
@@ -35,9 +36,9 @@ fn writer_trim_stream_enforces_max_length() {
         .add_stream(RedisStreamSpec::new(stream.clone()))
         .add_event_single::<TestEvent>(stream.clone());
 
-    let (backend, context) = redis_setup::setup_with_builder(builder)
-        .expect("Redis backend setup successful");
-    
+    let (backend, context) =
+        redis_setup::setup_with_builder(builder).expect("Redis backend setup successful");
+
     let writer_backend = backend;
 
     // Seed the stream with multiple entries using a raw Redis connection.
@@ -75,7 +76,19 @@ fn writer_trim_stream_enforces_max_length() {
     app.add_systems(Update, trim_stream_once);
     app.update();
 
-    // Ensure only a single entry remains.
+    // Wait for the asynchronous trim worker to apply the request.
+    let conn = RefCell::new(conn);
+    let (success, _) = helpers::update_until(&mut app, 2_000, |_| {
+        let mut conn = conn.borrow_mut();
+        let len: usize = redis::cmd("XLEN")
+            .arg(&stream)
+            .query(&mut *conn)
+            .expect("query redis stream length");
+        len <= 1
+    });
+    assert!(success, "stream should be trimmed within the timeout");
+
+    let mut conn = conn.into_inner();
     let len: usize = redis::cmd("XLEN")
         .arg(&stream)
         .query(&mut conn)

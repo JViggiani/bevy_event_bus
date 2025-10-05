@@ -19,6 +19,9 @@ pub trait EventBusConfig: Send + Sync + Clone + 'static {
 
     /// Get a unique identifier for this configuration instance
     fn config_id(&self) -> String;
+
+    /// Allow downcasting to concrete config types
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 /// Marker trait for backend types to enable compile-time dispatch
