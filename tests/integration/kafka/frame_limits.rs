@@ -14,7 +14,7 @@ fn frame_limit_spreads_drain() {
     let consumer_group = unique_consumer_group("frame_limit_reader");
 
     let topic_for_writer = topic.clone();
-    let (backend_w, _b1) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
+    let (backend_w, _b1) = kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic_for_writer.clone())
@@ -26,7 +26,7 @@ fn frame_limit_spreads_drain() {
 
     let topic_for_reader = topic.clone();
     let group_for_reader = consumer_group.clone();
-    let (backend_r, _b2) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
+    let (backend_r, _b2) = kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic_for_reader.clone())

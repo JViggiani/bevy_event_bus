@@ -321,7 +321,7 @@ fn wait_metadata(bootstrap: &str, max_wait: Duration) -> (bool, u128) {
 /// Construct a Kafka backend for integration tests using a prepared topology builder.
 /// Tests may provide either a builder directly or pair it with [`SetupOptions`] for
 /// additional connection-level tweaks.
-pub fn setup<S>(input: S) -> (KafkaEventBusBackend, String)
+pub fn prepare_backend<S>(input: S) -> (KafkaEventBusBackend, String)
 where
     S: Into<SetupRequest>,
 {
@@ -544,7 +544,7 @@ pub fn build_basic_app<F>(customize: F) -> bevy::prelude::App
 where
     F: FnOnce(&mut bevy::prelude::App),
 {
-    let (backend, _bootstrap) = setup(latest(|_| {}));
+    let (backend, _bootstrap) = prepare_backend(latest(|_| {}));
     let mut app = bevy::prelude::App::new();
     app.add_plugins(bevy_event_bus::EventBusPlugins(backend));
     customize(&mut app);

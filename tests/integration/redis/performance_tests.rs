@@ -74,7 +74,7 @@ fn test_message_throughput() {
 
     let stream_clone_for_topology = stream.clone();
     let consumer_group_clone_for_topology = consumer_group.clone();
-    let (backend, _context) = redis_setup::setup(&shared_db, move |builder| {
+    let (backend, _context) = shared_db.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone_for_topology.clone()))
             .add_consumer_group(
@@ -253,7 +253,7 @@ fn test_high_volume_small_messages() {
 
     let stream_clone_for_topology = stream.clone();
     let consumer_group_clone_for_topology = consumer_group.clone();
-    let (backend, _context) = redis_setup::setup(&shared_db, move |builder| {
+    let (backend, _context) = shared_db.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone_for_topology.clone()))
             .add_consumer_group(
@@ -426,7 +426,7 @@ fn test_large_message_throughput() {
 
     let stream_clone_for_topology = stream.clone();
     let consumer_group_clone_for_topology = consumer_group.clone();
-    let (backend, _context) = redis_setup::setup(&shared_db, move |builder| {
+    let (backend, _context) = shared_db.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone_for_topology.clone()))
             .add_consumer_group(

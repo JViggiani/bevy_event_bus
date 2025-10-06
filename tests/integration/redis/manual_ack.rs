@@ -96,7 +96,7 @@ fn manual_ack_clears_messages_and_tracks_success() {
 
     let stream_clone = stream.clone();
     let group_clone = group.clone();
-    let (backend, context) = redis_setup::setup(&shared_db, move |builder| {
+    let (backend, context) = shared_db.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone.clone()))
             .add_consumer_group(
@@ -192,7 +192,7 @@ fn manual_ack_batches_multiple_messages() {
 
     let stream_clone = stream.clone();
     let group_clone = group.clone();
-    let (backend, context) = redis_setup::setup(&shared_db, move |builder| {
+    let (backend, context) = shared_db.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone.clone()))
             .add_consumer_group(

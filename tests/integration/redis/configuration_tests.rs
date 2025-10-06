@@ -17,11 +17,9 @@ fn configuration_with_readers_writers_works() {
     let stream = unique_topic("config_test");
     let consumer_group = unique_consumer_group("config_reader_group");
 
-    let shared_db = redis_setup::ensure_shared_redis().expect("Redis backend setup successful");
-
     let stream_clone = stream.clone();
     let consumer_group_clone = consumer_group.clone();
-    let (backend, _context) = redis_setup::setup(&shared_db, move |builder| {
+    let (backend, _context) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone.clone()))
             .add_consumer_group(
@@ -110,11 +108,9 @@ fn redis_specific_methods_work() {
     let stream = unique_topic("redis_methods");
     let consumer_group = unique_consumer_group("redis_methods_group");
 
-    let shared_db = redis_setup::ensure_shared_redis().expect("Redis backend setup successful");
-
     let stream_clone = stream.clone();
     let consumer_group_clone = consumer_group.clone();
-    let (backend, _context) = redis_setup::setup(&shared_db, move |builder| {
+    let (backend, _context) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone.clone()).maxlen(1000))
             .add_consumer_group(

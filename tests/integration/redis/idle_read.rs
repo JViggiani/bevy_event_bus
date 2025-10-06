@@ -5,17 +5,24 @@ use bevy_event_bus::config::redis::{RedisConsumerConfig, RedisConsumerGroupSpec,
 use bevy_event_bus::{EventBusPlugins, RedisEventReader};
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{unique_consumer_group, unique_topic};
-use integration_tests::utils::redis_setup;
+use integration_tests::utils::redis_setup::{self, SetupOptions};
 
 #[test]
 fn idle_empty_stream_poll_does_not_block() {
     let stream = unique_topic("idle_test");
     let consumer_group = unique_consumer_group("idle_group");
 
-    let shared_db = redis_setup::ensure_shared_redis().expect("Shared Redis setup should succeed");
+    let shared_db = redis_setup::ensure_shared_redis()
+        .expect("Redis backend allocation should succeed for idle read test");
+
     let stream_for_backend = stream.clone();
     let group_for_backend = consumer_group.clone();
-    let (backend, _context) = redis_setup::setup(&shared_db, move |builder| {
+    let options = SetupOptions::new()
+        .read_block_timeout(std::time::Duration::from_millis(50))
+        .pool_size(2)
+        .insert_connection_config("client-name", "idle-read");
+
+    let request = redis_setup::build_request(options, move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_backend.clone()))
             .add_consumer_group(
@@ -27,7 +34,10 @@ fn idle_empty_stream_poll_does_not_block() {
             )
             .add_event_single::<TestEvent>(stream_for_backend.clone());
     })
-    .expect("Redis backend setup successful");
+    .with_connection(shared_db.connection_string().to_string());
+
+    let (backend, _context) = redis_setup::setup(request)
+        .expect("Redis backend setup successful");
 
     let mut app = App::new();
     app.add_plugins(EventBusPlugins(backend));

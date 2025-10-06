@@ -22,7 +22,7 @@ fn offset_configuration_earliest_receives_historical_events() {
     let topic = unique_topic("offset_test_earliest");
 
     // Create topic and ensure it's ready before proceeding
-    let (_backend_setup, bootstrap) = kafka_setup::setup(kafka_setup::build_topology(|_| {}));
+    let (_backend_setup, bootstrap) = kafka_setup::prepare_backend(kafka_setup::build_topology(|_| {}));
     let topic_ready = kafka_setup::ensure_topic_ready(
         &bootstrap,
         &topic,
@@ -34,7 +34,7 @@ fn offset_configuration_earliest_receives_historical_events() {
     // Send historical events using a temporary backend producer
     {
         let (mut backend_producer, _bootstrap) =
-            kafka_setup::setup(kafka_setup::build_topology(|_| {}));
+            kafka_setup::prepare_backend(kafka_setup::build_topology(|_| {}));
         assert!(
             bevy_event_bus::block_on(backend_producer.connect()),
             "Failed to connect producer backend"
@@ -78,7 +78,7 @@ fn offset_configuration_earliest_receives_historical_events() {
             .add_event_single::<TestEvent>(topic_for_config.clone());
     });
     let (backend_earliest, _bootstrap_override) =
-        kafka_setup::setup((earliest_builder, SetupOptions::earliest()));
+        kafka_setup::prepare_backend((earliest_builder, SetupOptions::earliest()));
 
     let mut backend = backend_earliest.clone();
     assert!(
@@ -132,7 +132,7 @@ fn offset_configuration_latest_ignores_historical_events() {
     let topic = unique_topic("offset_test_latest");
 
     // Create topic and ensure it's ready before proceeding
-    let (_backend_setup, bootstrap) = kafka_setup::setup(kafka_setup::build_topology(|_| {}));
+    let (_backend_setup, bootstrap) = kafka_setup::prepare_backend(kafka_setup::build_topology(|_| {}));
     let topic_ready = kafka_setup::ensure_topic_ready(
         &bootstrap,
         &topic,
@@ -154,7 +154,7 @@ fn offset_configuration_latest_ignores_historical_events() {
                 .add_event_single::<TestEvent>(topic_for_binding.clone());
         });
         let (backend_producer, _bootstrap) =
-            kafka_setup::setup((producer_builder, SetupOptions::latest()));
+            kafka_setup::prepare_backend((producer_builder, SetupOptions::latest()));
         let mut producer_app = App::new();
         producer_app.add_plugins(EventBusPlugins(backend_producer));
 
@@ -275,7 +275,7 @@ fn default_offset_configuration_is_latest() {
     let topic = unique_topic("default_offset");
 
     // Create topic and ensure it's ready before proceeding
-    let (_backend_setup, bootstrap) = kafka_setup::setup(kafka_setup::build_topology(|_| {}));
+    let (_backend_setup, bootstrap) = kafka_setup::prepare_backend(kafka_setup::build_topology(|_| {}));
     let topic_ready = kafka_setup::ensure_topic_ready(
         &bootstrap,
         &topic,
@@ -297,7 +297,7 @@ fn default_offset_configuration_is_latest() {
                 .add_event_single::<TestEvent>(topic_for_binding.clone());
         });
         let (backend_producer, _bootstrap) =
-            kafka_setup::setup((producer_builder, SetupOptions::latest()));
+            kafka_setup::prepare_backend((producer_builder, SetupOptions::latest()));
         let mut producer_app = App::new();
         producer_app.add_plugins(EventBusPlugins(backend_producer));
 

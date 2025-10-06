@@ -31,9 +31,8 @@ fn trim_stream_once(mut writer: RedisEventWriter, mut request: ResMut<TrimReques
 fn writer_trim_stream_enforces_max_length() {
     let stream = unique_topic("redis-stream-trim");
 
-    let shared_db = redis_setup::ensure_shared_redis().expect("Shared Redis setup should succeed");
     let stream_for_backend = stream.clone();
-    let (backend, context) = redis_setup::setup(&shared_db, move |builder| {
+    let (backend, context) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_backend.clone()))
             .add_event_single::<TestEvent>(stream_for_backend.clone());

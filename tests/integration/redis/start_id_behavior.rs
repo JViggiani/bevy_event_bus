@@ -26,7 +26,7 @@ fn test_start_id_from_beginning() {
         redis_setup::ensure_shared_redis().expect("Reader Redis backend setup successful");
 
     let writer_stream = stream.clone();
-    let (writer_backend, _context1) = redis_setup::setup(&writer_db, move |builder| {
+    let (writer_backend, _context1) = writer_db.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(writer_stream.clone()))
             .add_event_single::<TestEvent>(writer_stream.clone());
@@ -35,7 +35,7 @@ fn test_start_id_from_beginning() {
 
     let reader_stream = stream.clone();
     let reader_group = consumer_group.clone();
-    let (reader_backend, _context2) = redis_setup::setup(&reader_db, move |builder| {
+    let (reader_backend, _context2) = reader_db.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(reader_stream.clone()))
             .add_consumer_group(
@@ -115,7 +115,7 @@ fn test_start_id_from_end() {
         redis_setup::ensure_shared_redis().expect("Reader Redis backend setup successful");
 
     let writer_stream = stream.clone();
-    let (writer_backend, _context1) = redis_setup::setup(&writer_db, move |builder| {
+    let (writer_backend, _context1) = writer_db.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(writer_stream.clone()))
             .add_event_single::<TestEvent>(writer_stream.clone());
@@ -124,7 +124,7 @@ fn test_start_id_from_end() {
 
     let reader_stream = stream.clone();
     let reader_group = consumer_group.clone();
-    let (reader_backend, _context2) = redis_setup::setup(&reader_db, move |builder| {
+    let (reader_backend, _context2) = reader_db.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(reader_stream.clone()))
             .add_consumer_group(

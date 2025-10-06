@@ -56,7 +56,7 @@ fn test_message_throughput() {
     let topic_for_config = topic.clone();
     let group_for_config = consumer_group.clone();
 
-    let (backend, _container) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
+    let (backend, _container) = kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic_for_config.clone())
@@ -95,7 +95,7 @@ fn test_large_message_throughput() {
     let topic_for_config = topic.clone();
     let group_for_config = consumer_group.clone();
 
-    let (backend, _container) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
+    let (backend, _container) = kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic_for_config.clone())
@@ -134,7 +134,7 @@ fn test_high_volume_small_messages() {
     let topic_for_config = topic.clone();
     let group_for_config = consumer_group.clone();
 
-    let (backend, _container) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
+    let (backend, _container) = kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic_for_config.clone())

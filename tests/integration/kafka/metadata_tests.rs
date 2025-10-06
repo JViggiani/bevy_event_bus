@@ -30,7 +30,7 @@ fn setup_earliest<F>(configure: F) -> (KafkaEventBusBackend, String)
 where
     F: FnOnce(&mut KafkaTopologyBuilder),
 {
-    kafka_setup::setup(kafka_setup::earliest(configure))
+    kafka_setup::prepare_backend(kafka_setup::earliest(configure))
 }
 
 #[test]

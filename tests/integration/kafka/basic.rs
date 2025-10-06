@@ -17,7 +17,7 @@ fn kafka_single_direction_writer_reader_flow() {
 
     let topic_for_writer = topic.clone();
     let (backend_writer, _bootstrap_writer) =
-        kafka_setup::setup(kafka_setup::earliest(move |builder| {
+        kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
             builder
                 .add_topic(
                     KafkaTopicSpec::new(topic_for_writer.clone())
@@ -30,7 +30,7 @@ fn kafka_single_direction_writer_reader_flow() {
     let topic_for_reader = topic.clone();
     let group_for_reader = consumer_group.clone();
     let (backend_reader, _bootstrap_reader) =
-        kafka_setup::setup(kafka_setup::earliest(move |builder| {
+        kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
             builder
                 .add_topic(
                     KafkaTopicSpec::new(topic_for_reader.clone())
@@ -112,7 +112,7 @@ fn kafka_bidirectional_apps_exchange_events() {
 
     let topic_for_app_a = topic.clone();
     let group_for_app_a = group_a.clone();
-    let (backend_a, _bootstrap_a) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
+    let (backend_a, _bootstrap_a) = kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic_for_app_a.clone())
@@ -129,7 +129,7 @@ fn kafka_bidirectional_apps_exchange_events() {
 
     let topic_for_app_b = topic.clone();
     let group_for_app_b = group_b.clone();
-    let (backend_b, _bootstrap_b) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
+    let (backend_b, _bootstrap_b) = kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic_for_app_b.clone())

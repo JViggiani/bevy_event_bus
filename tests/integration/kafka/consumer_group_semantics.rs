@@ -23,7 +23,7 @@ fn same_consumer_group_distributes_messages_round_robin() {
 
     // Writer topology - no consumer groups (write-only)
     let topic_for_writer = topic.clone();
-    let (writer_backend, _bootstrap1) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
+    let (writer_backend, _bootstrap1) = kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_for_writer.clone())
                 .partitions(1)
@@ -38,7 +38,7 @@ fn same_consumer_group_distributes_messages_round_robin() {
     let topic_for_reader1 = topic.clone();
     let group_for_reader1 = consumer_group.clone();
     let (reader1_backend, _bootstrap2) =
-        kafka_setup::setup(kafka_setup::earliest(move |builder| {
+        kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
             builder.add_topic(
                 KafkaTopicSpec::new(topic_for_reader1.clone())
                     .partitions(1)
@@ -56,7 +56,7 @@ fn same_consumer_group_distributes_messages_round_robin() {
     let topic_for_reader2 = topic.clone();
     let group_for_reader2 = consumer_group.clone();
     let (reader2_backend, _bootstrap3) =
-        kafka_setup::setup(kafka_setup::earliest(move |builder| {
+        kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
             builder.add_topic(
                 KafkaTopicSpec::new(topic_for_reader2.clone())
                     .partitions(1)
@@ -183,7 +183,7 @@ fn different_consumer_groups_broadcast_all_messages() {
 
     // Writer topology - no consumer groups (write-only)
     let topic_for_writer = topic.clone();
-    let (writer_backend, _bootstrap1) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
+    let (writer_backend, _bootstrap1) = kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_for_writer.clone())
                 .partitions(1)
@@ -198,7 +198,7 @@ fn different_consumer_groups_broadcast_all_messages() {
     let topic_for_reader1 = topic.clone();
     let group_for_reader1 = consumer_group1.clone();
     let (reader1_backend, _bootstrap2) =
-        kafka_setup::setup(kafka_setup::earliest(move |builder| {
+        kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
             builder.add_topic(
                 KafkaTopicSpec::new(topic_for_reader1.clone())
                     .partitions(1)
@@ -216,7 +216,7 @@ fn different_consumer_groups_broadcast_all_messages() {
     let topic_for_reader2 = topic.clone();
     let group_for_reader2 = consumer_group2.clone();
     let (reader2_backend, _bootstrap3) =
-        kafka_setup::setup(kafka_setup::earliest(move |builder| {
+        kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
             builder.add_topic(
                 KafkaTopicSpec::new(topic_for_reader2.clone())
                     .partitions(1)
@@ -333,7 +333,7 @@ fn writer_only_no_consumer_groups_works() {
 
     // Writer topology - no consumer groups, just topic and event binding
     let topic_for_writer = topic.clone();
-    let (writer_backend, _bootstrap) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
+    let (writer_backend, _bootstrap) = kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_for_writer.clone())
                 .partitions(1)

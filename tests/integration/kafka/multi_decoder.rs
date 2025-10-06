@@ -54,7 +54,7 @@ fn test_multi_decoder() {
     let topic_game_cfg = topic_game.clone();
     let topic_combat_cfg = topic_combat.clone();
     let topic_analytics_cfg = topic_analytics.clone();
-    let (backend, _) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
+    let (backend, _) = kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_game_cfg.clone())
                 .partitions(1)

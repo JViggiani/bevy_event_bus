@@ -29,7 +29,7 @@ where
 
     tokio::task::spawn_blocking(move || {
         let request = kafka_setup::build_request(options, configure);
-        kafka_setup::setup(request)
+        kafka_setup::prepare_backend(request)
     })
     .await
     .expect("setup panicked")

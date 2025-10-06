@@ -25,7 +25,7 @@ fn configuration_with_readers_writers_works() {
     // Create separate backends for writer and reader to simulate separate machines
     let topic_for_writer = topic.clone();
     let (backend_writer, _bootstrap_writer) =
-        kafka_setup::setup(kafka_setup::earliest(move |builder| {
+        kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
             builder.add_topic(
                 KafkaTopicSpec::new(topic_for_writer.clone())
                     .partitions(1)
@@ -37,7 +37,7 @@ fn configuration_with_readers_writers_works() {
     let topic_for_reader = topic.clone();
     let group_for_reader = consumer_group.clone();
     let (backend_reader, _bootstrap_reader) =
-        kafka_setup::setup(kafka_setup::earliest(move |builder| {
+        kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
             builder.add_topic(
                 KafkaTopicSpec::new(topic_for_reader.clone())
                     .partitions(1)
@@ -130,7 +130,7 @@ fn configuration_with_readers_writers_works() {
 #[test]
 fn kafka_specific_methods_work() {
     let topic = unique_topic("kafka_methods");
-    let (_backend, bootstrap) = kafka_setup::setup(kafka_setup::latest(|_| {}));
+    let (_backend, bootstrap) = kafka_setup::prepare_backend(kafka_setup::latest(|_| {}));
     let consumer_group = unique_consumer_group("kafka_methods");
 
     let topic_for_config = topic.clone();

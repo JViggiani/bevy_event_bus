@@ -16,7 +16,7 @@ fn no_event_duplication_exactly_once_delivery() {
 
     let topic_for_writer = topic.clone();
     let (backend_writer, _bootstrap_writer) =
-        kafka_setup::setup(kafka_setup::earliest(move |builder| {
+        kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
             builder
                 .add_topic(
                     KafkaTopicSpec::new(topic_for_writer.clone())
@@ -29,7 +29,7 @@ fn no_event_duplication_exactly_once_delivery() {
     let topic_for_reader = topic.clone();
     let group_for_reader = consumer_group.clone();
     let (backend_reader, bootstrap_reader) =
-        kafka_setup::setup(kafka_setup::earliest(move |builder| {
+        kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
             builder
                 .add_topic(
                     KafkaTopicSpec::new(topic_for_reader.clone())

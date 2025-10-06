@@ -1,134 +1,164 @@
 #![cfg(feature = "redis")]
 
 use anyhow::{Context, Result, anyhow};
-use bevy::prelude::{App, Resource};
+use bevy::prelude::App;
 use bevy_event_bus::EventBusPlugins;
 use bevy_event_bus::backends::RedisEventBusBackend;
 use bevy_event_bus::config::redis::{
     RedisBackendConfig, RedisConnectionConfig, RedisTopologyBuilder, RedisTopologyConfig,
 };
-use once_cell::sync::OnceCell;
-use std::collections::VecDeque;
-use std::iter::FromIterator;
+use once_cell::sync::Lazy;
+use redis::RedisError;
+use std::collections::HashMap;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
+use tracing::{debug, info, info_span};
 
 const REDIS_IMAGE: &str = "redis:5.0";
 const CONTAINER_NAME: &str = "bevy_event_bus_test_redis";
 const REDIS_PORT: u16 = 6379;
-const SHARED_DATABASES: usize = 64;
+const DEFAULT_DB_INDEX: usize = 0;
 const WAIT_RETRIES: usize = 50;
 const WAIT_BASE_DELAY_MS: u64 = 25;
 const WAIT_MAX_DELAY_MS: u64 = 400;
-const DATABASE_VALIDATION_ATTEMPTS: usize = 5;
-const MAX_CONTAINER_SETUP_ATTEMPTS: usize = 3;
+const MAX_SHARED_DATABASES: usize = 512;
 
 #[derive(Clone, Debug)]
 struct ContainerInfo {
     id: Option<String>,
-    base_endpoint: String,
+    endpoint: String,
     owned: bool,
     keep_container: bool,
 }
 
-/// Holds lifecycle information for a Redis backend created during testing.
+#[derive(Default, Debug, Clone)]
+struct ContainerState {
+    info: Option<ContainerInfo>,
+}
+
+static CONTAINER_STATE: Lazy<Mutex<ContainerState>> =
+    Lazy::new(|| Mutex::new(ContainerState::default()));
+static CONTAINER_SHUTDOWN: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(false));
+static NEXT_SHARED_DB_INDEX: Lazy<AtomicUsize> =
+    Lazy::new(|| AtomicUsize::new(DEFAULT_DB_INDEX + 1));
+
+/// Runtime context returned alongside a configured Redis backend.
+#[derive(Clone, Debug)]
 pub struct RedisTestContext {
     connection_string: String,
-    _shared: Option<SharedRedisDatabase>,
 }
 
 impl RedisTestContext {
-    fn new_shared(database: SharedRedisDatabase) -> Self {
-        let connection_string = database.connection_string().to_string();
+    fn new(connection_string: impl Into<String>) -> Self {
         Self {
-            connection_string,
-            _shared: Some(database),
+            connection_string: connection_string.into(),
         }
     }
 
-    /// Return the Redis connection string (including database index) associated with this lease.
+    /// Return the Redis connection string associated with this test backend.
     pub fn connection_string(&self) -> &str {
         &self.connection_string
     }
 }
 
-/// Lease-like handle to a Redis database index within the shared container.
-#[derive(Clone)]
-pub struct SharedRedisDatabase {
-    inner: Arc<SharedRedisDatabaseInner>,
+/// Additional configuration controls for Redis test backend construction.
+#[derive(Clone, Debug)]
+pub struct SetupOptions {
+    read_block_timeout: Duration,
+    connection_overrides: HashMap<String, String>,
+    pool_size: Option<usize>,
 }
 
-struct SharedRedisDatabaseInner {
-    connection_string: String,
-    lease: SharedLease,
-}
-
-enum SharedLease {
-    External,
-    Managed {
-        redis: Arc<SharedRedisInner>,
-        db_index: usize,
-    },
-}
-
-impl SharedRedisDatabase {
-    fn managed(redis: Arc<SharedRedisInner>, db_index: usize, connection_string: String) -> Self {
+impl SetupOptions {
+    /// Create a new options struct with sensible defaults.
+    /// By default the blocking read timeout is 250 milliseconds and no extra
+    /// connection overrides are applied.
+    pub fn new() -> Self {
         Self {
-            inner: Arc::new(SharedRedisDatabaseInner {
-                connection_string,
-                lease: SharedLease::Managed { redis, db_index },
-            }),
+            read_block_timeout: Duration::from_millis(250),
+            connection_overrides: HashMap::new(),
+            pool_size: None,
         }
     }
 
-    fn external(connection_string: String) -> Self {
+    /// Override the blocking read timeout used by the backend.
+    pub fn read_block_timeout(mut self, timeout: Duration) -> Self {
+        self.read_block_timeout = timeout;
+        self
+    }
+
+    /// Override the Redis connection pool size.
+    pub fn pool_size(mut self, pool_size: usize) -> Self {
+        self.pool_size = Some(pool_size);
+        self
+    }
+
+    /// Append an additional key/value pair to the Redis connection configuration.
+    pub fn insert_connection_config(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        self.connection_overrides.insert(key.into(), value.into());
+        self
+    }
+}
+
+impl Default for SetupOptions {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub struct SetupRequest {
+    builder: RedisTopologyBuilder,
+    options: SetupOptions,
+    connection_override: Option<String>,
+}
+
+impl From<RedisTopologyBuilder> for SetupRequest {
+    fn from(builder: RedisTopologyBuilder) -> Self {
         Self {
-            inner: Arc::new(SharedRedisDatabaseInner {
-                connection_string,
-                lease: SharedLease::External,
-            }),
-        }
-    }
-
-    pub fn connection_string(&self) -> &str {
-        &self.inner.connection_string
-    }
-}
-
-impl Drop for SharedRedisDatabaseInner {
-    fn drop(&mut self) {
-        if let SharedLease::Managed { redis, db_index } = &self.lease {
-            redis.release_db(*db_index);
+            builder,
+            options: SetupOptions::default(),
+            connection_override: None,
         }
     }
 }
 
-/// Resource wrapper that keeps the Redis test context alive for the lifetime of a Bevy `App`.
-#[derive(Resource)]
-pub struct RedisBackendContext(pub RedisTestContext);
-
-impl RedisBackendContext {
-    pub fn connection_string(&self) -> &str {
-        self.0.connection_string()
+impl From<(RedisTopologyBuilder, SetupOptions)> for SetupRequest {
+    fn from((builder, options): (RedisTopologyBuilder, SetupOptions)) -> Self {
+        Self {
+            builder,
+            options,
+            connection_override: None,
+        }
     }
 }
 
-/// Build a baseline Bevy `App` wired to a fresh Redis backend created from the shared pool.
+impl SetupRequest {
+    pub fn with_connection(mut self, connection_string: impl Into<String>) -> Self {
+        self.connection_override = Some(connection_string.into());
+        self
+    }
+
+    fn into_parts(self) -> (RedisTopologyBuilder, SetupOptions, Option<String>) {
+        (self.builder, self.options, self.connection_override)
+    }
+}
+
+/// Build a baseline Bevy `App` wired to a Redis backend created via [`setup`].
 /// Tests can provide a customization closure to insert additional resources or systems.
 pub fn build_basic_app<F>(customize: F) -> App
 where
     F: FnOnce(&mut App),
 {
-    let shared = ensure_shared_redis().expect("shared Redis available for tests");
-    let (backend, context) = setup(&shared, |_| {}).expect("Redis backend setup");
-    let guard = RedisBackendContext(context);
-    let _ = guard.connection_string();
+    let (backend, _) = prepare_backend(|_| {}).expect("Redis backend setup");
     let mut app = App::new();
     app.add_plugins(EventBusPlugins(backend));
-    app.insert_resource(guard);
     customize(&mut app);
     app
 }
@@ -138,125 +168,115 @@ pub fn build_basic_app_simple() -> App {
     build_basic_app(|_| {})
 }
 
-static SHARED_REDIS: OnceCell<Arc<SharedRedisInner>> = OnceCell::new();
-
-fn shared_redis() -> Result<Arc<SharedRedisInner>> {
-    SHARED_REDIS
-        .get_or_try_init(|| SharedRedisInner::new().map(Arc::new))
-        .map(Arc::clone)
+/// Helper to obtain a [`RedisTopologyBuilder`] by applying a closure, allowing tests to keep
+/// concise configuration blocks while still passing a fully-constructed builder into [`setup`].
+pub fn build_topology<F>(configure: F) -> RedisTopologyBuilder
+where
+    F: FnOnce(&mut RedisTopologyBuilder),
+{
+    let mut builder = RedisTopologyBuilder::default();
+    configure(&mut builder);
+    builder
 }
 
-struct SharedRedisInner {
-    container: ContainerInfo,
-    available_dbs: Mutex<VecDeque<usize>>,
-    available_dbs_cv: Condvar,
-    shutdown_called: AtomicBool,
+/// Create a [`SetupRequest`] from a configuration closure and [`SetupOptions`].
+pub fn build_request<F>(options: SetupOptions, configure: F) -> SetupRequest
+where
+    F: FnOnce(&mut RedisTopologyBuilder),
+{
+    SetupRequest::from((build_topology(configure), options))
 }
 
-impl SharedRedisInner {
-    fn new() -> Result<Self> {
-        if std::env::var("BEB_REDIS_URL").is_ok() {
-            return Err(anyhow!(
-                "BEB_REDIS_URL is set; use external connection helpers instead of shared Redis"
-            ));
-        }
+/// Construct a Redis backend for integration tests using a prepared topology builder.
+/// Tests may provide either a builder directly or pair it with [`SetupOptions`] for
+/// additional connection-level tweaks.
+pub fn setup<S>(input: S) -> Result<(RedisEventBusBackend, RedisTestContext)>
+where
+    S: Into<SetupRequest>,
+{
+    let (builder, options, connection_override) = input.into().into_parts();
 
-        if !docker_available() {
-            return Err(anyhow!(
-                "Redis integration tests require docker or the BEB_REDIS_URL environment variable"
-            ));
-        }
+    bevy_event_bus::runtime();
 
-        for attempt in 1..=MAX_CONTAINER_SETUP_ATTEMPTS {
-            let container = ensure_container()?;
-            wait_for_redis(&container.base_endpoint)?;
-
-            match verify_database_support(&container.base_endpoint) {
-                Ok(()) => {
-                    return Ok(Self {
-                        available_dbs: Mutex::new(VecDeque::from_iter(0..SHARED_DATABASES)),
-                        available_dbs_cv: Condvar::new(),
-                        container,
-                        shutdown_called: AtomicBool::new(false),
-                    });
-                }
-                Err(err) => {
-                    if let Some(id) = &container.id {
-                        let _ = Command::new("docker").args(["stop", id]).status();
-                    }
-
-                    if attempt == MAX_CONTAINER_SETUP_ATTEMPTS {
-                        return Err(err);
-                    }
-                }
-            }
-        }
-
-        Err(anyhow!(
-            "failed to provision Redis container with required database support"
-        ))
-    }
-
-    fn base_endpoint(&self) -> &str {
-        &self.container.base_endpoint
-    }
-
-    fn acquire_db(self: &Arc<Self>) -> Result<SharedRedisDatabase> {
-        let mut guard = self.available_dbs.lock().unwrap();
-        loop {
-            if let Some(db_index) = guard.pop_front() {
-                drop(guard);
-                self.flush_db(db_index)?;
-                let connection_string = format!("{}/{}", self.base_endpoint(), db_index);
-                return Ok(SharedRedisDatabase::managed(
-                    Arc::clone(self),
-                    db_index,
-                    connection_string,
-                ));
-            }
-            guard = self.available_dbs_cv.wait(guard).unwrap();
-        }
-    }
-
-    fn release_db(&self, db_index: usize) {
-        let _ = self.flush_db(db_index);
-        let mut guard = self.available_dbs.lock().unwrap();
-        guard.push_back(db_index);
-        self.available_dbs_cv.notify_one();
-    }
-
-    fn flush_db(&self, db_index: usize) -> Result<()> {
-        let connection_string = format!("{}/{}", self.base_endpoint(), db_index);
-        let client = redis::Client::open(connection_string)?;
-        let mut connection = client.get_connection()?;
-        let _: () = redis::cmd("FLUSHDB").query(&mut connection)?;
-        Ok(())
-    }
-
-    fn shutdown(&self) {
-        if self.shutdown_called.swap(true, Ordering::SeqCst) {
-            return;
-        }
-
-        if !self.container.owned || self.container.keep_container {
-            return;
-        }
-
-        if let Some(id) = &self.container.id {
-            let _ = Command::new("docker").args(["stop", id]).status();
-        }
-    }
+    let connection_string = match connection_override {
+        Some(connection) => connection,
+        None => default_connection_string()?,
+    };
+    build_backend_from_parts(connection_string, builder, options)
 }
 
-fn docker_available() -> bool {
-    Command::new("docker")
-        .arg("version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+fn build_backend_from_parts(
+    connection_string: String,
+    builder: RedisTopologyBuilder,
+    options: SetupOptions,
+) -> Result<(RedisEventBusBackend, RedisTestContext)> {
+    let SetupOptions {
+        read_block_timeout,
+        connection_overrides,
+        pool_size,
+    } = options;
+
+    let mut connection = RedisConnectionConfig::new(connection_string.clone());
+    if let Some(pool_size) = pool_size {
+        connection = connection.set_pool_size(pool_size);
+    }
+    for (key, value) in connection_overrides {
+        connection = connection.insert_additional_config(key, value);
+    }
+
+    let topology = builder.build();
+    ensure_topology_provisioned(&connection_string, &topology)?;
+
+    let config = RedisBackendConfig::new(connection, topology, read_block_timeout);
+    let backend = RedisEventBusBackend::new(config);
+    let context = RedisTestContext::new(connection_string);
+    Ok((backend, context))
 }
 
-fn ensure_container() -> Result<ContainerInfo> {
+/// Convenience helper to construct a Redis backend directly from a topology
+/// configuration closure without needing to manually call [`build_topology`].
+pub fn prepare_backend<F>(configure: F) -> Result<(RedisEventBusBackend, RedisTestContext)>
+where
+    F: FnOnce(&mut RedisTopologyBuilder),
+{
+    setup(build_topology(configure))
+}
+
+fn default_connection_string() -> Result<String> {
+    default_connection_string_for_index(DEFAULT_DB_INDEX)
+}
+
+fn default_connection_string_for_index(index: usize) -> Result<String> {
+    if let Ok(url) = std::env::var("BEB_REDIS_URL") {
+        return Ok(url);
+    }
+
+    let endpoint = ensure_container_endpoint()?;
+    Ok(format!("{endpoint}/{index}"))
+}
+
+fn ensure_container_endpoint() -> Result<String> {
+    let mut state = CONTAINER_STATE.lock().unwrap();
+    if let Some(info) = &state.info {
+        return Ok(info.endpoint.clone());
+    }
+
+    if !docker_available() {
+        return Err(anyhow!(
+            "Redis integration tests require docker or the BEB_REDIS_URL environment variable"
+        ));
+    }
+
+    let span = info_span!("redis_container.ensure");
+    let _g = span.enter();
+
+    let info = start_or_reuse_container()?;
+    wait_for_redis(&info.endpoint)?;
+    state.info = Some(info.clone());
+    Ok(info.endpoint)
+}
+
+fn start_or_reuse_container() -> Result<ContainerInfo> {
     let keep_container = std::env::var("BEVY_EVENT_BUS_KEEP_REDIS")
         .ok()
         .map(|flag| flag == "1" || flag.eq_ignore_ascii_case("true"))
@@ -265,7 +285,7 @@ fn ensure_container() -> Result<ContainerInfo> {
     if let Some(existing) = find_existing_container()? {
         return Ok(ContainerInfo {
             id: Some(existing),
-            base_endpoint: format!("redis://127.0.0.1:{}", REDIS_PORT),
+            endpoint: format!("redis://127.0.0.1:{}", REDIS_PORT),
             owned: false,
             keep_container,
         });
@@ -276,10 +296,18 @@ fn ensure_container() -> Result<ContainerInfo> {
 
     Ok(ContainerInfo {
         id: Some(id),
-        base_endpoint: format!("redis://127.0.0.1:{}", REDIS_PORT),
+        endpoint: format!("redis://127.0.0.1:{}", REDIS_PORT),
         owned: true,
         keep_container,
     })
+}
+
+fn docker_available() -> bool {
+    Command::new("docker")
+        .arg("version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 fn find_existing_container() -> Result<Option<String>> {
@@ -327,7 +355,7 @@ fn start_container() -> Result<String> {
             "--appendonly",
             "no",
             "--databases",
-            &SHARED_DATABASES.to_string(),
+            &MAX_SHARED_DATABASES.to_string(),
         ])
         .output()
         .context("failed to launch Redis docker container")?;
@@ -353,15 +381,15 @@ fn wait_for_redis(endpoint: &str) -> Result<()> {
                 Ok(mut connection) => match redis::cmd("PING").query::<String>(&mut connection) {
                     Ok(_) => return Ok(()),
                     Err(err) => {
-                        tracing::debug!(?err, "Redis PING failed while waiting for readiness");
+                        debug!(?err, "Redis PING failed while waiting for readiness");
                     }
                 },
                 Err(err) => {
-                    tracing::debug!(?err, "Redis connection acquisition failed during wait");
+                    debug!(?err, "Redis connection acquisition failed during wait");
                 }
             },
             Err(err) => {
-                tracing::debug!(?err, "Redis client creation failed");
+                debug!(?err, "Redis client creation failed");
             }
         }
 
@@ -370,107 +398,6 @@ fn wait_for_redis(endpoint: &str) -> Result<()> {
     }
 
     Err(anyhow!("Timed out waiting for Redis at {endpoint}"))
-}
-
-fn verify_database_support(endpoint: &str) -> Result<()> {
-    let mut last_error: Option<anyhow::Error> = None;
-    let mut delay = WAIT_BASE_DELAY_MS;
-
-    for attempt in 1..=DATABASE_VALIDATION_ATTEMPTS {
-        match verify_database_support_once(endpoint) {
-            Ok(()) => return Ok(()),
-            Err(err) => {
-                last_error = Some(err);
-                if attempt == DATABASE_VALIDATION_ATTEMPTS {
-                    break;
-                }
-
-                thread::sleep(Duration::from_millis(delay));
-                delay = (delay * 2).min(WAIT_MAX_DELAY_MS);
-            }
-        }
-    }
-
-    Err(last_error.unwrap_or_else(|| {
-        anyhow!(
-            "failed to verify Redis database support after {DATABASE_VALIDATION_ATTEMPTS} attempts"
-        )
-    }))
-}
-
-fn verify_database_support_once(endpoint: &str) -> Result<()> {
-    let client = redis::Client::open(endpoint)
-        .with_context(|| format!("failed to create Redis client for {endpoint}"))?;
-    let mut connection = client
-        .get_connection()
-        .context("failed to acquire Redis connection while validating database support")?;
-
-    let values: Vec<String> = redis::cmd("CONFIG")
-        .arg("GET")
-        .arg("databases")
-        .query(&mut connection)
-        .context("failed to query Redis for configured database count")?;
-
-    let configured = values
-        .get(1)
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(16);
-
-    if configured < SHARED_DATABASES {
-        return Err(anyhow!(
-            "Redis instance exposes {configured} databases but {SHARED_DATABASES} are required"
-        ));
-    }
-
-    let last_index = (SHARED_DATABASES - 1) as isize;
-    let _: () = redis::cmd("SELECT")
-        .arg(last_index)
-        .query(&mut connection)
-        .context("failed to select highest Redis database for validation")?;
-    let _: () = redis::cmd("SELECT")
-        .arg(0)
-        .query(&mut connection)
-        .context("failed to reset Redis database after validation")?;
-
-    Ok(())
-}
-
-fn acquire_shared_database() -> Result<SharedRedisDatabase> {
-    let shared = shared_redis()?;
-    shared.acquire_db()
-}
-
-/// Ensure that a Redis instance is available and return a database handle that can be shared
-/// across multiple backends in a single test.
-pub fn ensure_shared_redis() -> Result<SharedRedisDatabase> {
-    if let Ok(url) = std::env::var("BEB_REDIS_URL") {
-        return Ok(SharedRedisDatabase::external(url));
-    }
-
-    acquire_shared_database()
-}
-
-/// Construct a Redis backend bound to the specified shared database.
-pub fn setup<F>(
-    shared_database: &SharedRedisDatabase,
-    configure_topology: F,
-) -> Result<(RedisEventBusBackend, RedisTestContext)>
-where
-    F: FnOnce(&mut RedisTopologyBuilder),
-{
-    bevy_event_bus::runtime();
-
-    let mut builder = RedisTopologyBuilder::default();
-    configure_topology(&mut builder);
-
-    let connection_string = shared_database.connection_string().to_string();
-    let connection = RedisConnectionConfig::new(connection_string.clone());
-    let topology = builder.build();
-    ensure_topology_provisioned(&connection_string, &topology)?;
-    let config = RedisBackendConfig::new(connection, topology, Duration::from_millis(250));
-    let context = RedisTestContext::new_shared(shared_database.clone());
-
-    Ok((RedisEventBusBackend::new(config), context))
 }
 
 fn ensure_topology_provisioned(
@@ -498,7 +425,7 @@ fn ensure_topology_provisioned(
 
             match cmd.query::<redis::Value>(&mut connection) {
                 Ok(_) => {}
-                Err(err) if err.code() == Some("BUSYGROUP") => {}
+                Err(err) if is_busy_group(&err) => {}
                 Err(err) => {
                     return Err(anyhow!(
                         "failed to create consumer group '{}' for stream '{}': {}",
@@ -514,9 +441,77 @@ fn ensure_topology_provisioned(
     Ok(())
 }
 
+fn is_busy_group(err: &RedisError) -> bool {
+    err.code() == Some("BUSYGROUP")
+}
+
 #[ctor::dtor]
 fn teardown_redis_container() {
-    if let Some(shared) = SHARED_REDIS.get() {
-        shared.shutdown();
+    if CONTAINER_SHUTDOWN.swap(true, Ordering::SeqCst) {
+        return;
     }
+
+    if std::env::var("BEB_REDIS_URL").is_ok() {
+        return;
+    }
+
+    if !docker_available() {
+        return;
+    }
+
+    let info = {
+        let mut state = CONTAINER_STATE.lock().unwrap();
+        state.info.clone()
+    };
+
+    if let Some(info) = info {
+        if !info.owned || info.keep_container {
+            return;
+        }
+
+        if let Some(id) = info.id {
+            let span = info_span!("redis_container.teardown", container_id = %id);
+            let _g = span.enter();
+            let _ = Command::new("docker").args(["stop", &id]).status();
+            info!("Redis test container stopped");
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SharedRedisDatabase {
+    connection_string: String,
+}
+
+impl SharedRedisDatabase {
+    pub fn connection_string(&self) -> &str {
+        &self.connection_string
+    }
+}
+
+pub fn ensure_shared_redis() -> Result<SharedRedisDatabase> {
+    let index = NEXT_SHARED_DB_INDEX.fetch_add(1, Ordering::SeqCst);
+    if index >= MAX_SHARED_DATABASES {
+        return Err(anyhow!(
+            "Exceeded maximum number of Redis databases reserved for tests ({MAX_SHARED_DATABASES})"
+        ));
+    }
+
+    let connection_string = default_connection_string_for_index(index)?;
+    Ok(SharedRedisDatabase { connection_string })
+}
+
+impl SharedRedisDatabase {
+    pub fn prepare_backend<F>(
+        &self,
+        configure_topology: F,
+    ) -> Result<(RedisEventBusBackend, RedisTestContext)>
+    where
+        F: FnOnce(&mut RedisTopologyBuilder),
+    {
+        let request = SetupRequest::from(build_topology(configure_topology))
+            .with_connection(self.connection_string.clone());
+        setup(request)
+    }
+
 }

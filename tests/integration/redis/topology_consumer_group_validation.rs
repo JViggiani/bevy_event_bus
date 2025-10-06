@@ -23,7 +23,7 @@ fn test_read_from_topology_defined_consumer_group() {
 
     let stream_clone = stream.clone();
     let topology_group_clone = topology_group.clone();
-    let (backend, _context) = redis_setup::setup(&shared_db, move |builder| {
+    let (backend, _context) = shared_db.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone.clone()))
             .add_consumer_group(
@@ -113,7 +113,7 @@ fn test_read_from_non_topology_consumer_group_should_fail() {
 
     let stream_clone = stream.clone();
     let topology_group_clone = topology_group.clone();
-    let (backend, _context) = redis_setup::setup(&shared_db, move |builder| {
+    let (backend, _context) = shared_db.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone.clone()))
             .add_consumer_group(
@@ -210,7 +210,7 @@ fn test_topology_setup_principle() {
 
     let stream_clone = stream.clone();
     let consumer_group_clone = consumer_group.clone();
-    let (backend, _context) = redis_setup::setup(&shared_db, move |builder| {
+    let (backend, _context) = shared_db.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone.clone()))
             .add_consumer_group(

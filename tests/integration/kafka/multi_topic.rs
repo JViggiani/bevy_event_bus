@@ -16,7 +16,7 @@ fn multi_topic_isolation() {
 
     let topic_a_writer = topic_a.clone();
     let topic_b_writer = topic_b.clone();
-    let (backend_w, _b1) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
+    let (backend_w, _b1) = kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic_a_writer.clone())
@@ -36,7 +36,7 @@ fn multi_topic_isolation() {
     let topic_a_reader = topic_a.clone();
     let topic_b_reader = topic_b.clone();
     let group_for_reader = consumer_group.clone();
-    let (backend_r, _b2) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
+    let (backend_r, _b2) = kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
         builder.add_topic(
             KafkaTopicSpec::new(topic_a_reader.clone())
                 .partitions(1)

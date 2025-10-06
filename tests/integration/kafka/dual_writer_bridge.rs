@@ -80,7 +80,7 @@ fn external_bus_events_flow_from_both_writers() {
 
     let topic_for_writer = topic.clone();
     let (backend_writer, _bootstrap_w) =
-        kafka_setup::setup(kafka_setup::earliest(move |builder| {
+        kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
             builder
                 .add_topic(
                     KafkaTopicSpec::new(topic_for_writer.clone())
@@ -93,7 +93,7 @@ fn external_bus_events_flow_from_both_writers() {
     let topic_for_reader = topic.clone();
     let group_for_reader = consumer_group.clone();
     let (backend_reader, _bootstrap_r) =
-        kafka_setup::setup(kafka_setup::earliest(move |builder| {
+        kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
             builder
                 .add_topic(
                     KafkaTopicSpec::new(topic_for_reader.clone())

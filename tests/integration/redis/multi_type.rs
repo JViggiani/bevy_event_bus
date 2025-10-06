@@ -23,7 +23,7 @@ fn multiple_event_types_same_stream() {
         redis_setup::ensure_shared_redis().expect("Reader Redis backend setup successful");
 
     let writer_stream = stream.clone();
-    let (backend_writer, _context1) = redis_setup::setup(&writer_db, move |builder| {
+    let (backend_writer, _context1) = writer_db.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(writer_stream.clone()))
             .add_event_single::<TestEvent>(writer_stream.clone())
@@ -33,7 +33,7 @@ fn multiple_event_types_same_stream() {
 
     let reader_stream = stream.clone();
     let reader_group = consumer_group.clone();
-    let (backend_reader, _context2) = redis_setup::setup(&reader_db, move |builder| {
+    let (backend_reader, _context2) = reader_db.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(reader_stream.clone()))
             .add_consumer_group(
@@ -162,7 +162,7 @@ fn interleaved_multi_type_frames() {
         redis_setup::ensure_shared_redis().expect("Reader Redis backend setup successful");
 
     let writer_stream = stream.clone();
-    let (writer_backend, _context1) = redis_setup::setup(&writer_db, move |builder| {
+    let (writer_backend, _context1) = writer_db.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(writer_stream.clone()))
             .add_event_single::<TestEvent>(writer_stream.clone())
@@ -172,7 +172,7 @@ fn interleaved_multi_type_frames() {
 
     let reader_stream = stream.clone();
     let reader_group = consumer_group.clone();
-    let (reader_backend, _context2) = redis_setup::setup(&reader_db, move |builder| {
+    let (reader_backend, _context2) = reader_db.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(reader_stream.clone()))
             .add_consumer_group(

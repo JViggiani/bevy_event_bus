@@ -28,7 +28,7 @@ fn test_coordinated_consumer_names() {
     let stream_clone = stream.clone();
     let consumer_group_clone = consumer_group.clone();
     let consumer_name_clone = consumer_name1.clone();
-    let (backend, _context) = redis_setup::setup(&shared_db, move |builder| {
+    let (backend, _context) = shared_db.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone.clone()))
             .add_consumer_group(

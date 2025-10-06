@@ -30,7 +30,7 @@ fn test_broadcast_with_separate_backends() {
 
     let reader1_stream = stream.clone();
     let reader1_group = consumer_group1.clone();
-    let (backend1, _context1) = redis_setup::setup(&reader1_db, move |builder| {
+    let (backend1, _context1) = reader1_db.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(reader1_stream.clone()))
             .add_consumer_group(
@@ -43,7 +43,7 @@ fn test_broadcast_with_separate_backends() {
 
     let reader2_stream = stream.clone();
     let reader2_group = consumer_group2.clone();
-    let (backend2, _context2) = redis_setup::setup(&reader2_db, move |builder| {
+    let (backend2, _context2) = reader2_db.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(reader2_stream.clone()))
             .add_consumer_group(
@@ -55,7 +55,7 @@ fn test_broadcast_with_separate_backends() {
     .expect("Redis backend2 setup successful");
 
     let writer_stream = stream.clone();
-    let (writer_backend, _writer_context) = redis_setup::setup(&writer_db, move |builder| {
+    let (writer_backend, _writer_context) = writer_db.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(writer_stream.clone()))
             .add_event_single::<TestEvent>(writer_stream.clone());

@@ -25,7 +25,7 @@ fn test_working_consumer_group_patterns() {
 
     let stream_clone = stream.clone();
     let consumer_group_clone = consumer_group.clone();
-    let (backend, _context) = redis_setup::setup(&shared_db, move |builder| {
+    let (backend, _context) = shared_db.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone.clone()))
             .add_consumer_group(
@@ -170,7 +170,7 @@ fn test_broadcast_with_different_groups_working_pattern() {
     let stream_clone = stream.clone();
     let consumer_group1_clone = consumer_group1.clone();
     let consumer_group2_clone = consumer_group2.clone();
-    let (backend, _context) = redis_setup::setup(&shared_db, move |builder| {
+    let (backend, _context) = shared_db.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone.clone()))
             .add_consumer_group(

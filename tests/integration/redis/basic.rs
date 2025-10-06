@@ -16,11 +16,9 @@ fn redis_single_direction_writer_reader_flow() {
     let stream = unique_topic("redis-basic-writer-reader");
     let consumer_group = unique_consumer_group("redis_basic_reader");
 
-    let shared_db = redis_setup::ensure_shared_redis().expect("shared Redis available");
-
     let stream_for_reader = stream.clone();
     let group_for_reader = consumer_group.clone();
-    let (backend_reader, _ctx_reader) = redis_setup::setup(&shared_db, move |builder| {
+    let (backend_reader, _ctx_reader) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_reader.clone()))
             .add_consumer_group(
@@ -32,7 +30,7 @@ fn redis_single_direction_writer_reader_flow() {
     .expect("reader backend setup");
 
     let stream_for_writer = stream.clone();
-    let (backend_writer, _ctx_writer) = redis_setup::setup(&shared_db, move |builder| {
+    let (backend_writer, _ctx_writer) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_writer.clone()))
             .add_event_single::<TestEvent>(stream_for_writer.clone());
@@ -107,11 +105,9 @@ fn redis_bidirectional_apps_exchange_events() {
     let group_a = unique_consumer_group("redis_app_a");
     let group_b = unique_consumer_group("redis_app_b");
 
-    let shared_db = redis_setup::ensure_shared_redis().expect("shared Redis available");
-
     let stream_for_app_a = stream.clone();
     let group_for_app_a = group_a.clone();
-    let (backend_a, _ctx_a) = redis_setup::setup(&shared_db, move |builder| {
+    let (backend_a, _ctx_a) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_app_a.clone()))
             .add_consumer_group(
@@ -124,7 +120,7 @@ fn redis_bidirectional_apps_exchange_events() {
 
     let stream_for_app_b = stream.clone();
     let group_for_app_b = group_b.clone();
-    let (backend_b, _ctx_b) = redis_setup::setup(&shared_db, move |builder| {
+    let (backend_b, _ctx_b) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_app_b.clone()))
             .add_consumer_group(

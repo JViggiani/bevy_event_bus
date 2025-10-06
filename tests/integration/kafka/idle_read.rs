@@ -15,7 +15,7 @@ fn idle_empty_topic_poll_does_not_block() {
 
     let topic_for_backend = topic.clone();
     let group_for_backend = consumer_group.clone();
-    let (backend, _) = kafka_setup::setup(kafka_setup::earliest(move |builder| {
+    let (backend, _) = kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic_for_backend.clone())

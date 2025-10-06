@@ -20,7 +20,7 @@ fn per_stream_order_preserved() {
         redis_setup::ensure_shared_redis().expect("Reader Redis backend setup successful");
 
     let writer_stream = stream.clone();
-    let (writer_backend, _context1) = redis_setup::setup(&writer_db, move |builder| {
+    let (writer_backend, _context1) = writer_db.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(writer_stream.clone()))
             .add_event_single::<TestEvent>(writer_stream.clone());
@@ -29,7 +29,7 @@ fn per_stream_order_preserved() {
 
     let reader_stream = stream.clone();
     let reader_group = consumer_group.clone();
-    let (reader_backend, _context2) = redis_setup::setup(&reader_db, move |builder| {
+    let (reader_backend, _context2) = reader_db.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(reader_stream.clone()))
             .add_consumer_group(
@@ -110,7 +110,7 @@ fn cross_stream_interleave_each_ordered() {
 
     let writer_stream1 = stream1.clone();
     let writer_stream2 = stream2.clone();
-    let (writer_backend, _context1) = redis_setup::setup(&writer_db, move |builder| {
+    let (writer_backend, _context1) = writer_db.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(writer_stream1.clone()))
             .add_stream(RedisStreamSpec::new(writer_stream2.clone()))
@@ -122,7 +122,7 @@ fn cross_stream_interleave_each_ordered() {
     let reader_stream1 = stream1.clone();
     let reader_stream2 = stream2.clone();
     let reader_group = consumer_group.clone();
-    let (reader_backend, _context2) = redis_setup::setup(&reader_db, move |builder| {
+    let (reader_backend, _context2) = reader_db.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(reader_stream1.clone()))
             .add_stream(RedisStreamSpec::new(reader_stream2.clone()))

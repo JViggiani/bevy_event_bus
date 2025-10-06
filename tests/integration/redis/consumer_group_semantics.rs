@@ -25,7 +25,7 @@ fn writer_only_without_consumer_groups() {
         redis_setup::ensure_shared_redis().expect("Redis writer backend setup successful");
 
     let stream_for_topology = stream.clone();
-    let (writer_backend, _context) = redis_setup::setup(&writer_db, move |builder| {
+    let (writer_backend, _context) = writer_db.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_topology.clone()))
             .add_event_single::<TestEvent>(stream_for_topology.clone());
@@ -79,7 +79,7 @@ fn same_consumer_group_name_separate_backends_independent() {
     let stream_for_reader1 = stream.clone();
     let group_for_reader1 = consumer_group.clone();
     let consumer_for_reader1 = consumer1.clone();
-    let (reader1_backend, _reader1_ctx) = redis_setup::setup(&shared_redis, move |builder| {
+    let (reader1_backend, _reader1_ctx) = shared_redis.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_reader1.clone()))
             .add_consumer_group(
@@ -97,7 +97,7 @@ fn same_consumer_group_name_separate_backends_independent() {
     let stream_for_reader2 = stream.clone();
     let group_for_reader2 = consumer_group.clone();
     let consumer_for_reader2 = consumer2.clone();
-    let (reader2_backend, _reader2_ctx) = redis_setup::setup(&shared_redis, move |builder| {
+    let (reader2_backend, _reader2_ctx) = shared_redis.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_reader2.clone()))
             .add_consumer_group(
@@ -114,7 +114,7 @@ fn same_consumer_group_name_separate_backends_independent() {
 
     // Writer backend (no consumer groups)
     let stream_for_writer_topology = stream.clone();
-    let (writer_backend, _writer_ctx) = redis_setup::setup(&shared_redis, move |builder| {
+    let (writer_backend, _writer_ctx) = shared_redis.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_writer_topology.clone()))
             .add_event_single::<TestEvent>(stream_for_writer_topology.clone());
@@ -267,7 +267,7 @@ fn different_consumer_groups_independent_operation() {
 
     // Writer backend - write-only topology (no consumer groups)
     let stream_for_writer = stream.clone();
-    let (writer_backend, _writer_ctx) = redis_setup::setup(&shared_redis, move |builder| {
+    let (writer_backend, _writer_ctx) = shared_redis.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_writer.clone()))
             .add_event_single::<TestEvent>(stream_for_writer.clone());
@@ -277,7 +277,7 @@ fn different_consumer_groups_independent_operation() {
     // Reader1 backend - with consumer group 1
     let stream_for_reader1 = stream.clone();
     let group_for_reader1 = consumer_group1.clone();
-    let (reader1_backend, _reader1_ctx) = redis_setup::setup(&shared_redis, move |builder| {
+    let (reader1_backend, _reader1_ctx) = shared_redis.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_reader1.clone()))
             .add_consumer_group(
@@ -295,7 +295,7 @@ fn different_consumer_groups_independent_operation() {
     // Reader2 backend - with consumer group 2
     let stream_for_reader2 = stream.clone();
     let group_for_reader2 = consumer_group2.clone();
-    let (reader2_backend, _reader2_ctx) = redis_setup::setup(&shared_redis, move |builder| {
+    let (reader2_backend, _reader2_ctx) = shared_redis.prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_reader2.clone()))
             .add_consumer_group(
