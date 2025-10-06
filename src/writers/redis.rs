@@ -6,10 +6,10 @@ use bevy::prelude::*;
 
 use bevy_event_bus::backends::{
     EventBusBackendResource, RedisEventBusBackend,
-    event_bus_backend::{SendOptions, StreamTrimStrategy},
+    event_bus_backend::{EventBusBackend, SendOptions, StreamTrimStrategy},
 };
 use bevy_event_bus::config::{EventBusConfig, redis::RedisProducerConfig, redis::TrimStrategy};
-use bevy_event_bus::{BusEvent, EventBusError, EventBusErrorType};
+use bevy_event_bus::{BusEvent, EventBusError, EventBusErrorType, runtime};
 
 use super::{BusEventWriter, EventBusErrorQueue};
 
@@ -91,6 +91,21 @@ impl<'w> RedisEventWriter<'w> {
             }
         }
         options
+    }
+
+    /// Flush all pending messages in the Redis writer queue.
+    pub fn flush(&mut self) -> Result<(), RedisWriterError> {
+        let backend_res = self
+            .backend
+            .as_ref()
+            .ok_or(RedisWriterError::BackendUnavailable)?;
+        let mut backend = backend_res.write();
+
+        if let Some(redis) = backend.as_any_mut().downcast_mut::<RedisEventBusBackend>() {
+            runtime::block_on(redis.flush()).map_err(RedisWriterError::backend)
+        } else {
+            runtime::block_on(backend.flush()).map_err(RedisWriterError::backend)
+        }
     }
 }
 

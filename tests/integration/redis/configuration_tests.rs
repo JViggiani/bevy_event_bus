@@ -2,12 +2,15 @@
 
 use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
-    RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
+    RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec, TrimStrategy,
 };
 use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
 use integration_tests::utils::TestEvent;
-use integration_tests::utils::helpers::{unique_consumer_group, unique_topic, update_until};
+use integration_tests::utils::helpers::{
+    run_app_updates, unique_consumer_group, unique_topic, update_until,
+};
 use integration_tests::utils::redis_setup;
+use std::time::Duration;
 
 #[test]
 fn configuration_with_readers_writers_works() {
@@ -44,7 +47,7 @@ fn configuration_with_readers_writers_works() {
     #[derive(Resource, Clone)]
     struct ConsumerGroup(String);
     reader_app.insert_resource(Stream(stream.clone()));
-    reader_app.insert_resource(ConsumerGroup(consumer_group));
+    reader_app.insert_resource(ConsumerGroup(consumer_group.clone()));
 
     fn reader_system(
         mut reader: RedisEventReader<TestEvent>,
@@ -68,7 +71,7 @@ fn configuration_with_readers_writers_works() {
     struct ToSend(TestEvent, String);
 
     let event_to_send = TestEvent {
-        message: "config test".to_string(),
+        message: "config_test".to_string(),
         value: 42,
     };
     writer_app.insert_resource(ToSend(event_to_send.clone(), stream.clone()));
@@ -84,19 +87,21 @@ fn configuration_with_readers_writers_works() {
     writer_app.update();
 
     // Poll until message received or timeout
-    let (received, _) = update_until(&mut reader_app, 5000, |app| {
+    let expected_event = event_to_send.clone();
+    let (received, _) = update_until(&mut reader_app, 10_000, |app| {
         let collected = app.world().resource::<Collected>();
-        !collected.0.is_empty()
+        collected.0.iter().any(|item| item == &expected_event)
     });
 
     assert!(received, "Expected to receive event within timeout");
 
     let collected = reader_app.world().resource::<Collected>();
-    assert!(
-        collected.0.iter().any(|e| e.message == "config test"),
-        "Expected to find sent event in collected list (collected={:?})",
-        collected.0
-    );
+    let stored = collected
+        .0
+        .iter()
+        .find(|event| event.message == "config_test")
+        .expect("Expected to find sent event in collected list");
+    assert_eq!(stored.value, 42, "Expected event payload to match");
 }
 
 /// Test that Redis-specific methods work with configurations
@@ -129,7 +134,7 @@ fn redis_specific_methods_work() {
     let redis_consumer_config = RedisConsumerConfig::new(stream.clone())
         .set_consumer_group(consumer_group.clone())
         .set_consumer_name("redis_consumer".to_string())
-        .read_block_timeout(std::time::Duration::from_millis(100));
+        .read_block_timeout(Duration::from_millis(100));
 
     #[derive(Resource)]
     struct TestConfigs {
@@ -144,7 +149,9 @@ fn redis_specific_methods_work() {
 
     // Writer system that uses Redis-specific write methods
     fn test_redis_write_methods(mut writer: RedisEventWriter, configs: Res<TestConfigs>) {
-        // Test Redis-specific write methods
+        writer
+            .trim_stream(configs.producer.stream(), 250, TrimStrategy::Exact)
+            .expect("Expected trim scheduling to succeed");
         writer.write(
             &configs.producer,
             TestEvent {
@@ -152,6 +159,7 @@ fn redis_specific_methods_work() {
                 value: 999,
             },
         );
+        writer.flush().expect("Expected Redis flush to succeed");
     }
 
     // Reader system that uses Redis-specific read methods
@@ -162,10 +170,7 @@ fn redis_specific_methods_work() {
 
     app.add_systems(Update, (test_redis_write_methods, test_redis_read_methods));
 
-    // Run a few updates to execute the test system
-    for _ in 0..5 {
-        app.update();
-    }
+    run_app_updates(&mut app, 5);
 
     // If we get here without panicking, the Redis-specific methods work
 }
