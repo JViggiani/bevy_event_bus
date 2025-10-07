@@ -128,28 +128,28 @@ fn redis_specific_methods_work() {
     let stream = unique_topic("redis_methods");
     let consumer_group = unique_consumer_group("redis_methods_group");
 
-    let stream_clone = stream.clone();
-    let consumer_group_clone = consumer_group.clone();
+    let stream_for_backend = stream.clone();
+    let consumer_group_for_backend = consumer_group.clone();
     let (backend, _context) = redis_setup::prepare_backend(move |builder| {
         builder
-            .add_stream(RedisStreamSpec::new(stream_clone.clone()).maxlen(1000))
+            .add_stream(RedisStreamSpec::new(stream_for_backend.clone()).maxlen(1000))
             .add_consumer_group(
-                consumer_group_clone.clone(),
-                RedisConsumerGroupSpec::new([stream_clone.clone()], consumer_group_clone.clone())
-                    .consumer_name("redis_consumer".to_string()),
+                consumer_group_for_backend.clone(),
+                RedisConsumerGroupSpec::new(
+                    [stream_for_backend.clone()],
+                    consumer_group_for_backend.clone(),
+                )
+                    .consumer_name("redis_consumer"),
             )
-            .add_event_single::<TestEvent>(stream_clone.clone());
+            .add_event_single::<TestEvent>(stream_for_backend.clone());
     })
     .expect("Redis backend setup successful");
 
     let mut app = App::new();
     app.add_plugins(EventBusPlugins(backend));
 
-    let redis_producer_config = RedisProducerConfig::new(stream.clone()).maxlen(500);
-
-    let redis_consumer_config = RedisConsumerConfig::new(consumer_group.clone(), [stream.clone()])
-        .set_consumer_name("redis_consumer".to_string())
-        .read_block_timeout(Duration::from_millis(100));
+    let redis_producer_config = RedisProducerConfig::new(stream.clone());
+    let redis_consumer_config = RedisConsumerConfig::new(consumer_group.clone(), [stream.clone()]);
 
     #[derive(Resource)]
     struct TestConfigs {
@@ -164,27 +164,48 @@ fn redis_specific_methods_work() {
 
     // Writer system that uses Redis-specific write methods
     fn test_redis_write_methods(mut writer: RedisEventWriter, configs: Res<TestConfigs>) {
-        writer
-            .trim_stream(configs.producer.stream(), 250, TrimStrategy::Exact)
-            .expect("Expected trim scheduling to succeed");
+        let stream = configs.producer.stream().to_string();
+
+        let trimmed_config = configs.producer.clone().maxlen(500);
         writer.write(
-            &configs.producer,
+            &trimmed_config,
             TestEvent {
-                message: "redis_test".to_string(),
+                message: "redis_trimmed".to_string(),
                 value: 999,
             },
         );
+
+        let exact_trim_config = configs
+            .producer
+            .clone()
+            .set_trim_strategy(TrimStrategy::Exact);
+        writer.write(
+            &exact_trim_config,
+            TestEvent {
+                message: "redis_exact".to_string(),
+                value: 1000,
+            },
+        );
+
+        writer
+            .trim_stream(stream.as_str(), 250, TrimStrategy::Exact)
+            .expect("Expected trim scheduling to succeed");
         writer.flush().expect("Expected Redis flush to succeed");
     }
 
     // Reader system that uses Redis-specific read methods
     fn test_redis_read_methods(mut reader: RedisEventReader<TestEvent>, configs: Res<TestConfigs>) {
-        // Test Redis-specific read methods
-        let _events = reader.read(&configs.consumer);
+        let reader_config = configs
+            .consumer
+            .clone()
+                .set_consumer_name("redis_consumer")
+            .read_block_timeout(Duration::from_millis(100));
+        let _events = reader.read(&reader_config);
     }
 
     app.add_systems(Update, (test_redis_write_methods, test_redis_read_methods));
 
+    // Run a few updates to execute the test system
     run_app_updates(&mut app, 5);
 
     // If we get here without panicking, the Redis-specific methods work
@@ -194,26 +215,31 @@ fn redis_specific_methods_work() {
 #[test]
 fn builder_pattern_works() {
     // Test that we can build consumer config
-    let stream = "test_stream".to_string();
-    let consumer_group = "test_group".to_string();
-
-    let consumer_config = RedisConsumerConfig::new(consumer_group.clone(), [stream.clone()])
-        .set_consumer_name("test_consumer".to_string())
-        .read_block_timeout(std::time::Duration::from_millis(1000));
+    let consumer_config = RedisConsumerConfig::new("test_group", ["stream1", "stream2"])
+            .set_consumer_name("test_consumer")
+        .read_block_timeout(Duration::from_millis(1000));
 
     // Test that trait methods work using explicit syntax
     use bevy_event_bus::EventBusConfig;
-    assert!(!EventBusConfig::topics(&consumer_config).is_empty());
+    let consumer_topics = EventBusConfig::topics(&consumer_config).to_vec();
+    assert_eq!(consumer_topics, vec!["stream1".to_string(), "stream2".to_string()]);
 
     // Test that specific config getters work
-    assert_eq!(consumer_config.consumer_group(), Some(&*consumer_group));
+    assert_eq!(consumer_config.consumer_group(), Some("test_group"));
     assert_eq!(consumer_config.consumer_name(), Some("test_consumer"));
+    assert_eq!(consumer_config.block_timeout(), Duration::from_millis(1000));
 
     // Test that we can build producer config
-    let producer_config = RedisProducerConfig::new(stream.clone()).maxlen(10000);
+    let producer_config = RedisProducerConfig::new("stream1")
+        .maxlen(10000)
+        .set_trim_strategy(TrimStrategy::Exact);
 
     // Test that producer getters work
+    let producer_topics = EventBusConfig::topics(&producer_config).to_vec();
+    assert_eq!(producer_topics, vec!["stream1".to_string()]);
+    assert_eq!(producer_config.stream(), "stream1");
     assert_eq!(producer_config.maxlen_value(), Some(10000));
+    assert_eq!(producer_config.trim_strategy(), TrimStrategy::Exact);
 }
 
 /// Test that clean system signatures work without explicit backend types
@@ -224,7 +250,7 @@ fn clean_system_signatures() {
 
     fn clean_producer_system(mut writer: RedisEventWriter) {
         // Configuration can be injected from resource or built inline
-        let config = RedisProducerConfig::new("test_stream".to_string());
+        let config = RedisProducerConfig::new("clean_stream");
         writer.write(
             &config,
             TestEvent {
@@ -236,7 +262,7 @@ fn clean_system_signatures() {
 
     fn clean_consumer_system(mut reader: RedisEventReader<TestEvent>) {
         // Using inline configuration
-        let config = RedisConsumerConfig::new("clean_group".to_string(), ["test_stream".to_string()]);
+        let config = RedisConsumerConfig::new("clean_group", ["clean_stream"]);
         let _events = reader.read(&config);
     }
 
