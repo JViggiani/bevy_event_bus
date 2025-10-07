@@ -154,8 +154,7 @@ fn test_message_throughput() {
                 return;
             }
 
-            let config = RedisConsumerConfig::new(stream_clone.clone())
-                .set_consumer_group(group_clone.clone())
+            let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()])
                 .set_consumer_name(consumer_clone.clone());
 
             let events = r.read(&config);
@@ -333,8 +332,7 @@ fn test_high_volume_small_messages() {
                 return;
             }
 
-            let config = RedisConsumerConfig::new(stream_clone.clone())
-                .set_consumer_group(group_clone.clone())
+            let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()])
                 .set_consumer_name(consumer_clone.clone());
 
             let events = r.read(&config);
@@ -497,8 +495,7 @@ fn test_large_message_throughput() {
                 return;
             }
 
-            let config = RedisConsumerConfig::new(stream_clone.clone())
-                .set_consumer_group(group_clone.clone())
+            let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()])
                 .set_consumer_name(consumer_clone.clone());
 
             let events = r.read(&config);

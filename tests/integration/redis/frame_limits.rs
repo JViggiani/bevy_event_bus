@@ -72,7 +72,7 @@ fn frame_limit_spreads_drain() {
         stream: Res<StreamInfo>,
         group: Res<ConsumerGroupInfo>,
     ) {
-        let config = RedisConsumerConfig::new(stream.0.clone()).set_consumer_group(group.0.clone());
+        let config = RedisConsumerConfig::new(group.0.clone(), [stream.0.clone()]);
 
         let events = r.read(&config);
         let frame_events = events.len();

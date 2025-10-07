@@ -108,7 +108,7 @@ fn external_redis_events_independent_operation() {
     reader.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<Collected>| {
-            let config = RedisConsumerConfig::new(sr.clone()).set_consumer_group(gr.clone());
+            let config = RedisConsumerConfig::new(gr.clone(), [sr.clone()]);
             let events_before = c.0.len();
             println!(
                 "Reader system called with stream: {} group: {}, current events: {}",

@@ -73,10 +73,10 @@ fn redis_reader_ack_system(
     group: Res<ConsumerGroup>,
     mut received: ResMut<Received>,
 ) {
-    let mut config = RedisConsumerConfig::new(topic.0.clone());
-    if let Some(group_id) = group.0.as_ref() {
-        config = config.set_consumer_group(group_id.clone());
-    }
+    let config = match group.0.as_ref() {
+        Some(group_id) => RedisConsumerConfig::new(group_id.clone(), [topic.0.clone()]),
+        None => RedisConsumerConfig::ungrouped([topic.0.clone()]),
+    };
 
     for wrapper in reader.read(&config) {
         reader

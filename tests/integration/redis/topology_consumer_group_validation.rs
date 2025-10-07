@@ -45,7 +45,7 @@ fn test_read_from_topology_defined_consumer_group() {
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
             // Reference the consumer group that was defined in topology
-            let config = RedisConsumerConfig::new(s.clone()).set_consumer_group(g.clone());
+            let config = RedisConsumerConfig::new(g.clone(), [s.clone()]);
 
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
@@ -135,7 +135,7 @@ fn test_read_from_non_topology_consumer_group_should_fail() {
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
             // Try to reference a consumer group that was NOT defined in topology
-            let config = RedisConsumerConfig::new(s.clone()).set_consumer_group(g.clone());
+            let config = RedisConsumerConfig::new(g.clone(), [s.clone()]);
 
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
@@ -243,7 +243,7 @@ fn test_topology_setup_principle() {
             let start_read = std::time::Instant::now();
 
             // This should be cheap - consumer group already exists and is ready
-            let config = RedisConsumerConfig::new(s.clone()).set_consumer_group(g.clone());
+            let config = RedisConsumerConfig::new(g.clone(), [s.clone()]);
 
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());

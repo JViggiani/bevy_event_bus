@@ -417,49 +417,85 @@ impl EventBusBackendConfig for RedisBackendConfig {
 /// Consumer configuration for Redis-backed readers.
 #[derive(Clone, Debug)]
 pub struct RedisConsumerConfig {
-    stream: String,
+    streams: Vec<String>,
     consumer_group: Option<String>,
     consumer_name: Option<String>,
     read_block_timeout: Duration,
 }
 
 impl RedisConsumerConfig {
-    pub fn new(stream: impl Into<String>) -> Self {
+    /// Create a new consumer configuration bound to the supplied consumer group and streams.
+    ///
+    /// This mirrors the API style of [`KafkaConsumerConfig::new`], requiring the caller to
+    /// specify both the logical group identifier and the set of streams that should be polled.
+    pub fn new<G, I, S>(consumer_group: G, streams: I) -> Self
+    where
+        G: Into<String>,
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
         Self {
-            stream: stream.into(),
+            streams: streams.into_iter().map(Into::into).collect(),
+            consumer_group: Some(consumer_group.into()),
+            consumer_name: None,
+            read_block_timeout: Duration::from_millis(100),
+        }
+    }
+
+    /// Create a consumer configuration without a consumer group, suitable for scenarios where
+    /// the reader should receive every message regardless of group membership.
+    pub fn ungrouped<I, S>(streams: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            streams: streams.into_iter().map(Into::into).collect(),
             consumer_group: None,
             consumer_name: None,
             read_block_timeout: Duration::from_millis(100),
         }
     }
 
+    /// Replace the consumer group associated with this configuration.
     pub fn set_consumer_group(mut self, group: impl Into<String>) -> Self {
         self.consumer_group = Some(group.into());
         self
     }
 
+    /// Set the consumer name (member identifier) for this configuration.
     pub fn set_consumer_name(mut self, name: impl Into<String>) -> Self {
         self.consumer_name = Some(name.into());
         self
     }
 
+    /// Override the blocking read timeout used when polling Redis Streams.
     pub fn read_block_timeout(mut self, timeout: Duration) -> Self {
         self.read_block_timeout = timeout;
         self
     }
 
-    pub fn stream(&self) -> &str {
-        &self.stream
+    /// Return the list of streams targeted by this configuration.
+    pub fn streams(&self) -> &[String] {
+        &self.streams
     }
 
+    /// Convenience accessor returning the first configured stream, if any.
+    pub fn primary_stream(&self) -> Option<&str> {
+        self.streams.first().map(String::as_str)
+    }
+
+    /// Return the configured consumer group, if any.
     pub fn consumer_group(&self) -> Option<&str> {
         self.consumer_group.as_deref()
     }
 
+    /// Return the configured consumer name, if any.
     pub fn consumer_name(&self) -> Option<&str> {
         self.consumer_name.as_deref()
     }
 
+    /// Return the blocking read timeout.
     pub fn block_timeout(&self) -> Duration {
         self.read_block_timeout
     }
@@ -469,11 +505,16 @@ impl EventBusConfig for RedisConsumerConfig {
     type Backend = Redis;
 
     fn topics(&self) -> &[String] {
-        std::slice::from_ref(&self.stream)
+        &self.streams
     }
 
     fn config_id(&self) -> String {
-        format!("redis:{}", self.stream)
+        let mut id = format!("redis:{}", self.streams.join(","));
+        if let Some(group) = &self.consumer_group {
+            id.push(':');
+            id.push_str(group);
+        }
+        id
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

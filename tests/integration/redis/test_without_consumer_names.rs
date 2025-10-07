@@ -46,7 +46,7 @@ fn test_consumer_groups_without_names() {
     reader1.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(s1.clone()).set_consumer_group(g1.clone());
+            let config = RedisConsumerConfig::new(g1.clone(), [s1.clone()]);
             // NO .set_consumer_name() call - like basic.rs
             let initial_count = c.0.len();
             for wrapper in r.read(&config) {
@@ -68,7 +68,7 @@ fn test_consumer_groups_without_names() {
     reader2.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(s2.clone()).set_consumer_group(g2.clone());
+            let config = RedisConsumerConfig::new(g2.clone(), [s2.clone()]);
             // NO .set_consumer_name() call - like basic.rs
             let initial_count = c.0.len();
             for wrapper in r.read(&config) {

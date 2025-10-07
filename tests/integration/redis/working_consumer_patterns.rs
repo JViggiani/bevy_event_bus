@@ -46,7 +46,7 @@ fn test_working_consumer_group_patterns() {
     reader1.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(s1.clone()).set_consumer_group(g1.clone());
+            let config = RedisConsumerConfig::new(g1.clone(), [s1.clone()]);
             // NO .set_consumer_name() - this is the working pattern!
             let initial_count = c.0.len();
             for wrapper in r.read(&config) {
@@ -68,7 +68,7 @@ fn test_working_consumer_group_patterns() {
     reader2.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(s2.clone()).set_consumer_group(g2.clone());
+            let config = RedisConsumerConfig::new(g2.clone(), [s2.clone()]);
             // NO .set_consumer_name() - this is the working pattern!
             let initial_count = c.0.len();
             for wrapper in r.read(&config) {
@@ -195,7 +195,7 @@ fn test_broadcast_with_different_groups_working_pattern() {
     reader1.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(s1.clone()).set_consumer_group(g1.clone());
+            let config = RedisConsumerConfig::new(g1.clone(), [s1.clone()]);
             // NO .set_consumer_name() - working pattern!
             let initial_count = c.0.len();
             for wrapper in r.read(&config) {
@@ -217,7 +217,7 @@ fn test_broadcast_with_different_groups_working_pattern() {
     reader2.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(s2.clone()).set_consumer_group(g2.clone());
+            let config = RedisConsumerConfig::new(g2.clone(), [s2.clone()]);
             // NO .set_consumer_name() - working pattern!
             let initial_count = c.0.len();
             for wrapper in r.read(&config) {

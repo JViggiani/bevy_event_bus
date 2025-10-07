@@ -117,8 +117,7 @@ fn multi_stream_isolation() {
     reader1.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<Collected>| {
-            let config =
-                RedisConsumerConfig::new(s1_clone.clone()).set_consumer_group(g1_clone.clone());
+            let config = RedisConsumerConfig::new(g1_clone.clone(), [s1_clone.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
             }
@@ -131,8 +130,7 @@ fn multi_stream_isolation() {
     reader2.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<Collected>| {
-            let config =
-                RedisConsumerConfig::new(s2_clone.clone()).set_consumer_group(g2_clone.clone());
+            let config = RedisConsumerConfig::new(g2_clone.clone(), [s2_clone.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
             }

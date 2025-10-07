@@ -65,7 +65,7 @@ fn unlimited_buffer_gathers() {
     let _ = app
         .world_mut()
         .run_system_once(move |mut reader: RedisEventReader<TestMsg>| {
-            let config = RedisConsumerConfig::new(stream_for_reader.clone());
+            let config = RedisConsumerConfig::ungrouped([stream_for_reader.clone()]);
             let collected: Vec<_> = reader
                 .read(&config)
                 .into_iter()
@@ -108,7 +108,7 @@ fn frame_limit_respected() {
     let _ = app
         .world_mut()
         .run_system_once(move |mut reader: RedisEventReader<TestMsg>| {
-            let config = RedisConsumerConfig::new(stream_for_reader.clone());
+            let config = RedisConsumerConfig::ungrouped([stream_for_reader.clone()]);
             let count = reader.read(&config).len();
             assert_eq!(
                 count, 10,
@@ -234,8 +234,7 @@ fn unlimited_buffer_separate_backends() {
     reader.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut stats: ResMut<BackgroundStats>| {
-            let config = RedisConsumerConfig::new(stream_clone.clone())
-                .set_consumer_group(group_clone.clone());
+            let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()]);
             // No explicit count limit - should read all available
 
             let events_this_frame = r.read(&config).len();
@@ -337,8 +336,7 @@ fn drain_metrics_separate_backends() {
     reader.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut stats: ResMut<BackgroundStats>| {
-            let config = RedisConsumerConfig::new(stream_clone.clone())
-                .set_consumer_group(group_clone.clone());
+            let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()]);
 
             let drained_this_frame = r.read(&config).len();
             stats.events_received += drained_this_frame;
@@ -411,8 +409,7 @@ fn drain_empty_separate_backends() {
     reader.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut stats: ResMut<BackgroundStats>| {
-            let config = RedisConsumerConfig::new(stream_clone.clone())
-                .set_consumer_group(group_clone.clone())
+            let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()])
                 .read_block_timeout(Duration::from_millis(100)); // Short timeout
 
             let drained = r.read(&config).len();
@@ -509,8 +506,7 @@ fn frame_limit_separate_backends() {
     reader.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut limiter: ResMut<FrameLimiter>| {
-            let config = RedisConsumerConfig::new(stream_clone.clone())
-                .set_consumer_group(group_clone.clone());
+            let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()]);
 
             let received_this_frame = r.read(&config).len();
             limiter.max_per_frame.push(received_this_frame);

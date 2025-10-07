@@ -51,29 +51,6 @@ fn configuration_with_readers_writers_works() {
             builder.add_event_single::<TestEvent>(topic_for_reader.clone());
         }));
 
-    // Producer app
-    let mut producer_app = {
-        let mut app = App::new();
-        app.add_plugins(EventBusPlugins(backend_writer));
-
-        // Producer system using configuration
-        let topic_clone = topic.clone();
-        let producer_system = move |mut writer: KafkaEventWriter| {
-            // Write using configuration - producers specify topics
-            let config = KafkaProducerConfig::new([topic_clone.clone()]).compression_type("none");
-            writer.write(
-                &config,
-                TestEvent {
-                    message: "config_test".to_string(),
-                    value: 42,
-                },
-            );
-        };
-
-        app.add_systems(Update, producer_system);
-        app
-    };
-
     // Consumer app
     let mut consumer_app = {
         let mut app = App::new();
@@ -94,6 +71,29 @@ fn configuration_with_readers_writers_works() {
 
         app.insert_resource(Collected::default());
         app.add_systems(Update, consumer_system);
+        app
+    };
+
+    // Producer app
+    let mut producer_app = {
+        let mut app = App::new();
+        app.add_plugins(EventBusPlugins(backend_writer));
+
+        // Producer system using configuration
+        let topic_clone = topic.clone();
+        let producer_system = move |mut writer: KafkaEventWriter| {
+            // Write using configuration - producers specify topics
+            let config = KafkaProducerConfig::new([topic_clone.clone()]).compression_type("none");
+            writer.write(
+                &config,
+                TestEvent {
+                    message: "config_test".to_string(),
+                    value: 42,
+                },
+            );
+        };
+
+        app.add_systems(Update, producer_system);
         app
     };
 

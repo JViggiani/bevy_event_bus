@@ -132,8 +132,7 @@ fn same_consumer_group_name_separate_backends_independent() {
     reader1.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(s1.clone())
-                .set_consumer_group(g1.clone())
+            let config = RedisConsumerConfig::new(g1.clone(), [s1.clone()])
                 .set_consumer_name(c1.clone()); // Use SAME name as topology
             let initial_count = c.0.len();
             for wrapper in r.read(&config) {
@@ -156,8 +155,7 @@ fn same_consumer_group_name_separate_backends_independent() {
     reader2.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(s2.clone())
-                .set_consumer_group(g2.clone())
+            let config = RedisConsumerConfig::new(g2.clone(), [s2.clone()])
                 .set_consumer_name(c2.clone()); // Use SAME name as topology
             let initial_count = c.0.len();
             for wrapper in r.read(&config) {
@@ -321,8 +319,7 @@ fn different_consumer_groups_independent_operation() {
     reader1.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(s1.clone())
-                .set_consumer_group(g1.clone())
+            let config = RedisConsumerConfig::new(g1.clone(), [s1.clone()])
                 .set_consumer_name(consumer1.clone());
             let initial_count = c.0.len();
             for wrapper in r.read(&config) {
@@ -345,8 +342,7 @@ fn different_consumer_groups_independent_operation() {
     reader2.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(s2.clone())
-                .set_consumer_group(g2.clone())
+            let config = RedisConsumerConfig::new(g2.clone(), [s2.clone()])
                 .set_consumer_name(consumer2.clone());
             let initial_count = c.0.len();
             for wrapper in r.read(&config) {

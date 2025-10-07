@@ -81,8 +81,7 @@ fn test_start_id_from_beginning() {
     reader.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(s.clone())
-                .set_consumer_group(g.clone())
+            let config = RedisConsumerConfig::new(g.clone(), [s.clone()])
                 .set_consumer_name(consumer.clone());
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
@@ -170,8 +169,7 @@ fn test_start_id_from_end() {
     reader.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(s.clone())
-                .set_consumer_group(g.clone())
+            let config = RedisConsumerConfig::new(g.clone(), [s.clone()])
                 .set_consumer_name(consumer.clone());
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());

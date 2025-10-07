@@ -57,7 +57,7 @@ fn redis_single_direction_writer_reader_flow() {
         group: Res<ConsumerGroup>,
         mut collected: ResMut<Collected>,
     ) {
-        let config = RedisConsumerConfig::new(stream.0.clone()).set_consumer_group(group.0.clone());
+        let config = RedisConsumerConfig::new(group.0.clone(), [stream.0.clone()]);
         for wrapper in reader.read(&config) {
             collected.0.push(wrapper.event().clone());
         }
@@ -153,7 +153,7 @@ fn redis_bidirectional_apps_exchange_events() {
         group: Res<GroupName>,
         mut received: ResMut<Received>,
     ) {
-        let config = RedisConsumerConfig::new(stream.0.clone()).set_consumer_group(group.0.clone());
+        let config = RedisConsumerConfig::new(group.0.clone(), [stream.0.clone()]);
         for wrapper in reader.read(&config) {
             received.0.push(wrapper.event().clone());
         }

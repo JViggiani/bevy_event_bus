@@ -58,7 +58,7 @@ fn test_basic_multi_type_redis() {
         group: Res<ConsumerGroup>,
         mut collected: ResMut<Collected>,
     ) {
-        let config = RedisConsumerConfig::new(stream.0.clone()).set_consumer_group(group.0.clone());
+        let config = RedisConsumerConfig::new(group.0.clone(), [stream.0.clone()]);
         for wrapper in reader.read(&config) {
             collected.test_events.push(wrapper.event().clone());
         }
@@ -70,7 +70,7 @@ fn test_basic_multi_type_redis() {
         group: Res<ConsumerGroup>,
         mut collected: ResMut<Collected>,
     ) {
-        let config = RedisConsumerConfig::new(stream.0.clone()).set_consumer_group(group.0.clone());
+        let config = RedisConsumerConfig::new(group.0.clone(), [stream.0.clone()]);
         for wrapper in reader.read(&config) {
             collected.login_events.push(wrapper.event().clone());
         }

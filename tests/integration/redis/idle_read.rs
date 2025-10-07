@@ -58,8 +58,7 @@ fn idle_empty_stream_poll_does_not_block() {
               mut attempts: ResMut<ReadAttempts>,
               mut events: ResMut<EventsReceived>| {
             attempts.0 += 1;
-            let config = RedisConsumerConfig::new(stream_clone.clone())
-                .set_consumer_group(group_clone.clone())
+            let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()])
                 .read_block_timeout(std::time::Duration::from_millis(100)); // Short block time for test
 
             for wrapper in reader.read(&config) {

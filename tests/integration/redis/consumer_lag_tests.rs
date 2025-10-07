@@ -72,7 +72,7 @@ fn consumer_lag_and_stream_trimming() {
     reader.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<Collected>| {
-            let config = RedisConsumerConfig::new(s.clone());
+            let config = RedisConsumerConfig::ungrouped([s.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
             }

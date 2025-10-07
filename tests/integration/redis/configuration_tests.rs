@@ -17,89 +17,109 @@ fn configuration_with_readers_writers_works() {
     let stream = unique_topic("config_test");
     let consumer_group = unique_consumer_group("config_reader_group");
 
-    let stream_clone = stream.clone();
-    let consumer_group_clone = consumer_group.clone();
-    let (backend, _context) = redis_setup::prepare_backend(move |builder| {
-        builder
-            .add_stream(RedisStreamSpec::new(stream_clone.clone()))
-            .add_consumer_group(
-                consumer_group_clone.clone(),
-                RedisConsumerGroupSpec::new([stream_clone.clone()], consumer_group_clone.clone()),
-            )
-            .add_event_single::<TestEvent>(stream_clone.clone());
-    })
-    .expect("Redis backend setup successful");
+    let shared_db = redis_setup::ensure_shared_redis().expect("Redis backend setup successful");
 
-    let backend_reader = backend.clone();
-    let backend_writer = backend;
+    let stream_for_writer = stream.clone();
+    let (backend_writer, _writer_context) = shared_db
+        .prepare_backend(move |builder| {
+            builder
+                .add_stream(RedisStreamSpec::new(stream_for_writer.clone()))
+                .add_event_single::<TestEvent>(stream_for_writer.clone());
+        })
+        .expect("Writer Redis backend setup successful");
 
-    // Reader app (start first to ensure it's ready)
-    let mut reader_app = App::new();
-    reader_app.add_plugins(EventBusPlugins(backend_reader));
+    let stream_for_reader = stream.clone();
+    let consumer_group_for_reader = consumer_group.clone();
+    let (backend_reader, _reader_context) = shared_db
+        .prepare_backend(move |builder| {
+            builder
+                .add_stream(RedisStreamSpec::new(stream_for_reader.clone()))
+                .add_consumer_group(
+                    consumer_group_for_reader.clone(),
+                    RedisConsumerGroupSpec::new(
+                        [stream_for_reader.clone()],
+                        consumer_group_for_reader.clone(),
+                    ),
+                )
+                .add_event_single::<TestEvent>(stream_for_reader.clone());
+        })
+        .expect("Reader Redis backend setup successful");
 
     #[derive(Resource, Default)]
     struct Collected(Vec<TestEvent>);
-    reader_app.insert_resource(Collected::default());
-    #[derive(Resource, Clone)]
-    struct Stream(String);
-    #[derive(Resource, Clone)]
-    struct ConsumerGroup(String);
-    reader_app.insert_resource(Stream(stream.clone()));
-    reader_app.insert_resource(ConsumerGroup(consumer_group.clone()));
 
-    fn reader_system(
-        mut reader: RedisEventReader<TestEvent>,
-        stream: Res<Stream>,
-        group: Res<ConsumerGroup>,
-        mut collected: ResMut<Collected>,
-    ) {
-        let config = RedisConsumerConfig::new(stream.0.clone()).set_consumer_group(group.0.clone());
-        let events = reader.read(&config);
-        for wrapper in events {
-            collected.0.push(wrapper.event().clone());
-        }
-    }
-    reader_app.add_systems(Update, reader_system);
+    // Consumer app styled after Kafka configuration test
+    let mut reader_app = {
+        let mut app = App::new();
+        app.add_plugins(EventBusPlugins(backend_reader));
 
-    // Writer app
-    let mut writer_app = App::new();
-    writer_app.add_plugins(EventBusPlugins(backend_writer));
+        let stream_clone = stream.clone();
+        let consumer_group_clone = consumer_group.clone();
+        let consumer_system = move |
+            mut reader: RedisEventReader<TestEvent>,
+            mut collected: ResMut<Collected>,
+        | {
+            let config = RedisConsumerConfig::new(
+                consumer_group_clone.clone(),
+                [stream_clone.clone()],
+            );
+            let events = reader.read(&config);
+            for wrapper in events {
+                collected.0.push(wrapper.event().clone());
+            }
+        };
 
-    #[derive(Resource, Clone)]
-    struct ToSend(TestEvent, String);
-
-    let event_to_send = TestEvent {
-        message: "config_test".to_string(),
-        value: 42,
+        app.insert_resource(Collected::default());
+        app.add_systems(Update, consumer_system);
+        app
     };
-    writer_app.insert_resource(ToSend(event_to_send.clone(), stream.clone()));
 
-    fn writer_system(mut writer: RedisEventWriter, data: Res<ToSend>, mut sent: Local<bool>) {
-        if !*sent {
-            *sent = true;
-            let config = RedisProducerConfig::new(data.1.clone());
-            writer.write(&config, data.0.clone());
-        }
-    }
-    writer_app.add_systems(Update, writer_system);
+    // Producer app styled after Kafka configuration test
+    let mut writer_app = {
+        let mut app = App::new();
+        app.add_plugins(EventBusPlugins(backend_writer));
+
+        let stream_clone = stream.clone();
+        let event_payload = TestEvent {
+            message: "config_test".to_string(),
+            value: 42,
+        };
+
+        let producer_system = move |mut writer: RedisEventWriter| {
+            let config = RedisProducerConfig::new(stream_clone.clone());
+            writer.write(&config, event_payload.clone());
+        };
+
+        app.add_systems(Update, producer_system);
+        app
+    };
+
+    // Run producer first
     writer_app.update();
 
-    // Poll until message received or timeout
-    let expected_event = event_to_send.clone();
-    let (received, _) = update_until(&mut reader_app, 10_000, |app| {
-        let collected = app.world().resource::<Collected>();
-        collected.0.iter().any(|item| item == &expected_event)
+    // Then run consumer and verify
+    let (success, _frames) = update_until(&mut reader_app, 10_000, |app| {
+        let collected = app.world().get_resource::<Collected>().unwrap();
+        !collected.0.is_empty()
     });
 
-    assert!(received, "Expected to receive event within timeout");
+    assert!(
+        success,
+        "Should have received at least one event within timeout"
+    );
 
-    let collected = reader_app.world().resource::<Collected>();
-    let stored = collected
-        .0
-        .iter()
-        .find(|event| event.message == "config_test")
-        .expect("Expected to find sent event in collected list");
-    assert_eq!(stored.value, 42, "Expected event payload to match");
+    let collected = reader_app
+        .world()
+        .get_resource::<Collected>()
+        .expect("Collected resource should exist");
+    assert!(
+        !collected.0.is_empty(),
+        "Should have received at least one event"
+    );
+
+    let event = &collected.0[0];
+    assert_eq!(event.message, "config_test");
+    assert_eq!(event.value, 42);
 }
 
 /// Test that Redis-specific methods work with configurations
@@ -127,8 +147,7 @@ fn redis_specific_methods_work() {
 
     let redis_producer_config = RedisProducerConfig::new(stream.clone()).maxlen(500);
 
-    let redis_consumer_config = RedisConsumerConfig::new(stream.clone())
-        .set_consumer_group(consumer_group.clone())
+    let redis_consumer_config = RedisConsumerConfig::new(consumer_group.clone(), [stream.clone()])
         .set_consumer_name("redis_consumer".to_string())
         .read_block_timeout(Duration::from_millis(100));
 
@@ -178,8 +197,7 @@ fn builder_pattern_works() {
     let stream = "test_stream".to_string();
     let consumer_group = "test_group".to_string();
 
-    let consumer_config = RedisConsumerConfig::new(stream.clone())
-        .set_consumer_group(consumer_group.clone())
+    let consumer_config = RedisConsumerConfig::new(consumer_group.clone(), [stream.clone()])
         .set_consumer_name("test_consumer".to_string())
         .read_block_timeout(std::time::Duration::from_millis(1000));
 
@@ -218,8 +236,7 @@ fn clean_system_signatures() {
 
     fn clean_consumer_system(mut reader: RedisEventReader<TestEvent>) {
         // Using inline configuration
-        let config = RedisConsumerConfig::new("test_stream".to_string())
-            .set_consumer_group("clean_group".to_string());
+        let config = RedisConsumerConfig::new("clean_group".to_string(), ["test_stream".to_string()]);
         let _events = reader.read(&config);
     }
 

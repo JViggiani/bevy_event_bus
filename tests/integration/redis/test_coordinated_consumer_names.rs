@@ -51,8 +51,7 @@ fn test_coordinated_consumer_names() {
     reader1.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(s1.clone())
-                .set_consumer_group(g1.clone())
+            let config = RedisConsumerConfig::new(g1.clone(), [s1.clone()])
                 .set_consumer_name(c1.clone()); // Use SAME name as topology
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());

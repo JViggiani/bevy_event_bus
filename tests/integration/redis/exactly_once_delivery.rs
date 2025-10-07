@@ -98,7 +98,7 @@ fn no_event_duplication_exactly_once_delivery() {
     reader1.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<Collected>| {
-            let config = RedisConsumerConfig::new(s1.clone()).set_consumer_group(g1.clone());
+            let config = RedisConsumerConfig::new(g1.clone(), [s1.clone()]);
             for wrapper in r.read(&config) {
                 // Acknowledge to ensure exactly-once semantics
                 if let Err(e) = r.acknowledge(&wrapper) {
@@ -114,7 +114,7 @@ fn no_event_duplication_exactly_once_delivery() {
     reader2.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<Collected>| {
-            let config = RedisConsumerConfig::new(s2.clone()).set_consumer_group(g2.clone());
+            let config = RedisConsumerConfig::new(g2.clone(), [s2.clone()]);
             for wrapper in r.read(&config) {
                 // Acknowledge to ensure exactly-once semantics
                 if let Err(e) = r.acknowledge(&wrapper) {
