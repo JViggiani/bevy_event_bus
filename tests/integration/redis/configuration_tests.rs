@@ -55,19 +55,15 @@ fn configuration_with_readers_writers_works() {
 
         let stream_clone = stream.clone();
         let consumer_group_clone = consumer_group.clone();
-        let consumer_system = move |
-            mut reader: RedisEventReader<TestEvent>,
-            mut collected: ResMut<Collected>,
-        | {
-            let config = RedisConsumerConfig::new(
-                consumer_group_clone.clone(),
-                [stream_clone.clone()],
-            );
-            let events = reader.read(&config);
-            for wrapper in events {
-                collected.0.push(wrapper.event().clone());
-            }
-        };
+        let consumer_system =
+            move |mut reader: RedisEventReader<TestEvent>, mut collected: ResMut<Collected>| {
+                let config =
+                    RedisConsumerConfig::new(consumer_group_clone.clone(), [stream_clone.clone()]);
+                let events = reader.read(&config);
+                for wrapper in events {
+                    collected.0.push(wrapper.event().clone());
+                }
+            };
 
         app.insert_resource(Collected::default());
         app.add_systems(Update, consumer_system);
@@ -139,7 +135,7 @@ fn redis_specific_methods_work() {
                     [stream_for_backend.clone()],
                     consumer_group_for_backend.clone(),
                 )
-                    .consumer_name("redis_consumer"),
+                .consumer_name("redis_consumer"),
             )
             .add_event_single::<TestEvent>(stream_for_backend.clone());
     })
@@ -198,7 +194,7 @@ fn redis_specific_methods_work() {
         let reader_config = configs
             .consumer
             .clone()
-                .set_consumer_name("redis_consumer")
+            .set_consumer_name("redis_consumer")
             .read_block_timeout(Duration::from_millis(100));
         let _events = reader.read(&reader_config);
     }
@@ -216,13 +212,16 @@ fn redis_specific_methods_work() {
 fn builder_pattern_works() {
     // Test that we can build consumer config
     let consumer_config = RedisConsumerConfig::new("test_group", ["stream1", "stream2"])
-            .set_consumer_name("test_consumer")
+        .set_consumer_name("test_consumer")
         .read_block_timeout(Duration::from_millis(1000));
 
     // Test that trait methods work using explicit syntax
     use bevy_event_bus::EventBusConfig;
     let consumer_topics = EventBusConfig::topics(&consumer_config).to_vec();
-    assert_eq!(consumer_topics, vec!["stream1".to_string(), "stream2".to_string()]);
+    assert_eq!(
+        consumer_topics,
+        vec!["stream1".to_string(), "stream2".to_string()]
+    );
 
     // Test that specific config getters work
     assert_eq!(consumer_config.consumer_group(), Some("test_group"));

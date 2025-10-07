@@ -9,6 +9,7 @@ use bevy_event_bus::{
 use integration_tests::utils::build_basic_app_simple;
 use integration_tests::utils::helpers::{unique_consumer_group, unique_topic};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Event, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 struct TestMsg {
@@ -34,19 +35,19 @@ fn unlimited_buffer_gathers() {
         let entry = buffers.topics.entry(topic.clone()).or_default();
         for i in 0..5u32 {
             let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
-            let metadata = EventMetadata {
-                source: topic.clone(),
-                timestamp: std::time::Instant::now(),
-                headers: std::collections::HashMap::new(),
-                key: None,
-                backend_specific: Some(Box::new(KafkaMetadata {
+            let metadata = EventMetadata::new(
+                topic.clone(),
+                std::time::Instant::now(),
+                None,
+                Some(Box::new(KafkaMetadata {
                     topic: topic.clone(),
                     partition: 0,
                     offset: i as i64,
                     consumer_group: Some(consumer_group.clone()),
                     manual_commit: false,
+                    headers: HashMap::new(),
                 })),
-            };
+            );
             entry.push(ProcessedMessage { payload, metadata });
         }
     }
@@ -83,19 +84,19 @@ fn frame_limit_respected() {
         let entry = buffers.topics.entry(topic.clone()).or_default();
         for i in 0..10u32 {
             let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
-            let metadata = EventMetadata {
-                source: topic.clone(),
-                timestamp: std::time::Instant::now(),
-                headers: std::collections::HashMap::new(),
-                key: None,
-                backend_specific: Some(Box::new(KafkaMetadata {
+            let metadata = EventMetadata::new(
+                topic.clone(),
+                std::time::Instant::now(),
+                None,
+                Some(Box::new(KafkaMetadata {
                     topic: topic.clone(),
                     partition: 0,
                     offset: i as i64,
                     consumer_group: Some(consumer_group.clone()),
                     manual_commit: false,
+                    headers: HashMap::new(),
                 })),
-            };
+            );
             entry.push(ProcessedMessage { payload, metadata });
         }
     }
@@ -124,19 +125,19 @@ fn drain_metrics_emitted_and_updated() {
         let entry = buffers.topics.entry("m".into()).or_default();
         for i in 0..3u32 {
             let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
-            let metadata = EventMetadata {
-                source: "m".to_string(),
-                timestamp: std::time::Instant::now(),
-                headers: std::collections::HashMap::new(),
-                key: None,
-                backend_specific: Some(Box::new(KafkaMetadata {
+            let metadata = EventMetadata::new(
+                "m".to_string(),
+                std::time::Instant::now(),
+                None,
+                Some(Box::new(KafkaMetadata {
                     topic: "m".to_string(),
                     partition: 0,
                     offset: i as i64,
                     consumer_group: None,
                     manual_commit: false,
+                    headers: HashMap::new(),
                 })),
-            };
+            );
             entry.push(ProcessedMessage { payload, metadata });
         }
     }

@@ -5,7 +5,6 @@ use bevy::prelude::{App, World};
 use bevy_event_bus::BusEvent;
 use crossbeam_channel::Receiver;
 use std::any::Any;
-use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{Debug, Display};
 
@@ -19,9 +18,9 @@ pub struct ManualCommitDescriptor {
 /// Manual commit styles supported by the framework.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ManualCommitStyle {
-    /// Offsets committed back to the broker (Kafka-style).
+    /// Offsets committed back to the broker via explicit offset queues.
     OffsetQueue,
-    /// Stream acknowledgement (Redis XACK-style).
+    /// Stream acknowledgement semantics for append-only streams.
     StreamAck,
 }
 
@@ -102,12 +101,32 @@ pub enum StreamTrimStrategy {
     Approximate,
 }
 
+/// Backend-specific knobs applied when dispatching serialized events.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BackendSpecificSendOptions<'a> {
+    data: Option<&'a dyn Any>,
+}
+
+impl<'a> BackendSpecificSendOptions<'a> {
+    pub fn none() -> Self {
+        Self { data: None }
+    }
+
+    pub fn new(data: &'a dyn Any) -> Self {
+        Self { data: Some(data) }
+    }
+
+    pub fn as_any(&self) -> Option<&'a dyn Any> {
+        self.data
+    }
+}
+
 /// Options that customize how serialized events are dispatched to a backend.
 #[derive(Clone, Copy, Default)]
 pub struct SendOptions<'a> {
     pub partition_key: Option<&'a str>,
-    pub headers: Option<&'a HashMap<String, String>>,
     pub stream_trim: Option<(usize, StreamTrimStrategy)>,
+    pub backend: BackendSpecificSendOptions<'a>,
 }
 
 impl<'a> SendOptions<'a> {
@@ -120,13 +139,13 @@ impl<'a> SendOptions<'a> {
         self
     }
 
-    pub fn headers(mut self, headers: &'a HashMap<String, String>) -> Self {
-        self.headers = Some(headers);
+    pub fn stream_trim(mut self, maxlen: usize, strategy: StreamTrimStrategy) -> Self {
+        self.stream_trim = Some((maxlen, strategy));
         self
     }
 
-    pub fn stream_trim(mut self, maxlen: usize, strategy: StreamTrimStrategy) -> Self {
-        self.stream_trim = Some((maxlen, strategy));
+    pub fn backend_options(mut self, backend: BackendSpecificSendOptions<'a>) -> Self {
+        self.backend = backend;
         self
     }
 }

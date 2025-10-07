@@ -1,10 +1,10 @@
-use std::any::Any;
-use std::time::Duration;
+use std::{any::Any, time::Duration};
 
 use bevy::prelude::*;
 
 use bevy_event_bus::backends::{
-    EventBusBackendResource, KafkaEventBusBackend, event_bus_backend::SendOptions,
+    EventBusBackendResource, KafkaEventBusBackend,
+    event_bus_backend::{BackendSpecificSendOptions, SendOptions},
 };
 use bevy_event_bus::config::{EventBusConfig, kafka::KafkaProducerConfig};
 use bevy_event_bus::{BusEvent, EventBusError, EventBusErrorType, runtime};
@@ -77,9 +77,11 @@ impl<'w> KafkaEventWriter<'w> {
                 options = options.partition_key(key);
             }
 
-            let headers = kafka_config.get_headers();
-            if !headers.is_empty() {
-                options = options.headers(headers);
+            let configured_headers = kafka_config.get_headers();
+            if !configured_headers.is_empty() {
+                let backend_options =
+                    BackendSpecificSendOptions::new(configured_headers as &dyn Any);
+                options = options.backend_options(backend_options);
             }
         }
 
@@ -95,19 +97,34 @@ where
     where
         C: EventBusConfig + Any,
     {
-        let base_options = Self::resolve_send_options(config);
+        let options = Self::resolve_send_options(config);
 
         if let Some(backend_res) = &self.backend {
             let backend = backend_res.read();
-            for topic in config.topics() {
-                if !backend.try_send(&event, topic, base_options) {
-                    let error_event = EventBusError::immediate(
-                        topic.clone(),
-                        EventBusErrorType::Other,
-                        "Failed to send to external backend".to_string(),
-                        event.clone(),
-                    );
-                    self.error_queue.add_error(error_event);
+            match serde_json::to_vec(&event) {
+                Ok(serialized) => {
+                    for topic in config.topics() {
+                        if !backend.try_send_serialized(&serialized, topic, options) {
+                            let error_event = EventBusError::immediate(
+                                topic.clone(),
+                                EventBusErrorType::Other,
+                                "Failed to send to external backend".to_string(),
+                                event.clone(),
+                            );
+                            self.error_queue.add_error(error_event);
+                        }
+                    }
+                }
+                Err(err) => {
+                    for topic in config.topics() {
+                        let error_event = EventBusError::immediate(
+                            topic.clone(),
+                            EventBusErrorType::Serialization,
+                            err.to_string(),
+                            event.clone(),
+                        );
+                        self.error_queue.add_error(error_event);
+                    }
                 }
             }
         } else {
@@ -128,20 +145,35 @@ where
         C: EventBusConfig + Any,
         I: IntoIterator<Item = T>,
     {
-        let base_options = Self::resolve_send_options(config);
+        let options = Self::resolve_send_options(config);
 
         if let Some(backend_res) = &self.backend {
             let backend = backend_res.read();
             for event in events.into_iter() {
-                for topic in config.topics() {
-                    if !backend.try_send(&event, topic, base_options) {
-                        let error_event = EventBusError::immediate(
-                            topic.clone(),
-                            EventBusErrorType::Other,
-                            "Failed to send to external backend".to_string(),
-                            event.clone(),
-                        );
-                        self.error_queue.add_error(error_event);
+                match serde_json::to_vec(&event) {
+                    Ok(serialized) => {
+                        for topic in config.topics() {
+                            if !backend.try_send_serialized(&serialized, topic, options) {
+                                let error_event = EventBusError::immediate(
+                                    topic.clone(),
+                                    EventBusErrorType::Other,
+                                    "Failed to send to external backend".to_string(),
+                                    event.clone(),
+                                );
+                                self.error_queue.add_error(error_event);
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        for topic in config.topics() {
+                            let error_event = EventBusError::immediate(
+                                topic.clone(),
+                                EventBusErrorType::Serialization,
+                                err.to_string(),
+                                event.clone(),
+                            );
+                            self.error_queue.add_error(error_event);
+                        }
                     }
                 }
             }

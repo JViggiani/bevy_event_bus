@@ -15,7 +15,6 @@ use integration_tests::utils::helpers::{
 };
 use integration_tests::utils::redis_setup::{self, build_basic_app_simple};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 #[derive(Event, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -50,13 +49,7 @@ fn unlimited_buffer_gathers() {
         let entry = buffers.topics.entry(stream.clone()).or_default();
         for i in 0..5u32 {
             let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
-            let metadata = EventMetadata {
-                source: stream.clone(),
-                timestamp: Instant::now(),
-                headers: HashMap::new(),
-                key: None,
-                backend_specific: None,
-            };
+            let metadata = EventMetadata::new(stream.clone(), Instant::now(), None, None);
             entry.push(ProcessedMessage { payload, metadata });
         }
     }
@@ -93,13 +86,7 @@ fn frame_limit_respected() {
         let entry = buffers.topics.entry(stream.clone()).or_default();
         for i in 0..10u32 {
             let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
-            let metadata = EventMetadata {
-                source: stream.clone(),
-                timestamp: Instant::now(),
-                headers: HashMap::new(),
-                key: None,
-                backend_specific: None,
-            };
+            let metadata = EventMetadata::new(stream.clone(), Instant::now(), None, None);
             entry.push(ProcessedMessage { payload, metadata });
         }
     }
@@ -126,13 +113,7 @@ fn drain_metrics_emitted_and_updated() {
         let entry = buffers.topics.entry("m".into()).or_default();
         for i in 0..3u32 {
             let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
-            let metadata = EventMetadata {
-                source: "m".into(),
-                timestamp: Instant::now(),
-                headers: HashMap::new(),
-                key: None,
-                backend_specific: None,
-            };
+            let metadata = EventMetadata::new("m".into(), Instant::now(), None, None);
             entry.push(ProcessedMessage { payload, metadata });
         }
     }
@@ -173,8 +154,10 @@ fn unlimited_buffer_separate_backends() {
     let stream = unique_topic("unlimited_buffer");
     let consumer_group = unique_consumer_group("unlimited_group");
 
-    let reader_db = redis_setup::ensure_shared_redis().expect("Reader Redis backend setup successful");
-    let writer_db = redis_setup::ensure_shared_redis().expect("Writer Redis backend setup successful");
+    let reader_db =
+        redis_setup::ensure_shared_redis().expect("Reader Redis backend setup successful");
+    let writer_db =
+        redis_setup::ensure_shared_redis().expect("Writer Redis backend setup successful");
 
     let stream_for_reader = stream.clone();
     let group_for_reader = consumer_group.clone();
@@ -184,7 +167,10 @@ fn unlimited_buffer_separate_backends() {
                 .add_stream(RedisStreamSpec::new(stream_for_reader.clone()))
                 .add_consumer_group(
                     group_for_reader.clone(),
-                    RedisConsumerGroupSpec::new([stream_for_reader.clone()], group_for_reader.clone()),
+                    RedisConsumerGroupSpec::new(
+                        [stream_for_reader.clone()],
+                        group_for_reader.clone(),
+                    ),
                 )
                 .add_event_single::<TestEvent>(stream_for_reader.clone());
         })
@@ -275,24 +261,29 @@ fn drain_metrics_separate_backends() {
 
     let stream_for_reader = stream.clone();
     let group_for_reader = consumer_group.clone();
-    let (reader_backend, _context_reader) = reader_db.prepare_backend(move |builder| {
-        builder
-            .add_stream(RedisStreamSpec::new(stream_for_reader.clone()))
-            .add_consumer_group(
-                group_for_reader.clone(),
-                RedisConsumerGroupSpec::new([stream_for_reader.clone()], group_for_reader.clone()),
-            )
-            .add_event_single::<TestEvent>(stream_for_reader.clone());
-    })
-    .expect("Reader Redis backend setup successful");
+    let (reader_backend, _context_reader) = reader_db
+        .prepare_backend(move |builder| {
+            builder
+                .add_stream(RedisStreamSpec::new(stream_for_reader.clone()))
+                .add_consumer_group(
+                    group_for_reader.clone(),
+                    RedisConsumerGroupSpec::new(
+                        [stream_for_reader.clone()],
+                        group_for_reader.clone(),
+                    ),
+                )
+                .add_event_single::<TestEvent>(stream_for_reader.clone());
+        })
+        .expect("Reader Redis backend setup successful");
 
     let stream_for_writer = stream.clone();
-    let (writer_backend, _context_writer) = writer_db.prepare_backend(move |builder| {
-        builder
-            .add_stream(RedisStreamSpec::new(stream_for_writer.clone()))
-            .add_event_single::<TestEvent>(stream_for_writer.clone());
-    })
-    .expect("Writer Redis backend setup successful");
+    let (writer_backend, _context_writer) = writer_db
+        .prepare_backend(move |builder| {
+            builder
+                .add_stream(RedisStreamSpec::new(stream_for_writer.clone()))
+                .add_event_single::<TestEvent>(stream_for_writer.clone());
+        })
+        .expect("Writer Redis backend setup successful");
 
     let mut writer = App::new();
     writer.add_plugins(EventBusPlugins(writer_backend));
@@ -379,19 +370,20 @@ fn drain_empty_separate_backends() {
     let shared_db = redis_setup::ensure_shared_redis().expect("Shared Redis setup should succeed");
     let stream_for_backend = stream.clone();
     let group_for_backend = consumer_group.clone();
-    let (backend, _context) = shared_db.prepare_backend(move |builder| {
-        builder
-            .add_stream(RedisStreamSpec::new(stream_for_backend.clone()))
-            .add_consumer_group(
-                group_for_backend.clone(),
-                RedisConsumerGroupSpec::new(
-                    [stream_for_backend.clone()],
+    let (backend, _context) = shared_db
+        .prepare_backend(move |builder| {
+            builder
+                .add_stream(RedisStreamSpec::new(stream_for_backend.clone()))
+                .add_consumer_group(
                     group_for_backend.clone(),
-                ),
-            )
-            .add_event_single::<TestEvent>(stream_for_backend.clone());
-    })
-    .expect("Redis backend setup successful");
+                    RedisConsumerGroupSpec::new(
+                        [stream_for_backend.clone()],
+                        group_for_backend.clone(),
+                    ),
+                )
+                .add_event_single::<TestEvent>(stream_for_backend.clone());
+        })
+        .expect("Redis backend setup successful");
 
     let mut reader = App::new();
     reader.add_plugins(EventBusPlugins(backend));
@@ -443,24 +435,29 @@ fn frame_limit_separate_backends() {
 
     let stream_for_reader = stream.clone();
     let group_for_reader = consumer_group.clone();
-    let (reader_backend, _context_reader) = reader_db.prepare_backend(move |builder| {
-        builder
-            .add_stream(RedisStreamSpec::new(stream_for_reader.clone()))
-            .add_consumer_group(
-                group_for_reader.clone(),
-                RedisConsumerGroupSpec::new([stream_for_reader.clone()], group_for_reader.clone()),
-            )
-            .add_event_single::<TestEvent>(stream_for_reader.clone());
-    })
-    .expect("Reader Redis backend setup successful");
+    let (reader_backend, _context_reader) = reader_db
+        .prepare_backend(move |builder| {
+            builder
+                .add_stream(RedisStreamSpec::new(stream_for_reader.clone()))
+                .add_consumer_group(
+                    group_for_reader.clone(),
+                    RedisConsumerGroupSpec::new(
+                        [stream_for_reader.clone()],
+                        group_for_reader.clone(),
+                    ),
+                )
+                .add_event_single::<TestEvent>(stream_for_reader.clone());
+        })
+        .expect("Reader Redis backend setup successful");
 
     let stream_for_writer = stream.clone();
-    let (writer_backend, _context_writer) = writer_db.prepare_backend(move |builder| {
-        builder
-            .add_stream(RedisStreamSpec::new(stream_for_writer.clone()))
-            .add_event_single::<TestEvent>(stream_for_writer.clone());
-    })
-    .expect("Writer Redis backend setup successful");
+    let (writer_backend, _context_writer) = writer_db
+        .prepare_backend(move |builder| {
+            builder
+                .add_stream(RedisStreamSpec::new(stream_for_writer.clone()))
+                .add_event_single::<TestEvent>(stream_for_writer.clone());
+        })
+        .expect("Writer Redis backend setup successful");
 
     let mut writer = App::new();
     writer.add_plugins(EventBusPlugins(writer_backend));

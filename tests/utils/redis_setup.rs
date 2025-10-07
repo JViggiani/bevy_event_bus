@@ -513,5 +513,4 @@ impl SharedRedisDatabase {
             .with_connection(self.connection_string.clone());
         setup(request)
     }
-
 }

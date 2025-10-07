@@ -23,16 +23,20 @@ fn test_read_from_topology_defined_consumer_group() {
 
     let stream_clone = stream.clone();
     let topology_group_clone = topology_group.clone();
-    let (backend, _context) = shared_db.prepare_backend(move |builder| {
-        builder
-            .add_stream(RedisStreamSpec::new(stream_clone.clone()))
-            .add_consumer_group(
-                topology_group_clone.clone(),
-                RedisConsumerGroupSpec::new([stream_clone.clone()], topology_group_clone.clone()),
-            )
-            .add_event_single::<TestEvent>(stream_clone.clone());
-    })
-    .expect("Redis backend setup successful");
+    let (backend, _context) = shared_db
+        .prepare_backend(move |builder| {
+            builder
+                .add_stream(RedisStreamSpec::new(stream_clone.clone()))
+                .add_consumer_group(
+                    topology_group_clone.clone(),
+                    RedisConsumerGroupSpec::new(
+                        [stream_clone.clone()],
+                        topology_group_clone.clone(),
+                    ),
+                )
+                .add_event_single::<TestEvent>(stream_clone.clone());
+        })
+        .expect("Redis backend setup successful");
 
     // Setup reader that uses the topology-defined consumer group
     let mut reader = App::new();
@@ -113,16 +117,20 @@ fn test_read_from_non_topology_consumer_group_should_fail() {
 
     let stream_clone = stream.clone();
     let topology_group_clone = topology_group.clone();
-    let (backend, _context) = shared_db.prepare_backend(move |builder| {
-        builder
-            .add_stream(RedisStreamSpec::new(stream_clone.clone()))
-            .add_consumer_group(
-                topology_group_clone.clone(),
-                RedisConsumerGroupSpec::new([stream_clone.clone()], topology_group_clone.clone()),
-            )
-            .add_event_single::<TestEvent>(stream_clone.clone());
-    })
-    .expect("Redis backend setup successful");
+    let (backend, _context) = shared_db
+        .prepare_backend(move |builder| {
+            builder
+                .add_stream(RedisStreamSpec::new(stream_clone.clone()))
+                .add_consumer_group(
+                    topology_group_clone.clone(),
+                    RedisConsumerGroupSpec::new(
+                        [stream_clone.clone()],
+                        topology_group_clone.clone(),
+                    ),
+                )
+                .add_event_single::<TestEvent>(stream_clone.clone());
+        })
+        .expect("Redis backend setup successful");
 
     // Setup reader that tries to use a DIFFERENT consumer group (not in topology)
     let mut reader = App::new();
@@ -210,16 +218,20 @@ fn test_topology_setup_principle() {
 
     let stream_clone = stream.clone();
     let consumer_group_clone = consumer_group.clone();
-    let (backend, _context) = shared_db.prepare_backend(move |builder| {
-        builder
-            .add_stream(RedisStreamSpec::new(stream_clone.clone()))
-            .add_consumer_group(
-                consumer_group_clone.clone(),
-                RedisConsumerGroupSpec::new([stream_clone.clone()], consumer_group_clone.clone()),
-            )
-            .add_event_single::<TestEvent>(stream_clone.clone());
-    })
-    .expect("Redis backend setup successful");
+    let (backend, _context) = shared_db
+        .prepare_backend(move |builder| {
+            builder
+                .add_stream(RedisStreamSpec::new(stream_clone.clone()))
+                .add_consumer_group(
+                    consumer_group_clone.clone(),
+                    RedisConsumerGroupSpec::new(
+                        [stream_clone.clone()],
+                        consumer_group_clone.clone(),
+                    ),
+                )
+                .add_event_single::<TestEvent>(stream_clone.clone());
+        })
+        .expect("Redis backend setup successful");
 
     let setup_time = start_setup.elapsed();
     println!("Backend setup took: {:?} (expensive, one-time)", setup_time);

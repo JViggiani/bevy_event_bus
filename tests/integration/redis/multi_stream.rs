@@ -18,8 +18,10 @@ fn multi_stream_isolation() {
 
     let reader1_db = redis_setup::ensure_shared_redis().expect("Redis backend1 setup successful");
     let reader2_db = redis_setup::ensure_shared_redis().expect("Redis backend2 setup successful");
-    let writer1_db = redis_setup::ensure_shared_redis().expect("Writer1 Redis backend setup successful");
-    let writer2_db = redis_setup::ensure_shared_redis().expect("Writer2 Redis backend setup successful");
+    let writer1_db =
+        redis_setup::ensure_shared_redis().expect("Writer1 Redis backend setup successful");
+    let writer2_db =
+        redis_setup::ensure_shared_redis().expect("Writer2 Redis backend setup successful");
 
     let reader1_stream = stream1.clone();
     let reader1_group = consumer_group1.clone();

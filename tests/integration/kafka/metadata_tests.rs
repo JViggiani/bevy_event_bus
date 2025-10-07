@@ -254,25 +254,21 @@ fn header_forwarding_producer_to_consumer() {
 
     // Verify headers were forwarded
     let metadata = received_event.metadata();
+    let kafka_meta = metadata
+        .kafka_metadata()
+        .expect("Expected Kafka metadata with headers");
     assert_eq!(
-        metadata.headers.get("trace-id"),
+        kafka_meta.headers.get("trace-id"),
         Some(&"abc-123".to_string())
     );
     assert_eq!(
-        metadata.headers.get("user-id"),
+        kafka_meta.headers.get("user-id"),
         Some(&"user-456".to_string())
     );
     assert_eq!(
-        metadata.headers.get("correlation-id"),
+        kafka_meta.headers.get("correlation-id"),
         Some(&"corr-789".to_string())
     );
-
-    // Also verify Kafka-specific metadata exists
-    if let Some(_kafka_meta) = metadata.kafka_metadata() {
-        // Kafka metadata exists, which is good
-    } else {
-        panic!("Expected Kafka metadata with headers");
-    }
 
     info!("Header forwarding test completed successfully");
 }

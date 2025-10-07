@@ -294,7 +294,6 @@ fn convert_stream_entries(
         for StreamId { id, map } in ids {
             if let Some(payload_value) = map.get("payload") {
                 if let Some(payload) = redis_value_to_bytes(payload_value) {
-                    let mut headers = HashMap::new();
                     let mut key_field = None;
 
                     for (field, value) in &map {
@@ -302,10 +301,6 @@ fn convert_stream_entries(
                             continue;
                         } else if field == "event_key" {
                             key_field = redis_value_to_string(value);
-                        } else if let Some(stripped) = field.strip_prefix("header:") {
-                            if let Some(val) = redis_value_to_string(value) {
-                                headers.insert(stripped.to_string(), val);
-                            }
                         }
                     }
 
@@ -316,14 +311,12 @@ fn convert_stream_entries(
                         manual_ack,
                     };
 
-                    messages.push(IncomingMessage {
-                        source: key.clone(),
+                    messages.push(IncomingMessage::plain(
+                        key.clone(),
                         payload,
-                        headers,
-                        key: key_field,
-                        timestamp: Instant::now(),
-                        backend_metadata: Some(Box::new(metadata)),
-                    });
+                        key_field,
+                        Some(Box::new(metadata)),
+                    ));
                 }
             }
         }
@@ -1057,10 +1050,6 @@ impl EventBusBackend for RedisEventBusBackend {
 
         let payload = event_json.to_vec();
         let stream_name = stream.to_string();
-        let headers: Vec<(String, String)> = options
-            .headers
-            .map(|h| h.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-            .unwrap_or_default();
         let key = options.partition_key.map(|k| k.to_string());
         let override_cfg = options
             .stream_trim
@@ -1090,9 +1079,6 @@ impl EventBusBackend for RedisEventBusBackend {
             cmd.arg("payload").arg(&payload);
             if let Some(k) = key.as_deref() {
                 cmd.arg("event_key").arg(k);
-            }
-            for (header_key, header_value) in headers {
-                cmd.arg(format!("header:{header_key}")).arg(header_value);
             }
 
             if let Err(err) = cmd.query_async::<_, RedisValue>(&mut *guard).await {

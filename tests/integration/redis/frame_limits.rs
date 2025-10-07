@@ -26,25 +26,27 @@ fn frame_limit_spreads_drain() {
         redis_setup::ensure_shared_redis().expect("Reader Redis backend setup successful");
 
     let writer_stream = stream.clone();
-    let (backend_writer, _context1) = writer_db.prepare_backend(move |builder| {
-        builder
-            .add_stream(RedisStreamSpec::new(writer_stream.clone()))
-            .add_event_single::<TestEvent>(writer_stream.clone());
-    })
-    .expect("Writer Redis backend setup successful");
+    let (backend_writer, _context1) = writer_db
+        .prepare_backend(move |builder| {
+            builder
+                .add_stream(RedisStreamSpec::new(writer_stream.clone()))
+                .add_event_single::<TestEvent>(writer_stream.clone());
+        })
+        .expect("Writer Redis backend setup successful");
 
     let reader_stream = stream.clone();
     let reader_group = consumer_group.clone();
-    let (backend_reader, _context2) = reader_db.prepare_backend(move |builder| {
-        builder
-            .add_stream(RedisStreamSpec::new(reader_stream.clone()))
-            .add_consumer_group(
-                reader_group.clone(),
-                RedisConsumerGroupSpec::new([reader_stream.clone()], reader_group.clone()),
-            )
-            .add_event_single::<TestEvent>(reader_stream.clone());
-    })
-    .expect("Reader Redis backend setup successful");
+    let (backend_reader, _context2) = reader_db
+        .prepare_backend(move |builder| {
+            builder
+                .add_stream(RedisStreamSpec::new(reader_stream.clone()))
+                .add_consumer_group(
+                    reader_group.clone(),
+                    RedisConsumerGroupSpec::new([reader_stream.clone()], reader_group.clone()),
+                )
+                .add_event_single::<TestEvent>(reader_stream.clone());
+        })
+        .expect("Reader Redis backend setup successful");
 
     // Reader app with frame limit (start first to ensure it's ready)
     let mut reader = App::new();

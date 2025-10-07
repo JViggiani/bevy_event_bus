@@ -200,7 +200,6 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                             let IncomingMessage {
                                 source,
                                 payload,
-                                headers,
                                 key,
                                 timestamp,
                                 backend_metadata,
@@ -210,13 +209,8 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                             let topic_str = topic.as_str();
                             tracing::debug!(topic=%topic_str, "Processing message with multi-decoder pipeline");
 
-                            let metadata = EventMetadata::new(
-                                topic.clone(),
-                                timestamp,
-                                headers,
-                                key,
-                                backend_metadata,
-                            );
+                            let metadata =
+                                EventMetadata::new(topic.clone(), timestamp, key, backend_metadata);
 
                             // Attempt multi-decode using registered decoders
                             let decoded_events = decoder_registry.decode_all(topic_str, &payload);

@@ -13,7 +13,6 @@ use crate::resources::backend_metadata::{KafkaMetadata, RedisMetadata};
 pub struct IncomingMessage {
     pub source: String,
     pub payload: Vec<u8>,
-    pub headers: HashMap<String, String>,
     pub key: Option<String>,
     pub timestamp: Instant,
     pub backend_metadata: Option<Box<dyn BackendMetadata>>,
@@ -28,6 +27,24 @@ impl EventMetadata {
     /// Get a human-readable representation of the key
     pub fn key_display(&self) -> Option<String> {
         self.key.clone()
+    }
+}
+
+impl IncomingMessage {
+    /// Construct an `IncomingMessage` using the current instant.
+    pub fn plain(
+        source: impl Into<String>,
+        payload: Vec<u8>,
+        key: Option<String>,
+        backend_metadata: Option<Box<dyn BackendMetadata>>,
+    ) -> Self {
+        Self {
+            source: source.into(),
+            payload,
+            key,
+            timestamp: Instant::now(),
+            backend_metadata,
+        }
     }
 }
 
@@ -241,13 +258,7 @@ mod tests {
 
     #[test]
     fn test_key_parsing() {
-        let mut metadata = EventMetadata::new(
-            "test_topic".to_string(),
-            Instant::now(),
-            HashMap::new(),
-            None,
-            None,
-        );
+        let mut metadata = EventMetadata::new("test_topic".to_string(), Instant::now(), None, None);
 
         assert_eq!(metadata.key_as_string(), None);
         assert_eq!(metadata.key_display(), None);
@@ -266,6 +277,7 @@ mod tests {
             offset: 42,
             consumer_group: Some("group_a".to_string()),
             manual_commit: false,
+            headers: HashMap::new(),
         };
         metadata.backend_specific = Some(Box::new(kafka_metadata));
 
@@ -284,7 +296,6 @@ mod tests {
         let metadata_with_headers = EventMetadata::new(
             "events_topic".to_string(),
             Instant::now(),
-            headers.clone(),
             Some("event_key_789".to_string()),
             Some(Box::new(KafkaMetadata {
                 topic: "events_topic".to_string(),
@@ -292,6 +303,7 @@ mod tests {
                 offset: 456,
                 consumer_group: Some("group_b".to_string()),
                 manual_commit: true,
+                headers: headers.clone(),
             })),
         );
 
@@ -300,12 +312,15 @@ mod tests {
             metadata_with_headers.key_as_string(),
             Some("event_key_789".to_string())
         );
+        let kafka_headers = metadata_with_headers
+            .kafka_metadata()
+            .expect("expected kafka metadata");
         assert_eq!(
-            metadata_with_headers.headers.get("correlation_id"),
+            kafka_headers.headers.get("correlation_id"),
             Some(&"abc-123".to_string())
         );
         assert_eq!(
-            metadata_with_headers.headers.get("source_service"),
+            kafka_headers.headers.get("source_service"),
             Some(&"world_simulator".to_string())
         );
     }
@@ -318,12 +333,12 @@ mod tests {
             offset: 100,
             consumer_group: Some("group_c".to_string()),
             manual_commit: true,
+            headers: HashMap::new(),
         };
 
         let metadata = EventMetadata::new(
             "kafka_topic".to_string(),
             Instant::now(),
-            HashMap::new(),
             Some("partition_key".to_string()),
             Some(Box::new(kafka_meta)),
         );
@@ -345,7 +360,6 @@ mod tests {
         let metadata = EventMetadata::new(
             "redis_stream".to_string(),
             Instant::now(),
-            HashMap::new(),
             None,
             Some(Box::new(redis_meta)),
         );

@@ -15,9 +15,12 @@ fn no_event_duplication_exactly_once_delivery() {
     let stream = unique_topic("exactly_once");
     let consumer_group = unique_consumer_group("exactly_once_group");
 
-    let writer_db = redis_setup::ensure_shared_redis().expect("Writer Redis backend setup successful");
-    let reader1_db = redis_setup::ensure_shared_redis().expect("Reader1 Redis backend setup successful");
-    let reader2_db = redis_setup::ensure_shared_redis().expect("Reader2 Redis backend setup successful");
+    let writer_db =
+        redis_setup::ensure_shared_redis().expect("Writer Redis backend setup successful");
+    let reader1_db =
+        redis_setup::ensure_shared_redis().expect("Reader1 Redis backend setup successful");
+    let reader2_db =
+        redis_setup::ensure_shared_redis().expect("Reader2 Redis backend setup successful");
 
     let writer_stream = stream.clone();
     let (writer_backend, _context1) = writer_db

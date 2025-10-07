@@ -715,16 +715,18 @@ impl EventBusBackend for KafkaEventBusBackend {
             record = record.key(key.as_bytes());
         }
 
-        if let Some(headers) = options.headers {
-            if !headers.is_empty() {
-                let mut kafka_headers = OwnedHeaders::new();
-                for (key, value) in headers {
-                    kafka_headers = kafka_headers.insert(Header {
-                        key,
-                        value: Some(value.as_bytes()),
-                    });
+        if let Some(backend_data) = options.backend.as_any() {
+            if let Some(headers) = backend_data.downcast_ref::<HashMap<String, String>>() {
+                if !headers.is_empty() {
+                    let mut kafka_headers = OwnedHeaders::new();
+                    for (key, value) in headers {
+                        kafka_headers = kafka_headers.insert(Header {
+                            key,
+                            value: Some(value.as_bytes()),
+                        });
+                    }
+                    record = record.headers(kafka_headers);
                 }
-                record = record.headers(kafka_headers);
             }
         }
 
@@ -964,20 +966,21 @@ async fn consumer_loop(
                     }
                 }
 
-                let msg = IncomingMessage {
-                    source: message.topic().to_string(),
-                    payload,
-                    timestamp: Instant::now(),
+                let kafka_metadata = KafkaMetadata {
+                    topic: message.topic().to_string(),
+                    partition: message.partition(),
+                    offset: message.offset(),
+                    consumer_group: Some(runtime.group_id.clone()),
+                    manual_commit: runtime.manual_commit,
                     headers: headers_map,
-                    key,
-                    backend_metadata: Some(Box::new(KafkaMetadata {
-                        topic: message.topic().to_string(),
-                        partition: message.partition(),
-                        offset: message.offset(),
-                        consumer_group: Some(runtime.group_id.clone()),
-                        manual_commit: runtime.manual_commit,
-                    })),
                 };
+
+                let msg = IncomingMessage::plain(
+                    message.topic().to_string(),
+                    payload,
+                    key,
+                    Some(Box::new(kafka_metadata)),
+                );
 
                 let mut pending = msg;
 

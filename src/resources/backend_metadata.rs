@@ -7,7 +7,6 @@ use std::time::Instant;
 pub struct EventMetadata {
     pub source: String, // topic/queue/stream name
     pub timestamp: Instant,
-    pub headers: HashMap<String, String>,
     pub key: Option<String>, // Generic message key
     pub backend_specific: Option<Box<dyn BackendMetadata>>,
 }
@@ -33,6 +32,7 @@ pub struct KafkaMetadata {
     pub offset: i64,
     pub consumer_group: Option<String>,
     pub manual_commit: bool,
+    pub headers: HashMap<String, String>,
 }
 
 impl BackendMetadata for KafkaMetadata {
@@ -69,14 +69,12 @@ impl EventMetadata {
     pub fn new(
         source: String,
         timestamp: Instant,
-        headers: HashMap<String, String>,
         key: Option<String>,
         backend_specific: Option<Box<dyn BackendMetadata>>,
     ) -> Self {
         Self {
             source,
             timestamp,
-            headers,
             key,
             backend_specific,
         }

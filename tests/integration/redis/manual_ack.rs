@@ -96,17 +96,18 @@ fn manual_ack_clears_messages_and_tracks_success() {
 
     let stream_clone = stream.clone();
     let group_clone = group.clone();
-    let (backend, context) = shared_db.prepare_backend(move |builder| {
-        builder
-            .add_stream(RedisStreamSpec::new(stream_clone.clone()))
-            .add_consumer_group(
-                group_clone.clone(),
-                RedisConsumerGroupSpec::new([stream_clone.clone()], group_clone.clone())
-                    .manual_ack(true),
-            )
-            .add_event_single::<TestEvent>(stream_clone.clone());
-    })
-    .expect("Redis backend setup successful");
+    let (backend, context) = shared_db
+        .prepare_backend(move |builder| {
+            builder
+                .add_stream(RedisStreamSpec::new(stream_clone.clone()))
+                .add_consumer_group(
+                    group_clone.clone(),
+                    RedisConsumerGroupSpec::new([stream_clone.clone()], group_clone.clone())
+                        .manual_ack(true),
+                )
+                .add_event_single::<TestEvent>(stream_clone.clone());
+        })
+        .expect("Redis backend setup successful");
 
     let writer_backend = backend.clone();
     let reader_backend = backend;
@@ -192,17 +193,18 @@ fn manual_ack_batches_multiple_messages() {
 
     let stream_clone = stream.clone();
     let group_clone = group.clone();
-    let (backend, context) = shared_db.prepare_backend(move |builder| {
-        builder
-            .add_stream(RedisStreamSpec::new(stream_clone.clone()))
-            .add_consumer_group(
-                group_clone.clone(),
-                RedisConsumerGroupSpec::new([stream_clone.clone()], group_clone.clone())
-                    .manual_ack(true),
-            )
-            .add_event_single::<TestEvent>(stream_clone.clone());
-    })
-    .expect("Redis backend setup successful");
+    let (backend, context) = shared_db
+        .prepare_backend(move |builder| {
+            builder
+                .add_stream(RedisStreamSpec::new(stream_clone.clone()))
+                .add_consumer_group(
+                    group_clone.clone(),
+                    RedisConsumerGroupSpec::new([stream_clone.clone()], group_clone.clone())
+                        .manual_ack(true),
+                )
+                .add_event_single::<TestEvent>(stream_clone.clone());
+        })
+        .expect("Redis backend setup successful");
 
     let reader_backend = backend.clone();
     let writer_backend = backend;

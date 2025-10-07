@@ -222,16 +222,20 @@ fn kafka_metadata_end_to_end_validation() {
                 "Event {} metadata validation passed - Topic: {}, Partition: {}, Offset: {}",
                 i, kafka_meta.topic, kafka_meta.partition, kafka_meta.offset
             );
+
+            let headers = &kafka_meta.headers;
+
+            // Note: Headers validation would require KafkaEventWriter enhancements
+            // For now, we validate that the headers field exists and is accessible
+            assert!(
+                headers.is_empty() || !headers.is_empty(),
+                "Headers field should be accessible"
+            );
         } else {
             panic!("Expected Kafka metadata for event {}, but got None", i);
         }
 
-        // Note: Headers validation would require KafkaEventWriter enhancements
-        // For now, we validate that the headers field exists and is accessible
-        assert!(
-            metadata.headers.is_empty() || !metadata.headers.is_empty(),
-            "Headers field should be accessible"
-        );
+
     }
 
     info!("All Kafka metadata validation tests passed!");

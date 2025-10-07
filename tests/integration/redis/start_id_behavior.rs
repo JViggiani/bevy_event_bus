@@ -26,26 +26,28 @@ fn test_start_id_from_beginning() {
         redis_setup::ensure_shared_redis().expect("Reader Redis backend setup successful");
 
     let writer_stream = stream.clone();
-    let (writer_backend, _context1) = writer_db.prepare_backend(move |builder| {
-        builder
-            .add_stream(RedisStreamSpec::new(writer_stream.clone()))
-            .add_event_single::<TestEvent>(writer_stream.clone());
-    })
-    .expect("Writer Redis backend setup successful");
+    let (writer_backend, _context1) = writer_db
+        .prepare_backend(move |builder| {
+            builder
+                .add_stream(RedisStreamSpec::new(writer_stream.clone()))
+                .add_event_single::<TestEvent>(writer_stream.clone());
+        })
+        .expect("Writer Redis backend setup successful");
 
     let reader_stream = stream.clone();
     let reader_group = consumer_group.clone();
-    let (reader_backend, _context2) = reader_db.prepare_backend(move |builder| {
-        builder
-            .add_stream(RedisStreamSpec::new(reader_stream.clone()))
-            .add_consumer_group(
-                reader_group.clone(),
-                RedisConsumerGroupSpec::new([reader_stream.clone()], reader_group.clone())
-                    .start_id("0-0"),
-            )
-            .add_event_single::<TestEvent>(reader_stream.clone());
-    })
-    .expect("Reader Redis backend setup successful");
+    let (reader_backend, _context2) = reader_db
+        .prepare_backend(move |builder| {
+            builder
+                .add_stream(RedisStreamSpec::new(reader_stream.clone()))
+                .add_consumer_group(
+                    reader_group.clone(),
+                    RedisConsumerGroupSpec::new([reader_stream.clone()], reader_group.clone())
+                        .start_id("0-0"),
+                )
+                .add_event_single::<TestEvent>(reader_stream.clone());
+        })
+        .expect("Reader Redis backend setup successful");
 
     // First, send some events with separate writer backend
     let mut writer = App::new();
@@ -114,26 +116,28 @@ fn test_start_id_from_end() {
         redis_setup::ensure_shared_redis().expect("Reader Redis backend setup successful");
 
     let writer_stream = stream.clone();
-    let (writer_backend, _context1) = writer_db.prepare_backend(move |builder| {
-        builder
-            .add_stream(RedisStreamSpec::new(writer_stream.clone()))
-            .add_event_single::<TestEvent>(writer_stream.clone());
-    })
-    .expect("Writer Redis backend setup successful");
+    let (writer_backend, _context1) = writer_db
+        .prepare_backend(move |builder| {
+            builder
+                .add_stream(RedisStreamSpec::new(writer_stream.clone()))
+                .add_event_single::<TestEvent>(writer_stream.clone());
+        })
+        .expect("Writer Redis backend setup successful");
 
     let reader_stream = stream.clone();
     let reader_group = consumer_group.clone();
-    let (reader_backend, _context2) = reader_db.prepare_backend(move |builder| {
-        builder
-            .add_stream(RedisStreamSpec::new(reader_stream.clone()))
-            .add_consumer_group(
-                reader_group.clone(),
-                RedisConsumerGroupSpec::new([reader_stream.clone()], reader_group.clone())
-                    .start_id("$"),
-            )
-            .add_event_single::<TestEvent>(reader_stream.clone());
-    })
-    .expect("Reader Redis backend setup successful");
+    let (reader_backend, _context2) = reader_db
+        .prepare_backend(move |builder| {
+            builder
+                .add_stream(RedisStreamSpec::new(reader_stream.clone()))
+                .add_consumer_group(
+                    reader_group.clone(),
+                    RedisConsumerGroupSpec::new([reader_stream.clone()], reader_group.clone())
+                        .start_id("$"),
+                )
+                .add_event_single::<TestEvent>(reader_stream.clone());
+        })
+        .expect("Reader Redis backend setup successful");
 
     // First, send some events with separate writer backend
     let mut writer = App::new();

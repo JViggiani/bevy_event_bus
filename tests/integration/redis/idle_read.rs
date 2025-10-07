@@ -36,8 +36,7 @@ fn idle_empty_stream_poll_does_not_block() {
     })
     .with_connection(shared_db.connection_string().to_string());
 
-    let (backend, _context) = redis_setup::setup(request)
-        .expect("Redis backend setup successful");
+    let (backend, _context) = redis_setup::setup(request).expect("Redis backend setup successful");
 
     let mut app = App::new();
     app.add_plugins(EventBusPlugins(backend));
