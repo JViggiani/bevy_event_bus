@@ -56,20 +56,21 @@ fn test_message_throughput() {
     let topic_for_config = topic.clone();
     let group_for_config = consumer_group.clone();
 
-    let (backend, _container) = kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
-        builder
-            .add_topic(
-                KafkaTopicSpec::new(topic_for_config.clone())
-                    .partitions(1)
-                    .replication(1),
-            )
-            .add_consumer_group(
-                group_for_config.clone(),
-                KafkaConsumerGroupSpec::new([topic_for_config.clone()])
-                    .initial_offset(KafkaInitialOffset::Earliest),
-            )
-            .add_event_single::<PerformanceTestEvent>(topic_for_config.clone());
-    }));
+    let (backend, _container) =
+        kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
+            builder
+                .add_topic(
+                    KafkaTopicSpec::new(topic_for_config.clone())
+                        .partitions(1)
+                        .replication(1),
+                )
+                .add_consumer_group(
+                    group_for_config.clone(),
+                    KafkaConsumerGroupSpec::new([topic_for_config.clone()])
+                        .initial_offset(KafkaInitialOffset::Earliest),
+                )
+                .add_event_single::<PerformanceTestEvent>(topic_for_config.clone());
+        }));
 
     // Configuration for the performance test
     let message_count = 10_000;
@@ -95,20 +96,21 @@ fn test_large_message_throughput() {
     let topic_for_config = topic.clone();
     let group_for_config = consumer_group.clone();
 
-    let (backend, _container) = kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
-        builder
-            .add_topic(
-                KafkaTopicSpec::new(topic_for_config.clone())
-                    .partitions(1)
-                    .replication(1),
-            )
-            .add_consumer_group(
-                group_for_config.clone(),
-                KafkaConsumerGroupSpec::new([topic_for_config.clone()])
-                    .initial_offset(KafkaInitialOffset::Earliest),
-            )
-            .add_event_single::<PerformanceTestEvent>(topic_for_config.clone());
-    }));
+    let (backend, _container) =
+        kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
+            builder
+                .add_topic(
+                    KafkaTopicSpec::new(topic_for_config.clone())
+                        .partitions(1)
+                        .replication(1),
+                )
+                .add_consumer_group(
+                    group_for_config.clone(),
+                    KafkaConsumerGroupSpec::new([topic_for_config.clone()])
+                        .initial_offset(KafkaInitialOffset::Earliest),
+                )
+                .add_event_single::<PerformanceTestEvent>(topic_for_config.clone());
+        }));
 
     // Test with larger messages
     let message_count = 1_000;
@@ -134,20 +136,21 @@ fn test_high_volume_small_messages() {
     let topic_for_config = topic.clone();
     let group_for_config = consumer_group.clone();
 
-    let (backend, _container) = kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
-        builder
-            .add_topic(
-                KafkaTopicSpec::new(topic_for_config.clone())
-                    .partitions(1)
-                    .replication(1),
-            )
-            .add_consumer_group(
-                group_for_config.clone(),
-                KafkaConsumerGroupSpec::new([topic_for_config.clone()])
-                    .initial_offset(KafkaInitialOffset::Earliest),
-            )
-            .add_event_single::<PerformanceTestEvent>(topic_for_config.clone());
-    }));
+    let (backend, _container) =
+        kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
+            builder
+                .add_topic(
+                    KafkaTopicSpec::new(topic_for_config.clone())
+                        .partitions(1)
+                        .replication(1),
+                )
+                .add_consumer_group(
+                    group_for_config.clone(),
+                    KafkaConsumerGroupSpec::new([topic_for_config.clone()])
+                        .initial_offset(KafkaInitialOffset::Earliest),
+                )
+                .add_event_single::<PerformanceTestEvent>(topic_for_config.clone());
+        }));
 
     // Test with many small messages
     let message_count = 50_000;

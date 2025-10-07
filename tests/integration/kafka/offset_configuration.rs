@@ -22,7 +22,8 @@ fn offset_configuration_earliest_receives_historical_events() {
     let topic = unique_topic("offset_test_earliest");
 
     // Create topic and ensure it's ready before proceeding
-    let (_backend_setup, bootstrap) = kafka_setup::prepare_backend(kafka_setup::build_topology(|_| {}));
+    let (_backend_setup, bootstrap) =
+        kafka_setup::prepare_backend(kafka_setup::build_topology(|_| {}));
     let topic_ready = kafka_setup::ensure_topic_ready(
         &bootstrap,
         &topic,
@@ -132,7 +133,8 @@ fn offset_configuration_latest_ignores_historical_events() {
     let topic = unique_topic("offset_test_latest");
 
     // Create topic and ensure it's ready before proceeding
-    let (_backend_setup, bootstrap) = kafka_setup::prepare_backend(kafka_setup::build_topology(|_| {}));
+    let (_backend_setup, bootstrap) =
+        kafka_setup::prepare_backend(kafka_setup::build_topology(|_| {}));
     let topic_ready = kafka_setup::ensure_topic_ready(
         &bootstrap,
         &topic,
@@ -275,7 +277,8 @@ fn default_offset_configuration_is_latest() {
     let topic = unique_topic("default_offset");
 
     // Create topic and ensure it's ready before proceeding
-    let (_backend_setup, bootstrap) = kafka_setup::prepare_backend(kafka_setup::build_topology(|_| {}));
+    let (_backend_setup, bootstrap) =
+        kafka_setup::prepare_backend(kafka_setup::build_topology(|_| {}));
     let topic_ready = kafka_setup::ensure_topic_ready(
         &bootstrap,
         &topic,

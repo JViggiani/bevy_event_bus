@@ -112,37 +112,39 @@ fn kafka_bidirectional_apps_exchange_events() {
 
     let topic_for_app_a = topic.clone();
     let group_for_app_a = group_a.clone();
-    let (backend_a, _bootstrap_a) = kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
-        builder
-            .add_topic(
-                KafkaTopicSpec::new(topic_for_app_a.clone())
-                    .partitions(1)
-                    .replication(1),
-            )
-            .add_consumer_group(
-                group_for_app_a.clone(),
-                KafkaConsumerGroupSpec::new([topic_for_app_a.clone()])
-                    .initial_offset(KafkaInitialOffset::Earliest),
-            )
-            .add_event_single::<TestEvent>(topic_for_app_a.clone());
-    }));
+    let (backend_a, _bootstrap_a) =
+        kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
+            builder
+                .add_topic(
+                    KafkaTopicSpec::new(topic_for_app_a.clone())
+                        .partitions(1)
+                        .replication(1),
+                )
+                .add_consumer_group(
+                    group_for_app_a.clone(),
+                    KafkaConsumerGroupSpec::new([topic_for_app_a.clone()])
+                        .initial_offset(KafkaInitialOffset::Earliest),
+                )
+                .add_event_single::<TestEvent>(topic_for_app_a.clone());
+        }));
 
     let topic_for_app_b = topic.clone();
     let group_for_app_b = group_b.clone();
-    let (backend_b, _bootstrap_b) = kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
-        builder
-            .add_topic(
-                KafkaTopicSpec::new(topic_for_app_b.clone())
-                    .partitions(1)
-                    .replication(1),
-            )
-            .add_consumer_group(
-                group_for_app_b.clone(),
-                KafkaConsumerGroupSpec::new([topic_for_app_b.clone()])
-                    .initial_offset(KafkaInitialOffset::Earliest),
-            )
-            .add_event_single::<TestEvent>(topic_for_app_b.clone());
-    }));
+    let (backend_b, _bootstrap_b) =
+        kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
+            builder
+                .add_topic(
+                    KafkaTopicSpec::new(topic_for_app_b.clone())
+                        .partitions(1)
+                        .replication(1),
+                )
+                .add_consumer_group(
+                    group_for_app_b.clone(),
+                    KafkaConsumerGroupSpec::new([topic_for_app_b.clone()])
+                        .initial_offset(KafkaInitialOffset::Earliest),
+                )
+                .add_event_single::<TestEvent>(topic_for_app_b.clone());
+        }));
 
     #[derive(Resource, Default)]
     struct Received(Vec<TestEvent>);

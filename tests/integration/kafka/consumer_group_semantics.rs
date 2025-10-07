@@ -23,14 +23,15 @@ fn same_consumer_group_distributes_messages_round_robin() {
 
     // Writer topology - no consumer groups (write-only)
     let topic_for_writer = topic.clone();
-    let (writer_backend, _bootstrap1) = kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
-        builder.add_topic(
-            KafkaTopicSpec::new(topic_for_writer.clone())
-                .partitions(1)
-                .replication(1),
-        );
-        builder.add_event_single::<TestEvent>(topic_for_writer.clone());
-    }));
+    let (writer_backend, _bootstrap1) =
+        kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
+            builder.add_topic(
+                KafkaTopicSpec::new(topic_for_writer.clone())
+                    .partitions(1)
+                    .replication(1),
+            );
+            builder.add_event_single::<TestEvent>(topic_for_writer.clone());
+        }));
 
     let topic_for_runtime_writer = topic.clone();
 
@@ -183,14 +184,15 @@ fn different_consumer_groups_broadcast_all_messages() {
 
     // Writer topology - no consumer groups (write-only)
     let topic_for_writer = topic.clone();
-    let (writer_backend, _bootstrap1) = kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
-        builder.add_topic(
-            KafkaTopicSpec::new(topic_for_writer.clone())
-                .partitions(1)
-                .replication(1),
-        );
-        builder.add_event_single::<TestEvent>(topic_for_writer.clone());
-    }));
+    let (writer_backend, _bootstrap1) =
+        kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
+            builder.add_topic(
+                KafkaTopicSpec::new(topic_for_writer.clone())
+                    .partitions(1)
+                    .replication(1),
+            );
+            builder.add_event_single::<TestEvent>(topic_for_writer.clone());
+        }));
 
     let topic_for_runtime_writer = topic.clone();
 
@@ -333,14 +335,15 @@ fn writer_only_no_consumer_groups_works() {
 
     // Writer topology - no consumer groups, just topic and event binding
     let topic_for_writer = topic.clone();
-    let (writer_backend, _bootstrap) = kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
-        builder.add_topic(
-            KafkaTopicSpec::new(topic_for_writer.clone())
-                .partitions(1)
-                .replication(1),
-        );
-        builder.add_event_single::<TestEvent>(topic_for_writer.clone());
-    }));
+    let (writer_backend, _bootstrap) =
+        kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
+            builder.add_topic(
+                KafkaTopicSpec::new(topic_for_writer.clone())
+                    .partitions(1)
+                    .replication(1),
+            );
+            builder.add_event_single::<TestEvent>(topic_for_writer.clone());
+        }));
 
     // Setup writer app
     let mut writer = App::new();
