@@ -13,27 +13,29 @@ fn consumer_lag_and_stream_trimming() {
     let stream = unique_topic("lag_test");
 
     let writer_db =
-        redis_setup::ensure_shared_redis().expect("Writer Redis backend setup successful");
+        redis_setup::allocate_database().expect("Writer Redis backend setup successful");
     let reader_db =
-        redis_setup::ensure_shared_redis().expect("Reader Redis backend setup successful");
+        redis_setup::allocate_database().expect("Reader Redis backend setup successful");
 
     let writer_stream = stream.clone();
-    let (writer_backend, _context1) = writer_db
-        .prepare_backend(move |builder| {
+    let (writer_backend, _context1) = redis_setup::with_database(writer_db, || {
+        redis_setup::prepare_backend(move |builder| {
             builder
                 .add_stream(RedisStreamSpec::new(writer_stream.clone()).maxlen(10))
                 .add_event_single::<TestEvent>(writer_stream.clone());
         })
-        .expect("Writer Redis backend setup successful");
+    })
+    .expect("Writer Redis backend setup successful");
 
     let reader_stream = stream.clone();
-    let (reader_backend, _context2) = reader_db
-        .prepare_backend(move |builder| {
+    let (reader_backend, _context2) = redis_setup::with_database(reader_db, || {
+        redis_setup::prepare_backend(move |builder| {
             builder
                 .add_stream(RedisStreamSpec::new(reader_stream.clone()).maxlen(10))
                 .add_event_single::<TestEvent>(reader_stream.clone());
         })
-        .expect("Reader Redis backend setup successful");
+    })
+    .expect("Reader Redis backend setup successful");
 
     let mut writer = App::new();
     writer.add_plugins(EventBusPlugins(writer_backend));
@@ -100,17 +102,13 @@ fn consumer_lag_and_stream_trimming() {
 fn stream_memory_optimization() {
     let stream = unique_topic("memory_opt");
 
-    let shared_db =
-        redis_setup::ensure_shared_redis().expect("Writer Redis backend setup successful");
-
     let stream_clone = stream.clone();
-    let (writer_backend, _context) = shared_db
-        .prepare_backend(move |builder| {
-            builder
-                .add_stream(RedisStreamSpec::new(stream_clone.clone()).maxlen(5))
-                .add_event_single::<TestEvent>(stream_clone.clone());
-        })
-        .expect("Writer Redis backend setup successful");
+    let (writer_backend, _context) = redis_setup::prepare_backend(move |builder| {
+        builder
+            .add_stream(RedisStreamSpec::new(stream_clone.clone()).maxlen(5))
+            .add_event_single::<TestEvent>(stream_clone.clone());
+    })
+    .expect("Writer Redis backend setup successful");
 
     let mut writer = App::new();
     writer.add_plugins(EventBusPlugins(writer_backend));

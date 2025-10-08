@@ -15,23 +15,24 @@ fn per_stream_order_preserved() {
     let consumer_group = unique_consumer_group("ordering_single_stream");
 
     let writer_db =
-        redis_setup::ensure_shared_redis().expect("Writer Redis backend setup successful");
+        redis_setup::allocate_database().expect("Writer Redis backend setup successful");
     let reader_db =
-        redis_setup::ensure_shared_redis().expect("Reader Redis backend setup successful");
+        redis_setup::allocate_database().expect("Reader Redis backend setup successful");
 
     let writer_stream = stream.clone();
-    let (writer_backend, _context1) = writer_db
-        .prepare_backend(move |builder| {
+    let (writer_backend, _context1) = redis_setup::with_database(writer_db, || {
+        redis_setup::prepare_backend(move |builder| {
             builder
                 .add_stream(RedisStreamSpec::new(writer_stream.clone()))
                 .add_event_single::<TestEvent>(writer_stream.clone());
         })
-        .expect("Writer Redis backend setup successful");
+    })
+    .expect("Writer Redis backend setup successful");
 
     let reader_stream = stream.clone();
     let reader_group = consumer_group.clone();
-    let (reader_backend, _context2) = reader_db
-        .prepare_backend(move |builder| {
+    let (reader_backend, _context2) = redis_setup::with_database(reader_db, || {
+        redis_setup::prepare_backend(move |builder| {
             builder
                 .add_stream(RedisStreamSpec::new(reader_stream.clone()))
                 .add_consumer_group(
@@ -40,7 +41,8 @@ fn per_stream_order_preserved() {
                 )
                 .add_event_single::<TestEvent>(reader_stream.clone());
         })
-        .expect("Reader Redis backend setup successful");
+    })
+    .expect("Reader Redis backend setup successful");
 
     let mut writer = App::new();
     let mut reader = App::new();
@@ -105,27 +107,28 @@ fn cross_stream_interleave_each_ordered() {
     let consumer_group = unique_consumer_group("ordering_multi_stream");
 
     let writer_db =
-        redis_setup::ensure_shared_redis().expect("Writer Redis backend setup successful");
+        redis_setup::allocate_database().expect("Writer Redis backend setup successful");
     let reader_db =
-        redis_setup::ensure_shared_redis().expect("Reader Redis backend setup successful");
+        redis_setup::allocate_database().expect("Reader Redis backend setup successful");
 
     let writer_stream1 = stream1.clone();
     let writer_stream2 = stream2.clone();
-    let (writer_backend, _context1) = writer_db
-        .prepare_backend(move |builder| {
+    let (writer_backend, _context1) = redis_setup::with_database(writer_db, || {
+        redis_setup::prepare_backend(move |builder| {
             builder
                 .add_stream(RedisStreamSpec::new(writer_stream1.clone()))
                 .add_stream(RedisStreamSpec::new(writer_stream2.clone()))
                 .add_event_single::<TestEvent>(writer_stream1.clone())
                 .add_event_single::<TestEvent>(writer_stream2.clone());
         })
-        .expect("Writer Redis backend setup successful");
+    })
+    .expect("Writer Redis backend setup successful");
 
     let reader_stream1 = stream1.clone();
     let reader_stream2 = stream2.clone();
     let reader_group = consumer_group.clone();
-    let (reader_backend, _context2) = reader_db
-        .prepare_backend(move |builder| {
+    let (reader_backend, _context2) = redis_setup::with_database(reader_db, || {
+        redis_setup::prepare_backend(move |builder| {
             builder
                 .add_stream(RedisStreamSpec::new(reader_stream1.clone()))
                 .add_stream(RedisStreamSpec::new(reader_stream2.clone()))
@@ -139,7 +142,8 @@ fn cross_stream_interleave_each_ordered() {
                 .add_event_single::<TestEvent>(reader_stream1.clone())
                 .add_event_single::<TestEvent>(reader_stream2.clone());
         })
-        .expect("Reader Redis backend setup successful");
+    })
+    .expect("Reader Redis backend setup successful");
 
     let mut writer = App::new();
     let mut reader = App::new();

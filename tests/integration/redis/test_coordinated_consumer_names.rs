@@ -22,27 +22,20 @@ fn test_coordinated_consumer_names() {
     let consumer_group = unique_consumer_group("coordinated-group");
     let consumer_name1 = unique_consumer_group_member("coord-consumer-1");
 
-    // Backend with SPECIFIC consumer names in topology spec
-    let shared_db = redis_setup::ensure_shared_redis().expect("Redis backend setup successful");
-
     let stream_clone = stream.clone();
     let consumer_group_clone = consumer_group.clone();
     let consumer_name_clone = consumer_name1.clone();
-    let (backend, _context) = shared_db
-        .prepare_backend(move |builder| {
-            builder
-                .add_stream(RedisStreamSpec::new(stream_clone.clone()))
-                .add_consumer_group(
-                    consumer_group_clone.clone(),
-                    RedisConsumerGroupSpec::new(
-                        [stream_clone.clone()],
-                        consumer_group_clone.clone(),
-                    )
+    let (backend, _context) = redis_setup::prepare_backend(move |builder| {
+        builder
+            .add_stream(RedisStreamSpec::new(stream_clone.clone()))
+            .add_consumer_group(
+                consumer_group_clone.clone(),
+                RedisConsumerGroupSpec::new([stream_clone.clone()], consumer_group_clone.clone())
                     .consumer_name(consumer_name_clone.clone()),
-                )
-                .add_event_single::<TestEvent>(stream_clone.clone());
-        })
-        .expect("Redis backend setup successful");
+            )
+            .add_event_single::<TestEvent>(stream_clone.clone());
+    })
+    .expect("Redis backend setup successful");
 
     // Setup reader1 app with MATCHING consumer name
     let mut reader1 = App::new();

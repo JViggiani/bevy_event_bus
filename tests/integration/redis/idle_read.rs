@@ -12,9 +12,6 @@ fn idle_empty_stream_poll_does_not_block() {
     let stream = unique_topic("idle_test");
     let consumer_group = unique_consumer_group("idle_group");
 
-    let shared_db = redis_setup::ensure_shared_redis()
-        .expect("Redis backend allocation should succeed for idle read test");
-
     let stream_for_backend = stream.clone();
     let group_for_backend = consumer_group.clone();
     let options = SetupOptions::new()
@@ -33,8 +30,7 @@ fn idle_empty_stream_poll_does_not_block() {
                 ),
             )
             .add_event_single::<TestEvent>(stream_for_backend.clone());
-    })
-    .with_connection(shared_db.connection_string().to_string());
+    });
 
     let (backend, _context) = redis_setup::setup(request).expect("Redis backend setup successful");
 

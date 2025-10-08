@@ -20,25 +20,18 @@ fn test_consumer_groups_without_names() {
     let stream = unique_topic("no-names");
     let consumer_group = unique_consumer_group("shared-group");
 
-    // Use exactly same pattern as basic.rs test - single backend for all apps
-    let shared_db = redis_setup::ensure_shared_redis().expect("Redis backend setup successful");
-
     let stream_clone = stream.clone();
     let consumer_group_clone = consumer_group.clone();
-    let (backend, _context) = shared_db
-        .prepare_backend(move |builder| {
-            builder
-                .add_stream(RedisStreamSpec::new(stream_clone.clone()))
-                .add_consumer_group(
-                    consumer_group_clone.clone(),
-                    RedisConsumerGroupSpec::new(
-                        [stream_clone.clone()],
-                        consumer_group_clone.clone(),
-                    ),
-                )
-                .add_event_single::<TestEvent>(stream_clone.clone());
-        })
-        .expect("Redis backend setup successful");
+    let (backend, _context) = redis_setup::prepare_backend(move |builder| {
+        builder
+            .add_stream(RedisStreamSpec::new(stream_clone.clone()))
+            .add_consumer_group(
+                consumer_group_clone.clone(),
+                RedisConsumerGroupSpec::new([stream_clone.clone()], consumer_group_clone.clone()),
+            )
+            .add_event_single::<TestEvent>(stream_clone.clone());
+    })
+    .expect("Redis backend setup successful");
 
     // Setup reader1 app WITHOUT consumer name (like basic.rs)
     let mut reader1 = App::new();

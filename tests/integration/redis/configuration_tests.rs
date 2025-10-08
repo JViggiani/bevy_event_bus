@@ -17,33 +17,29 @@ fn configuration_with_readers_writers_works() {
     let stream = unique_topic("config_test");
     let consumer_group = unique_consumer_group("config_reader_group");
 
-    let shared_db = redis_setup::ensure_shared_redis().expect("Redis backend setup successful");
-
     let stream_for_writer = stream.clone();
-    let (backend_writer, _writer_context) = shared_db
-        .prepare_backend(move |builder| {
-            builder
-                .add_stream(RedisStreamSpec::new(stream_for_writer.clone()))
-                .add_event_single::<TestEvent>(stream_for_writer.clone());
-        })
-        .expect("Writer Redis backend setup successful");
+    let (backend_writer, _writer_context) = redis_setup::prepare_backend(move |builder| {
+        builder
+            .add_stream(RedisStreamSpec::new(stream_for_writer.clone()))
+            .add_event_single::<TestEvent>(stream_for_writer.clone());
+    })
+    .expect("Writer Redis backend setup successful");
 
     let stream_for_reader = stream.clone();
     let consumer_group_for_reader = consumer_group.clone();
-    let (backend_reader, _reader_context) = shared_db
-        .prepare_backend(move |builder| {
-            builder
-                .add_stream(RedisStreamSpec::new(stream_for_reader.clone()))
-                .add_consumer_group(
+    let (backend_reader, _reader_context) = redis_setup::prepare_backend(move |builder| {
+        builder
+            .add_stream(RedisStreamSpec::new(stream_for_reader.clone()))
+            .add_consumer_group(
+                consumer_group_for_reader.clone(),
+                RedisConsumerGroupSpec::new(
+                    [stream_for_reader.clone()],
                     consumer_group_for_reader.clone(),
-                    RedisConsumerGroupSpec::new(
-                        [stream_for_reader.clone()],
-                        consumer_group_for_reader.clone(),
-                    ),
-                )
-                .add_event_single::<TestEvent>(stream_for_reader.clone());
-        })
-        .expect("Reader Redis backend setup successful");
+                ),
+            )
+            .add_event_single::<TestEvent>(stream_for_reader.clone());
+    })
+    .expect("Reader Redis backend setup successful");
 
     #[derive(Resource, Default)]
     struct Collected(Vec<TestEvent>);

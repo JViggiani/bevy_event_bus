@@ -9,6 +9,7 @@ use bevy_event_bus::config::redis::{
 };
 use once_cell::sync::Lazy;
 use redis::RedisError;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::process::Command;
 use std::sync::Mutex;
@@ -42,8 +43,13 @@ struct ContainerState {
 static CONTAINER_STATE: Lazy<Mutex<ContainerState>> =
     Lazy::new(|| Mutex::new(ContainerState::default()));
 static CONTAINER_SHUTDOWN: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(false));
-static NEXT_SHARED_DB_INDEX: Lazy<AtomicUsize> =
+static SHARED_CONNECTION: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
+static NEXT_DATABASE_INDEX: Lazy<AtomicUsize> =
     Lazy::new(|| AtomicUsize::new(DEFAULT_DB_INDEX + 1));
+
+thread_local! {
+    static DATABASE_OVERRIDE: RefCell<Option<usize>> = RefCell::new(None);
+}
 
 /// Runtime context returned alongside a configured Redis backend.
 #[derive(Clone, Debug)]
@@ -140,11 +146,6 @@ impl From<(RedisTopologyBuilder, SetupOptions)> for SetupRequest {
 }
 
 impl SetupRequest {
-    pub fn with_connection(mut self, connection_string: impl Into<String>) -> Self {
-        self.connection_override = Some(connection_string.into());
-        self
-    }
-
     fn into_parts(self) -> (RedisTopologyBuilder, SetupOptions, Option<String>) {
         (self.builder, self.options, self.connection_override)
     }
@@ -200,7 +201,7 @@ where
 
     let connection_string = match connection_override {
         Some(connection) => connection,
-        None => default_connection_string()?,
+        None => connection_from_override()?.unwrap_or(shared_connection_string()?),
     };
     build_backend_from_parts(connection_string, builder, options)
 }
@@ -244,6 +245,61 @@ where
 
 fn default_connection_string() -> Result<String> {
     default_connection_string_for_index(DEFAULT_DB_INDEX)
+}
+
+fn shared_connection_string() -> Result<String> {
+    let mut guard = SHARED_CONNECTION.lock().unwrap();
+    if let Some(existing) = guard.as_ref() {
+        return Ok(existing.clone());
+    }
+
+    let connection = default_connection_string()?;
+    *guard = Some(connection.clone());
+    Ok(connection)
+}
+
+fn connection_from_override() -> Result<Option<String>> {
+    DATABASE_OVERRIDE.with(|slot| {
+        if let Some(index) = *slot.borrow() {
+            Ok(Some(default_connection_string_for_index(index)?))
+        } else {
+            Ok(None)
+        }
+    })
+}
+
+/// Allocate a unique Redis database index for tests that require isolated storage.
+pub fn allocate_database() -> Result<usize> {
+    let index = NEXT_DATABASE_INDEX.fetch_add(1, Ordering::SeqCst);
+    if index >= MAX_SHARED_DATABASES {
+        return Err(anyhow!(
+            "Exceeded maximum number of Redis databases reserved for tests ({MAX_SHARED_DATABASES})"
+        ));
+    }
+    Ok(index)
+}
+
+/// Execute a closure with the provided database index bound for subsequent [`prepare_backend`] calls.
+pub fn with_database<R, F>(database_index: usize, action: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    struct ResetGuard<'a> {
+        slot: &'a RefCell<Option<usize>>,
+        previous: Option<usize>,
+    }
+
+    impl<'a> Drop for ResetGuard<'a> {
+        fn drop(&mut self) {
+            self.slot.replace(self.previous.take());
+        }
+    }
+
+    DATABASE_OVERRIDE.with(|slot| {
+        let previous = slot.replace(Some(database_index));
+        let _guard = ResetGuard { slot, previous };
+        action()
+    })
 }
 
 fn default_connection_string_for_index(index: usize) -> Result<String> {
@@ -475,42 +531,5 @@ fn teardown_redis_container() {
             let _ = Command::new("docker").args(["stop", &id]).status();
             info!("Redis test container stopped");
         }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct SharedRedisDatabase {
-    connection_string: String,
-}
-
-impl SharedRedisDatabase {
-    pub fn connection_string(&self) -> &str {
-        &self.connection_string
-    }
-}
-
-pub fn ensure_shared_redis() -> Result<SharedRedisDatabase> {
-    let index = NEXT_SHARED_DB_INDEX.fetch_add(1, Ordering::SeqCst);
-    if index >= MAX_SHARED_DATABASES {
-        return Err(anyhow!(
-            "Exceeded maximum number of Redis databases reserved for tests ({MAX_SHARED_DATABASES})"
-        ));
-    }
-
-    let connection_string = default_connection_string_for_index(index)?;
-    Ok(SharedRedisDatabase { connection_string })
-}
-
-impl SharedRedisDatabase {
-    pub fn prepare_backend<F>(
-        &self,
-        configure_topology: F,
-    ) -> Result<(RedisEventBusBackend, RedisTestContext)>
-    where
-        F: FnOnce(&mut RedisTopologyBuilder),
-    {
-        let request = SetupRequest::from(build_topology(configure_topology))
-            .with_connection(self.connection_string.clone());
-        setup(request)
     }
 }
