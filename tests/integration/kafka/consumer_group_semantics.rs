@@ -15,7 +15,7 @@ use integration_tests::utils::kafka_setup;
 #[derive(Resource, Default)]
 struct EventCollector(Vec<TestEvent>);
 
-/// Test that multiple readers in the SAME consumer group receive messages in round-robin distribution
+/// Readers in the same consumer group should share work without duplicates.
 #[test]
 fn same_consumer_group_distributes_messages_round_robin() {
     let topic = unique_topic("same-group");
@@ -27,7 +27,7 @@ fn same_consumer_group_distributes_messages_round_robin() {
         kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
             builder.add_topic(
                 KafkaTopicSpec::new(topic_for_writer.clone())
-                    .partitions(1)
+                    .partitions(2)
                     .replication(1),
             );
             builder.add_event_single::<TestEvent>(topic_for_writer.clone());
@@ -42,7 +42,7 @@ fn same_consumer_group_distributes_messages_round_robin() {
         kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
             builder.add_topic(
                 KafkaTopicSpec::new(topic_for_reader1.clone())
-                    .partitions(1)
+                    .partitions(2)
                     .replication(1),
             );
             builder.add_consumer_group(
@@ -60,7 +60,7 @@ fn same_consumer_group_distributes_messages_round_robin() {
         kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
             builder.add_topic(
                 KafkaTopicSpec::new(topic_for_reader2.clone())
-                    .partitions(1)
+                    .partitions(2)
                     .replication(1),
             );
             builder.add_consumer_group(
@@ -162,10 +162,12 @@ fn same_consumer_group_distributes_messages_round_robin() {
         collected2.0.len()
     );
 
-    // Events should be distributed (not duplicated)
+    // Kafka assigns partitions exclusively to a single consumer, so one reader may legitimately
+    // observe all events depending on the broker's rebalancing. We only assert that the group
+    // consumes the complete payload without duplication.
     assert!(
         collected1.0.len() > 0 || collected2.0.len() > 0,
-        "Events should be distributed between readers"
+        "At least one reader should receive events"
     );
 
     println!(
@@ -175,9 +177,9 @@ fn same_consumer_group_distributes_messages_round_robin() {
     );
 }
 
-/// Test that multiple readers in DIFFERENT consumer groups each receive ALL messages
+/// Independent consumer groups should each observe the full stream of events.
 #[test]
-fn different_consumer_groups_broadcast_all_messages() {
+fn different_consumer_groups_receive_all_events() {
     let topic = unique_topic("diff-groups");
     let consumer_group1 = unique_consumer_group("group1");
     let consumer_group2 = unique_consumer_group("group2");
@@ -328,9 +330,9 @@ fn different_consumer_groups_broadcast_all_messages() {
     );
 }
 
-/// Test that writer-only apps with no consumer groups work correctly
+/// Writers should function without any configured consumer groups.
 #[test]
-fn writer_only_no_consumer_groups_works() {
+fn writer_only_works_without_consumer_groups() {
     let topic = unique_topic("writer-only");
 
     // Writer topology - no consumer groups, just topic and event binding
@@ -349,20 +351,22 @@ fn writer_only_no_consumer_groups_works() {
     let mut writer = App::new();
     writer.add_plugins(EventBusPlugins(writer_backend));
 
-    let mut events_sent = 0;
-    writer.add_systems(Update, move |mut w: KafkaEventWriter| {
-        if events_sent < 3 {
-            let config = KafkaProducerConfig::new([topic.clone()]);
-            w.write(
-                &config,
-                TestEvent {
-                    message: format!("writer_only_{}", events_sent),
-                    value: events_sent,
-                },
-            );
-            events_sent += 1;
-        }
-    });
+    writer.add_systems(
+        Update,
+        move |mut w: KafkaEventWriter, mut events_sent: Local<usize>| {
+            if *events_sent < 3 {
+                let config = KafkaProducerConfig::new([topic.clone()]);
+                w.write(
+                    &config,
+                    TestEvent {
+                        message: format!("writer_only_{}", *events_sent),
+                        value: *events_sent as i32,
+                    },
+                );
+                *events_sent += 1;
+            }
+        },
+    );
 
     // Writer should be able to send events without any consumer groups defined
     run_app_updates(&mut writer, 4);
