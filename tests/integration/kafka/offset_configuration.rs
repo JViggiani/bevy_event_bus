@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use bevy::prelude::*;
 use bevy_event_bus::config::kafka::{
     KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
@@ -17,8 +19,6 @@ use integration_tests::utils::kafka_setup::{self, SetupOptions};
 /// Test that consumers with "earliest" offset receive historical events
 #[test]
 fn offset_configuration_earliest_receives_historical_events() {
-    use std::time::Duration;
-
     let topic = unique_topic("offset_test_earliest");
 
     // Create topic and ensure it's ready before proceeding

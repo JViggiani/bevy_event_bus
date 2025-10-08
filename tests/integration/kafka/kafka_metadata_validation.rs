@@ -234,8 +234,6 @@ fn kafka_metadata_end_to_end_validation() {
         } else {
             panic!("Expected Kafka metadata for event {}, but got None", i);
         }
-
-
     }
 
     info!("All Kafka metadata validation tests passed!");

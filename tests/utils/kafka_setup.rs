@@ -10,8 +10,11 @@ use bevy_event_bus::{
 use once_cell::sync::Lazy;
 use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
 use rdkafka::client::DefaultClientContext;
-use rdkafka::producer::Producer as _;
+use rdkafka::config::ClientConfig;
+use rdkafka::consumer::{BaseConsumer, Consumer};
+use rdkafka::producer::{BaseProducer, Producer};
 use std::collections::HashMap;
+use std::net::TcpStream;
 use std::process::Command;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
@@ -223,7 +226,6 @@ fn ensure_container() -> Option<String> {
 }
 
 fn wait_ready(bootstrap: &str) -> bool {
-    use std::net::TcpStream;
     let span = info_span!("kafka_container.wait_ready", bootstrap = bootstrap);
     let _g = span.enter();
     let start = Instant::now();
@@ -278,7 +280,6 @@ static METADATA_READY: Lazy<std::sync::atomic::AtomicBool> =
     Lazy::new(|| std::sync::atomic::AtomicBool::new(false));
 
 fn wait_metadata(bootstrap: &str, max_wait: Duration) -> (bool, u128) {
-    use rdkafka::config::ClientConfig;
     let span = info_span!("kafka_container.wait_metadata", bootstrap = bootstrap);
     let _g = span.enter();
     let start = Instant::now();
@@ -450,10 +451,6 @@ pub fn ensure_topic_ready(
     partitions: i32,
     timeout: Duration,
 ) -> bool {
-    use rdkafka::config::ClientConfig;
-    use rdkafka::consumer::{BaseConsumer, Consumer};
-    use rdkafka::producer::{BaseProducer, Producer};
-
     let span = info_span!(
         "kafka_container.ensure_topic_ready",
         bootstrap = bootstrap,

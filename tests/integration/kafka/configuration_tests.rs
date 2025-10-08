@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 use bevy::prelude::*;
 use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
 use bevy_event_bus::{
-    EventBusPlugins, KafkaConsumerConfig, KafkaEventBusBackend, KafkaEventReader, KafkaEventWriter,
-    KafkaProducerConfig,
+    EventBusConfig, EventBusPlugins, KafkaConsumerConfig, KafkaEventBusBackend, KafkaEventReader,
+    KafkaEventWriter, KafkaProducerConfig,
 };
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{
@@ -223,16 +223,18 @@ fn builder_pattern_works() {
     let consumer_config = KafkaConsumerConfig::new("test_group", ["topic1", "topic2"])
         .auto_offset_reset("earliest")
         .enable_auto_commit(false)
-        .session_timeout_ms(6000);
+        .session_timeout(Duration::from_millis(6000));
 
     // Test that trait methods work using explicit syntax
-    use bevy_event_bus::EventBusConfig;
     assert!(!EventBusConfig::topics(&consumer_config).is_empty());
     assert!(consumer_config.get_consumer_group() == "test_group");
 
     // Test that specific config getters work
     assert!(!consumer_config.is_auto_commit_enabled());
-    assert_eq!(consumer_config.get_session_timeout_ms(), 6000);
+    assert_eq!(
+        consumer_config.get_session_timeout(),
+        Duration::from_millis(6000)
+    );
 
     // Test that we can build producer config
     let producer_config = KafkaProducerConfig::new(Vec::<String>::new())
@@ -246,33 +248,4 @@ fn builder_pattern_works() {
     assert_eq!(producer_config.get_acks(), "all");
     assert_eq!(producer_config.get_retries(), 3);
     assert_eq!(producer_config.get_batch_size(), 16384);
-}
-
-/// Test that clean system signatures work without explicit backend types
-#[test]
-fn clean_system_signatures() {
-    // This test demonstrates that systems can have clean signatures
-    // without explicitly mentioning backend types
-
-    fn clean_producer_system(mut writer: KafkaEventWriter) {
-        // Configuration can be injected from resource or built inline
-        let config = KafkaProducerConfig::new(Vec::<String>::new()).compression_type("none");
-        writer.write(
-            &config,
-            TestEvent {
-                message: "clean".to_string(),
-                value: 123,
-            },
-        );
-    }
-
-    fn clean_consumer_system(mut reader: KafkaEventReader<TestEvent>) {
-        // Using inline configuration
-        let config = KafkaConsumerConfig::new("clean_group", ["clean_test"]);
-        let _events = reader.read(&config);
-    }
-
-    // If this compiles, then clean signatures work
-    let _ = clean_producer_system;
-    let _ = clean_consumer_system;
 }

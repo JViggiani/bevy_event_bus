@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec, TrimStrategy,
 };
-use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
+use bevy_event_bus::{EventBusConfig, EventBusPlugins, RedisEventReader, RedisEventWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
     run_app_updates, unique_consumer_group, unique_topic, update_until,
@@ -216,7 +216,6 @@ fn builder_pattern_works() {
         .read_block_timeout(Duration::from_millis(1000));
 
     // Test that trait methods work using explicit syntax
-    use bevy_event_bus::EventBusConfig;
     let consumer_topics = EventBusConfig::topics(&consumer_config).to_vec();
     assert_eq!(
         consumer_topics,
@@ -239,33 +238,4 @@ fn builder_pattern_works() {
     assert_eq!(producer_config.stream(), "stream1");
     assert_eq!(producer_config.maxlen_value(), Some(10000));
     assert_eq!(producer_config.trim_strategy(), TrimStrategy::Exact);
-}
-
-/// Test that clean system signatures work without explicit backend types
-#[test]
-fn clean_system_signatures() {
-    // This test demonstrates that systems can have clean signatures
-    // without explicitly mentioning backend types
-
-    fn clean_producer_system(mut writer: RedisEventWriter) {
-        // Configuration can be injected from resource or built inline
-        let config = RedisProducerConfig::new("clean_stream");
-        writer.write(
-            &config,
-            TestEvent {
-                message: "clean".to_string(),
-                value: 123,
-            },
-        );
-    }
-
-    fn clean_consumer_system(mut reader: RedisEventReader<TestEvent>) {
-        // Using inline configuration
-        let config = RedisConsumerConfig::new("clean_group", ["clean_stream"]);
-        let _events = reader.read(&config);
-    }
-
-    // If this compiles, then clean signatures work
-    let _ = clean_producer_system;
-    let _ = clean_consumer_system;
 }

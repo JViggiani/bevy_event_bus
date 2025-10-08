@@ -354,7 +354,7 @@ pub struct KafkaConsumerConfig {
     topics: Vec<String>,
     auto_offset_reset: String,
     enable_auto_commit: bool,
-    session_timeout_ms: u32,
+    session_timeout: Duration,
     max_poll_records: u32,
     processing_limits: ProcessingLimits,
     additional_config: HashMap<String, String>,
@@ -372,7 +372,7 @@ impl KafkaConsumerConfig {
             topics: topics.into_iter().map(Into::into).collect(),
             auto_offset_reset: "latest".to_string(),
             enable_auto_commit: true,
-            session_timeout_ms: 30000,
+            session_timeout: Duration::from_millis(30_000),
             max_poll_records: 500,
             processing_limits: ProcessingLimits::default(),
             additional_config: HashMap::new(),
@@ -407,9 +407,9 @@ impl KafkaConsumerConfig {
         self
     }
 
-    /// Set session timeout in milliseconds
-    pub fn session_timeout_ms(mut self, timeout: u32) -> Self {
-        self.session_timeout_ms = timeout;
+    /// Set the consumer session timeout.
+    pub fn session_timeout(mut self, timeout: Duration) -> Self {
+        self.session_timeout = timeout;
         self
     }
 
@@ -440,9 +440,9 @@ impl KafkaConsumerConfig {
         self.enable_auto_commit
     }
 
-    /// Get session timeout
-    pub fn get_session_timeout_ms(&self) -> u32 {
-        self.session_timeout_ms
+    /// Get the consumer session timeout.
+    pub fn get_session_timeout(&self) -> Duration {
+        self.session_timeout
     }
 
     /// Get max poll records
