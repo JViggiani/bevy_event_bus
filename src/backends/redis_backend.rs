@@ -31,8 +31,6 @@ use bevy_event_bus::{
     runtime,
 };
 
-static CONSUMER_COUNTER: AtomicUsize = AtomicUsize::new(1);
-
 #[derive(Debug, Clone, Default)]
 struct AckCounters {
     acknowledged: Arc<AtomicUsize>,
@@ -253,11 +251,6 @@ async fn ensure_streams(
     Ok(())
 }
 
-fn next_consumer_name(prefix: &str) -> String {
-    let id = CONSUMER_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("{prefix}-{id}")
-}
-
 fn redis_value_to_bytes(value: &RedisValue) -> Option<Vec<u8>> {
     match value {
         RedisValue::Data(bytes) => Some(bytes.clone()),
@@ -398,10 +391,7 @@ impl RedisEventBusBackend {
         let running = self.state.running.clone();
         let manual_ack = spec.manual_ack;
         let consumer_group = spec.consumer_group.clone();
-        let consumer_name = spec
-            .consumer_name
-            .clone()
-            .unwrap_or_else(|| next_consumer_name("redis-consumer"));
+        let consumer_name = spec.consumer_name.clone();
         let batch_size = runtime.read_batch_size;
         let empty_backoff = runtime.empty_read_backoff;
 

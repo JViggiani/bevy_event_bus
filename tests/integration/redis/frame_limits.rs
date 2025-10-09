@@ -6,7 +6,9 @@ use bevy_event_bus::config::redis::{
 };
 use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
 use integration_tests::utils::TestEvent;
-use integration_tests::utils::helpers::{run_app_updates, unique_consumer_group, unique_topic};
+use integration_tests::utils::helpers::{
+    run_app_updates, unique_consumer_group_membership, unique_topic,
+};
 use integration_tests::utils::redis_setup;
 
 #[derive(Resource, Default)]
@@ -18,7 +20,9 @@ struct FrameTracker {
 #[test]
 fn frame_limit_spreads_drain() {
     let stream = unique_topic("frame_limits");
-    let consumer_group = unique_consumer_group("frame_limit_group");
+    let membership = unique_consumer_group_membership("frame_limit_group");
+    let consumer_group = membership.group.clone();
+    let consumer_name = membership.member.clone();
 
     let writer_db =
         redis_setup::allocate_database().expect("Writer Redis backend setup successful");
@@ -37,13 +41,18 @@ fn frame_limit_spreads_drain() {
 
     let reader_stream = stream.clone();
     let reader_group = consumer_group.clone();
+    let reader_consumer = consumer_name.clone();
     let (backend_reader, _context2) = redis_setup::with_database(reader_db, || {
         redis_setup::prepare_backend(move |builder| {
             builder
                 .add_stream(RedisStreamSpec::new(reader_stream.clone()))
                 .add_consumer_group(
                     reader_group.clone(),
-                    RedisConsumerGroupSpec::new([reader_stream.clone()], reader_group.clone()),
+                    RedisConsumerGroupSpec::new(
+                        [reader_stream.clone()],
+                        reader_group.clone(),
+                        reader_consumer.clone(),
+                    ),
                 )
                 .add_event_single::<TestEvent>(reader_stream.clone());
         })
@@ -65,10 +74,16 @@ fn frame_limit_spreads_drain() {
     struct StreamInfo(String);
 
     #[derive(Resource, Clone)]
-    struct ConsumerGroupInfo(String);
+    struct ConsumerGroupInfo {
+        group: String,
+        consumer: String,
+    }
 
     reader.insert_resource(StreamInfo(stream.clone()));
-    reader.insert_resource(ConsumerGroupInfo(consumer_group.clone()));
+    reader.insert_resource(ConsumerGroupInfo {
+        group: consumer_group.clone(),
+        consumer: consumer_name,
+    });
 
     fn reader_system(
         mut r: RedisEventReader<TestEvent>,
@@ -76,7 +91,11 @@ fn frame_limit_spreads_drain() {
         stream: Res<StreamInfo>,
         group: Res<ConsumerGroupInfo>,
     ) {
-        let config = RedisConsumerConfig::new(group.0.clone(), [stream.0.clone()]);
+        let config = RedisConsumerConfig::new(
+            group.group.clone(),
+            group.consumer.clone(),
+            [stream.0.clone()],
+        );
 
         let events = r.read(&config);
         let frame_events = events.len();

@@ -7,7 +7,8 @@ use bevy_event_bus::config::redis::{
 use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
-    run_app_updates, unique_consumer_group, unique_topic, update_two_apps_until, update_until,
+    run_app_updates, unique_consumer_group, unique_consumer_group_member, unique_topic,
+    update_two_apps_until, update_until,
 };
 use integration_tests::utils::redis_setup;
 
@@ -15,15 +16,21 @@ use integration_tests::utils::redis_setup;
 fn redis_single_direction_writer_reader_flow() {
     let stream = unique_topic("redis-basic-writer-reader");
     let consumer_group = unique_consumer_group("redis_basic_reader");
+    let consumer_name = unique_consumer_group_member(&consumer_group);
 
     let stream_for_reader = stream.clone();
     let group_for_reader = consumer_group.clone();
+    let name_for_reader = consumer_name.clone();
     let (backend_reader, _ctx_reader) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_reader.clone()))
             .add_consumer_group(
                 group_for_reader.clone(),
-                RedisConsumerGroupSpec::new([stream_for_reader.clone()], group_for_reader.clone()),
+                RedisConsumerGroupSpec::new(
+                    [stream_for_reader.clone()],
+                    group_for_reader.clone(),
+                    name_for_reader.clone(),
+                ),
             )
             .add_event_single::<TestEvent>(stream_for_reader.clone());
     })
@@ -48,16 +55,21 @@ fn redis_single_direction_writer_reader_flow() {
     struct Stream(String);
     #[derive(Resource, Clone)]
     struct ConsumerGroup(String);
+    #[derive(Resource, Clone)]
+    struct ConsumerName(String);
     reader_app.insert_resource(Stream(stream.clone()));
-    reader_app.insert_resource(ConsumerGroup(consumer_group));
+    reader_app.insert_resource(ConsumerGroup(consumer_group.clone()));
+    reader_app.insert_resource(ConsumerName(consumer_name));
 
     fn reader_system(
         mut reader: RedisEventReader<TestEvent>,
         stream: Res<Stream>,
         group: Res<ConsumerGroup>,
+        consumer: Res<ConsumerName>,
         mut collected: ResMut<Collected>,
     ) {
-        let config = RedisConsumerConfig::new(group.0.clone(), [stream.0.clone()]);
+        let config =
+            RedisConsumerConfig::new(group.0.clone(), consumer.0.clone(), [stream.0.clone()]);
         for wrapper in reader.read(&config) {
             collected.0.push(wrapper.event().clone());
         }
@@ -104,15 +116,22 @@ fn redis_bidirectional_apps_exchange_events() {
     let stream = unique_topic("redis-bidirectional");
     let group_a = unique_consumer_group("redis_app_a");
     let group_b = unique_consumer_group("redis_app_b");
+    let consumer_a = unique_consumer_group_member(&group_a);
+    let consumer_b = unique_consumer_group_member(&group_b);
 
     let stream_for_app_a = stream.clone();
     let group_for_app_a = group_a.clone();
+    let consumer_for_app_a = consumer_a.clone();
     let (backend_a, _ctx_a) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_app_a.clone()))
             .add_consumer_group(
                 group_for_app_a.clone(),
-                RedisConsumerGroupSpec::new([stream_for_app_a.clone()], group_for_app_a.clone()),
+                RedisConsumerGroupSpec::new(
+                    [stream_for_app_a.clone()],
+                    group_for_app_a.clone(),
+                    consumer_for_app_a.clone(),
+                ),
             )
             .add_event_single::<TestEvent>(stream_for_app_a.clone());
     })
@@ -120,12 +139,17 @@ fn redis_bidirectional_apps_exchange_events() {
 
     let stream_for_app_b = stream.clone();
     let group_for_app_b = group_b.clone();
+    let consumer_for_app_b = consumer_b.clone();
     let (backend_b, _ctx_b) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_app_b.clone()))
             .add_consumer_group(
                 group_for_app_b.clone(),
-                RedisConsumerGroupSpec::new([stream_for_app_b.clone()], group_for_app_b.clone()),
+                RedisConsumerGroupSpec::new(
+                    [stream_for_app_b.clone()],
+                    group_for_app_b.clone(),
+                    consumer_for_app_b.clone(),
+                ),
             )
             .add_event_single::<TestEvent>(stream_for_app_b.clone());
     })
@@ -139,6 +163,8 @@ fn redis_bidirectional_apps_exchange_events() {
 
     #[derive(Resource, Clone)]
     struct GroupName(String);
+    #[derive(Resource, Clone)]
+    struct ConsumerName(String);
 
     #[derive(Resource, Clone)]
     struct OutgoingEvents {
@@ -152,8 +178,10 @@ fn redis_bidirectional_apps_exchange_events() {
         stream: Res<StreamName>,
         group: Res<GroupName>,
         mut received: ResMut<Received>,
+        consumer: Res<ConsumerName>,
     ) {
-        let config = RedisConsumerConfig::new(group.0.clone(), [stream.0.clone()]);
+        let config =
+            RedisConsumerConfig::new(group.0.clone(), consumer.0.clone(), [stream.0.clone()]);
         for wrapper in reader.read(&config) {
             received.0.push(wrapper.event().clone());
         }
@@ -179,6 +207,7 @@ fn redis_bidirectional_apps_exchange_events() {
     app_a.insert_resource(Received::default());
     app_a.insert_resource(StreamName(stream.clone()));
     app_a.insert_resource(GroupName(group_a));
+    app_a.insert_resource(ConsumerName(consumer_a));
     app_a.insert_resource(OutgoingEvents {
         stream: stream.clone(),
         events: vec![event_from_a.clone()],
@@ -195,6 +224,7 @@ fn redis_bidirectional_apps_exchange_events() {
     app_b.insert_resource(Received::default());
     app_b.insert_resource(StreamName(stream.clone()));
     app_b.insert_resource(GroupName(group_b));
+    app_b.insert_resource(ConsumerName(consumer_b));
     app_b.insert_resource(OutgoingEvents {
         stream,
         events: vec![event_from_b.clone()],

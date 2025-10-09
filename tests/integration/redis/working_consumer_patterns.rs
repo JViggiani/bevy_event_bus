@@ -7,7 +7,8 @@ use bevy_event_bus::config::redis::{
 use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
-    run_app_updates, unique_consumer_group, unique_topic, update_until,
+    run_app_updates, unique_consumer_group, unique_consumer_group_member, unique_topic,
+    update_until,
 };
 use integration_tests::utils::redis_setup;
 
@@ -19,15 +20,22 @@ struct EventCollector(Vec<TestEvent>);
 fn test_working_consumer_group_patterns() {
     let stream = unique_topic("working-pattern");
     let consumer_group = unique_consumer_group("working-group");
+    let consumer1 = unique_consumer_group_member(&consumer_group);
+    let consumer2 = unique_consumer_group_member(&consumer_group);
 
     let stream_clone = stream.clone();
     let consumer_group_clone = consumer_group.clone();
+    let consumer1_for_setup = consumer1.clone();
     let (backend, _context) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone.clone()))
             .add_consumer_group(
                 consumer_group_clone.clone(),
-                RedisConsumerGroupSpec::new([stream_clone.clone()], consumer_group_clone.clone()),
+                RedisConsumerGroupSpec::new(
+                    [stream_clone.clone()],
+                    consumer_group_clone.clone(),
+                    consumer1_for_setup.clone(),
+                ),
             )
             .add_event_single::<TestEvent>(stream_clone.clone());
     })
@@ -40,11 +48,11 @@ fn test_working_consumer_group_patterns() {
 
     let s1 = stream.clone();
     let g1 = consumer_group.clone();
+    let c1 = consumer1.clone();
     reader1.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(g1.clone(), [s1.clone()]);
-            // NO .set_consumer_name() - this is the working pattern!
+            let config = RedisConsumerConfig::new(g1.clone(), c1.clone(), [s1.clone()]);
             let initial_count = c.0.len();
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
@@ -62,11 +70,11 @@ fn test_working_consumer_group_patterns() {
 
     let s2 = stream.clone();
     let g2 = consumer_group.clone();
+    let c2 = consumer2.clone();
     reader2.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(g2.clone(), [s2.clone()]);
-            // NO .set_consumer_name() - this is the working pattern!
+            let config = RedisConsumerConfig::new(g2.clone(), c2.clone(), [s2.clone()]);
             let initial_count = c.0.len();
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
@@ -160,20 +168,32 @@ fn test_broadcast_with_different_groups_working_pattern() {
     let stream = unique_topic("broadcast-working");
     let consumer_group1 = unique_consumer_group("broadcast-group1");
     let consumer_group2 = unique_consumer_group("broadcast-group2");
+    let group1_consumer = unique_consumer_group_member(&consumer_group1);
+    let group2_consumer = unique_consumer_group_member(&consumer_group2);
 
     let stream_clone = stream.clone();
     let consumer_group1_clone = consumer_group1.clone();
     let consumer_group2_clone = consumer_group2.clone();
+    let group1_consumer_for_setup = group1_consumer.clone();
+    let group2_consumer_for_setup = group2_consumer.clone();
     let (backend, _context) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone.clone()))
             .add_consumer_group(
                 consumer_group1_clone.clone(),
-                RedisConsumerGroupSpec::new([stream_clone.clone()], consumer_group1_clone.clone()),
+                RedisConsumerGroupSpec::new(
+                    [stream_clone.clone()],
+                    consumer_group1_clone.clone(),
+                    group1_consumer_for_setup.clone(),
+                ),
             )
             .add_consumer_group(
                 consumer_group2_clone.clone(),
-                RedisConsumerGroupSpec::new([stream_clone.clone()], consumer_group2_clone.clone()),
+                RedisConsumerGroupSpec::new(
+                    [stream_clone.clone()],
+                    consumer_group2_clone.clone(),
+                    group2_consumer_for_setup.clone(),
+                ),
             )
             .add_event_single::<TestEvent>(stream_clone.clone());
     })
@@ -186,11 +206,12 @@ fn test_broadcast_with_different_groups_working_pattern() {
 
     let s1 = stream.clone();
     let g1 = consumer_group1.clone();
+    let consumer1_clone = group1_consumer.clone();
     reader1.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(g1.clone(), [s1.clone()]);
-            // NO .set_consumer_name() - working pattern!
+            let config =
+                RedisConsumerConfig::new(g1.clone(), consumer1_clone.clone(), [s1.clone()]);
             let initial_count = c.0.len();
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
@@ -208,11 +229,12 @@ fn test_broadcast_with_different_groups_working_pattern() {
 
     let s2 = stream.clone();
     let g2 = consumer_group2.clone();
+    let consumer2_clone = group2_consumer.clone();
     reader2.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(g2.clone(), [s2.clone()]);
-            // NO .set_consumer_name() - working pattern!
+            let config =
+                RedisConsumerConfig::new(g2.clone(), consumer2_clone.clone(), [s2.clone()]);
             let initial_count = c.0.len();
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());

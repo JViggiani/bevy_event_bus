@@ -7,8 +7,7 @@ use bevy_event_bus::config::redis::{
 use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
-    run_app_updates, unique_consumer_group, unique_consumer_group_member, unique_topic,
-    update_until,
+    run_app_updates, unique_consumer_group_membership, unique_topic, update_until,
 };
 use integration_tests::utils::redis_setup;
 
@@ -19,19 +18,23 @@ struct EventCollector(Vec<TestEvent>);
 #[test]
 fn test_coordinated_consumer_names() {
     let stream = unique_topic("coordinated-names");
-    let consumer_group = unique_consumer_group("coordinated-group");
-    let consumer_name1 = unique_consumer_group_member("coord-consumer-1");
+    let membership = unique_consumer_group_membership("coordinated-group");
+    let consumer_group = membership.group.clone();
+    let consumer_name = membership.member.clone();
 
     let stream_clone = stream.clone();
     let consumer_group_clone = consumer_group.clone();
-    let consumer_name_clone = consumer_name1.clone();
+    let consumer_name_clone = consumer_name.clone();
     let (backend, _context) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone.clone()))
             .add_consumer_group(
                 consumer_group_clone.clone(),
-                RedisConsumerGroupSpec::new([stream_clone.clone()], consumer_group_clone.clone())
-                    .consumer_name(consumer_name_clone.clone()),
+                RedisConsumerGroupSpec::new(
+                    [stream_clone.clone()],
+                    consumer_group_clone.clone(),
+                    consumer_name_clone.clone(),
+                ),
             )
             .add_event_single::<TestEvent>(stream_clone.clone());
     })
@@ -44,12 +47,11 @@ fn test_coordinated_consumer_names() {
 
     let s1 = stream.clone();
     let g1 = consumer_group.clone();
-    let c1 = consumer_name1.clone();
+    let c1 = consumer_name.clone();
     reader1.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config =
-                RedisConsumerConfig::new(g1.clone(), [s1.clone()]).set_consumer_name(c1.clone()); // Use SAME name as topology
+            let config = RedisConsumerConfig::new(g1.clone(), c1.clone(), [s1.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
             }

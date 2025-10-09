@@ -6,7 +6,9 @@ use bevy_event_bus::config::redis::{
 };
 use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
 use integration_tests::utils::TestEvent;
-use integration_tests::utils::helpers::{unique_consumer_group, unique_topic};
+use integration_tests::utils::helpers::{
+    unique_consumer_group, unique_consumer_group_member, unique_topic,
+};
 use integration_tests::utils::redis_setup;
 
 /// Test that exactly-once delivery semantics work with acknowledgments
@@ -14,6 +16,8 @@ use integration_tests::utils::redis_setup;
 fn no_event_duplication_exactly_once_delivery() {
     let stream = unique_topic("exactly_once");
     let consumer_group = unique_consumer_group("exactly_once_group");
+    let backend_consumer1 = unique_consumer_group_member(&consumer_group);
+    let backend_consumer2 = unique_consumer_group_member(&consumer_group);
 
     let writer_stream = stream.clone();
     let (writer_backend, _context1) = redis_setup::prepare_backend(move |builder| {
@@ -25,13 +29,18 @@ fn no_event_duplication_exactly_once_delivery() {
 
     let reader1_stream = stream.clone();
     let reader1_group = consumer_group.clone();
+    let reader1_backend_consumer = backend_consumer1.clone();
     let (reader1_backend, _context2) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(reader1_stream.clone()))
             .add_consumer_group(
                 reader1_group.clone(),
-                RedisConsumerGroupSpec::new([reader1_stream.clone()], reader1_group.clone())
-                    .manual_ack(true),
+                RedisConsumerGroupSpec::new(
+                    [reader1_stream.clone()],
+                    reader1_group.clone(),
+                    reader1_backend_consumer.clone(),
+                )
+                .manual_ack(true),
             )
             .add_event_single::<TestEvent>(reader1_stream.clone());
     })
@@ -39,13 +48,18 @@ fn no_event_duplication_exactly_once_delivery() {
 
     let reader2_stream = stream.clone();
     let reader2_group = consumer_group.clone();
+    let reader2_backend_consumer = backend_consumer2.clone();
     let (reader2_backend, _context3) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(reader2_stream.clone()))
             .add_consumer_group(
                 reader2_group.clone(),
-                RedisConsumerGroupSpec::new([reader2_stream.clone()], reader2_group.clone())
-                    .manual_ack(true),
+                RedisConsumerGroupSpec::new(
+                    [reader2_stream.clone()],
+                    reader2_group.clone(),
+                    reader2_backend_consumer.clone(),
+                )
+                .manual_ack(true),
             )
             .add_event_single::<TestEvent>(reader2_stream.clone());
     })
@@ -88,10 +102,11 @@ fn no_event_duplication_exactly_once_delivery() {
     // Two readers with same consumer group - only one should get the event
     let s1 = stream.clone();
     let g1 = consumer_group.clone();
+    let c1 = backend_consumer1.clone();
     reader1.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<Collected>| {
-            let config = RedisConsumerConfig::new(g1.clone(), [s1.clone()]);
+            let config = RedisConsumerConfig::new(g1.clone(), c1.clone(), [s1.clone()]);
             for wrapper in r.read(&config) {
                 // Acknowledge to ensure exactly-once semantics
                 if let Err(e) = r.acknowledge(&wrapper) {
@@ -104,10 +119,11 @@ fn no_event_duplication_exactly_once_delivery() {
 
     let s2 = stream.clone();
     let g2 = consumer_group.clone();
+    let c2 = backend_consumer2.clone();
     reader2.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<Collected>| {
-            let config = RedisConsumerConfig::new(g2.clone(), [s2.clone()]);
+            let config = RedisConsumerConfig::new(g2.clone(), c2.clone(), [s2.clone()]);
             for wrapper in r.read(&config) {
                 // Acknowledge to ensure exactly-once semantics
                 if let Err(e) = r.acknowledge(&wrapper) {

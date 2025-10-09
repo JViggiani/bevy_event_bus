@@ -152,29 +152,33 @@ impl RedisStreamSpec {
 pub struct RedisConsumerGroupSpec {
     pub streams: Vec<String>,
     pub consumer_group: String,
-    pub consumer_name: Option<String>,
+    pub consumer_name: String,
     pub manual_ack: bool,
     pub start_id: String,
 }
 
 impl RedisConsumerGroupSpec {
-    pub fn new<I, S>(streams: I, consumer_group: impl Into<String>) -> Self
+    pub fn new<I, S>(
+        streams: I,
+        consumer_group: impl Into<String>,
+        consumer_name: impl Into<String>,
+    ) -> Self
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
+        let consumer_name = consumer_name.into();
+        assert!(
+            !consumer_name.trim().is_empty(),
+            "consumer_name must not be empty when defining a Redis consumer group"
+        );
         Self {
             streams: streams.into_iter().map(Into::into).collect(),
             consumer_group: consumer_group.into(),
-            consumer_name: None,
+            consumer_name,
             manual_ack: false,
             start_id: "0-0".to_string(),
         }
-    }
-
-    pub fn consumer_name(mut self, name: impl Into<String>) -> Self {
-        self.consumer_name = Some(name.into());
-        self
     }
 
     pub fn manual_ack(mut self, manual: bool) -> Self {
@@ -428,16 +432,31 @@ impl RedisConsumerConfig {
     ///
     /// This mirrors the API style of [`KafkaConsumerConfig::new`], requiring the caller to
     /// specify both the logical group identifier and the set of streams that should be polled.
-    pub fn new<G, I, S>(consumer_group: G, streams: I) -> Self
+    pub fn new<G, N, I, S>(consumer_group: G, consumer_name: N, streams: I) -> Self
     where
         G: Into<String>,
+        N: Into<String>,
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
+        let consumer_group = consumer_group.into();
+        assert!(
+            !consumer_group.trim().is_empty(),
+            "consumer_group must not be empty when constructing a Redis consumer config"
+        );
+
+        let consumer_name = consumer_name.into();
+        assert!(
+            !consumer_name.trim().is_empty(),
+            "consumer_name must not be empty when constructing a Redis consumer config"
+        );
+
+        let streams: Vec<String> = streams.into_iter().map(Into::into).collect();
+        validate_streams(&streams);
         Self {
-            streams: streams.into_iter().map(Into::into).collect(),
-            consumer_group: Some(consumer_group.into()),
-            consumer_name: None,
+            streams,
+            consumer_group: Some(consumer_group),
+            consumer_name: Some(consumer_name),
             read_block_timeout: Duration::from_millis(100),
         }
     }
@@ -449,8 +468,10 @@ impl RedisConsumerConfig {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
+        let streams: Vec<String> = streams.into_iter().map(Into::into).collect();
+        validate_streams(&streams);
         Self {
-            streams: streams.into_iter().map(Into::into).collect(),
+            streams,
             consumer_group: None,
             consumer_name: None,
             read_block_timeout: Duration::from_millis(100),
@@ -458,14 +479,13 @@ impl RedisConsumerConfig {
     }
 
     /// Replace the consumer group associated with this configuration.
-    pub fn set_consumer_group(mut self, group: impl Into<String>) -> Self {
-        self.consumer_group = Some(group.into());
-        self
-    }
-
-    /// Set the consumer name (member identifier) for this configuration.
-    pub fn set_consumer_name(mut self, name: impl Into<String>) -> Self {
-        self.consumer_name = Some(name.into());
+    pub fn set_consumer_group(mut self, consumer_group: impl Into<String>) -> Self {
+        let consumer_group = consumer_group.into();
+        assert!(
+            !consumer_group.trim().is_empty(),
+            "consumer_group must not be empty when calling set_consumer_group"
+        );
+        self.consumer_group = Some(consumer_group);
         self
     }
 
@@ -498,6 +518,62 @@ impl RedisConsumerConfig {
     /// Return the blocking read timeout.
     pub fn block_timeout(&self) -> Duration {
         self.read_block_timeout
+    }
+}
+
+fn validate_streams(streams: &[String]) {
+    assert!(
+        !streams.is_empty(),
+        "at least one stream must be specified when constructing a Redis consumer config"
+    );
+    assert!(
+        streams.iter().all(|stream| !stream.trim().is_empty()),
+        "stream names must not be empty or whitespace when constructing a Redis consumer config"
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_requires_non_empty_consumer_group() {
+        let result = std::panic::catch_unwind(|| {
+            RedisConsumerConfig::new("  ", "reader", ["stream"]);
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn new_requires_non_empty_stream_list() {
+        let result = std::panic::catch_unwind(|| {
+            RedisConsumerConfig::new("group", "reader", Vec::<String>::new());
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn ungrouped_disallows_empty_stream_name() {
+        let result = std::panic::catch_unwind(|| {
+            RedisConsumerConfig::ungrouped([" "]);
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn set_consumer_group_rejects_empty_value() {
+        let result = std::panic::catch_unwind(|| {
+            RedisConsumerConfig::ungrouped(["stream"]).set_consumer_group(" ");
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn valid_configuration_succeeds() {
+        let config = RedisConsumerConfig::new("group", "reader", ["stream"]);
+        assert_eq!(config.consumer_group(), Some("group"));
+        assert_eq!(config.consumer_name(), Some("reader"));
+        assert_eq!(config.streams(), &[String::from("stream")]);
     }
 }
 

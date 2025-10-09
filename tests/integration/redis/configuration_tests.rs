@@ -7,7 +7,7 @@ use bevy_event_bus::config::redis::{
 use bevy_event_bus::{EventBusConfig, EventBusPlugins, RedisEventReader, RedisEventWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
-    run_app_updates, unique_consumer_group, unique_topic, update_until,
+    run_app_updates, unique_consumer_group_membership, unique_topic, update_until,
 };
 use integration_tests::utils::redis_setup;
 use std::time::Duration;
@@ -15,7 +15,9 @@ use std::time::Duration;
 #[test]
 fn configuration_with_readers_writers_works() {
     let stream = unique_topic("config_test");
-    let consumer_group = unique_consumer_group("config_reader_group");
+    let membership = unique_consumer_group_membership("config_reader_group");
+    let consumer_group = membership.group.clone();
+    let consumer_name = membership.member.clone();
 
     let stream_for_writer = stream.clone();
     let (backend_writer, _writer_context) = redis_setup::prepare_backend(move |builder| {
@@ -27,6 +29,7 @@ fn configuration_with_readers_writers_works() {
 
     let stream_for_reader = stream.clone();
     let consumer_group_for_reader = consumer_group.clone();
+    let consumer_name_for_reader = consumer_name.clone();
     let (backend_reader, _reader_context) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_reader.clone()))
@@ -35,6 +38,7 @@ fn configuration_with_readers_writers_works() {
                 RedisConsumerGroupSpec::new(
                     [stream_for_reader.clone()],
                     consumer_group_for_reader.clone(),
+                    consumer_name_for_reader.clone(),
                 ),
             )
             .add_event_single::<TestEvent>(stream_for_reader.clone());
@@ -51,10 +55,14 @@ fn configuration_with_readers_writers_works() {
 
         let stream_clone = stream.clone();
         let consumer_group_clone = consumer_group.clone();
+        let consumer_name_clone = consumer_name.clone();
         let consumer_system =
             move |mut reader: RedisEventReader<TestEvent>, mut collected: ResMut<Collected>| {
-                let config =
-                    RedisConsumerConfig::new(consumer_group_clone.clone(), [stream_clone.clone()]);
+                let config = RedisConsumerConfig::new(
+                    consumer_group_clone.clone(),
+                    consumer_name_clone.clone(),
+                    [stream_clone.clone()],
+                );
                 let events = reader.read(&config);
                 for wrapper in events {
                     collected.0.push(wrapper.event().clone());
@@ -118,10 +126,13 @@ fn configuration_with_readers_writers_works() {
 #[test]
 fn redis_specific_methods_work() {
     let stream = unique_topic("redis_methods");
-    let consumer_group = unique_consumer_group("redis_methods_group");
+    let membership = unique_consumer_group_membership("redis_methods_group");
+    let consumer_group = membership.group.clone();
+    let consumer_name = membership.member.clone();
 
     let stream_for_backend = stream.clone();
     let consumer_group_for_backend = consumer_group.clone();
+    let consumer_name_for_backend = consumer_name.clone();
     let (backend, _context) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_backend.clone()).maxlen(1000))
@@ -130,8 +141,8 @@ fn redis_specific_methods_work() {
                 RedisConsumerGroupSpec::new(
                     [stream_for_backend.clone()],
                     consumer_group_for_backend.clone(),
-                )
-                .consumer_name("redis_consumer"),
+                    consumer_name_for_backend.clone(),
+                ),
             )
             .add_event_single::<TestEvent>(stream_for_backend.clone());
     })
@@ -141,7 +152,11 @@ fn redis_specific_methods_work() {
     app.add_plugins(EventBusPlugins(backend));
 
     let redis_producer_config = RedisProducerConfig::new(stream.clone());
-    let redis_consumer_config = RedisConsumerConfig::new(consumer_group.clone(), [stream.clone()]);
+    let redis_consumer_config = RedisConsumerConfig::new(
+        consumer_group.clone(),
+        consumer_name.clone(),
+        [stream.clone()],
+    );
 
     #[derive(Resource)]
     struct TestConfigs {
@@ -190,7 +205,6 @@ fn redis_specific_methods_work() {
         let reader_config = configs
             .consumer
             .clone()
-            .set_consumer_name("redis_consumer")
             .read_block_timeout(Duration::from_millis(100));
         let _events = reader.read(&reader_config);
     }
@@ -207,9 +221,9 @@ fn redis_specific_methods_work() {
 #[test]
 fn builder_pattern_works() {
     // Test that we can build consumer config
-    let consumer_config = RedisConsumerConfig::new("test_group", ["stream1", "stream2"])
-        .set_consumer_name("test_consumer")
-        .read_block_timeout(Duration::from_millis(1000));
+    let consumer_config =
+        RedisConsumerConfig::new("test_group", "test_consumer", ["stream1", "stream2"])
+            .read_block_timeout(Duration::from_millis(1000));
 
     // Test that trait methods work using explicit syntax
     let consumer_topics = EventBusConfig::topics(&consumer_config).to_vec();

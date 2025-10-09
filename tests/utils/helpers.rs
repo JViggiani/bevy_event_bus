@@ -53,6 +53,26 @@ pub fn unique_consumer_group_member(group_base: &str) -> String {
     format!("{}-member-{}", group_base, next_unique_suffix())
 }
 
+/// Represents a unique consumer group and member pairing for Redis/Kafka tests.
+#[derive(Clone, Debug)]
+pub struct ConsumerGroupMembership {
+    pub group: String,
+    pub member: String,
+}
+
+impl ConsumerGroupMembership {
+    pub fn new(group: String, member: String) -> Self {
+        Self { group, member }
+    }
+}
+
+/// Generate a unique consumer group along with a member identity derived from that group.
+pub fn unique_consumer_group_membership(base: &str) -> ConsumerGroupMembership {
+    let group = unique_consumer_group(base);
+    let member = unique_consumer_group_member(&group);
+    ConsumerGroupMembership::new(group, member)
+}
+
 /// Spin update frames on a reader app until predicate true or timeout (ms). Returns (success, frames_run).
 pub fn update_until(
     reader_app: &mut App,

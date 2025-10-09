@@ -6,37 +6,47 @@ use bevy_event_bus::config::redis::{
 };
 use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
 use integration_tests::utils::TestEvent;
-use integration_tests::utils::helpers::{unique_consumer_group, unique_topic};
+use integration_tests::utils::helpers::{unique_consumer_group_membership, unique_topic};
 use integration_tests::utils::redis_setup;
 
 #[test]
 fn multi_stream_isolation() {
     let stream1 = unique_topic("isolation_1");
     let stream2 = unique_topic("isolation_2");
-    let consumer_group1 = unique_consumer_group("group1");
-    let consumer_group2 = unique_consumer_group("group2");
+    let membership1 = unique_consumer_group_membership("group1");
+    let membership2 = unique_consumer_group_membership("group2");
 
     let reader1_stream = stream1.clone();
-    let reader1_group = consumer_group1.clone();
+    let reader1_group = membership1.group.clone();
+    let reader1_consumer = membership1.member.clone();
     let (backend1, _context1) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(reader1_stream.clone()))
             .add_consumer_group(
                 reader1_group.clone(),
-                RedisConsumerGroupSpec::new([reader1_stream.clone()], reader1_group.clone()),
+                RedisConsumerGroupSpec::new(
+                    [reader1_stream.clone()],
+                    reader1_group.clone(),
+                    reader1_consumer.clone(),
+                ),
             )
             .add_event_single::<TestEvent>(reader1_stream.clone());
     })
     .expect("Redis backend1 setup successful");
 
     let reader2_stream = stream2.clone();
-    let reader2_group = consumer_group2.clone();
+    let reader2_group = membership2.group.clone();
+    let reader2_consumer = membership2.member.clone();
     let (backend2, _context2) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(reader2_stream.clone()))
             .add_consumer_group(
                 reader2_group.clone(),
-                RedisConsumerGroupSpec::new([reader2_stream.clone()], reader2_group.clone()),
+                RedisConsumerGroupSpec::new(
+                    [reader2_stream.clone()],
+                    reader2_group.clone(),
+                    reader2_consumer.clone(),
+                ),
             )
             .add_event_single::<TestEvent>(reader2_stream.clone());
     })
@@ -104,11 +114,13 @@ fn multi_stream_isolation() {
 
     // Read from stream1
     let s1_clone = stream1.clone();
-    let g1_clone = consumer_group1.clone();
+    let g1_clone = membership1.group.clone();
+    let c1_clone = membership1.member.clone();
     reader1.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<Collected>| {
-            let config = RedisConsumerConfig::new(g1_clone.clone(), [s1_clone.clone()]);
+            let config =
+                RedisConsumerConfig::new(g1_clone.clone(), c1_clone.clone(), [s1_clone.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
             }
@@ -117,11 +129,13 @@ fn multi_stream_isolation() {
 
     // Read from stream2
     let s2_clone = stream2.clone();
-    let g2_clone = consumer_group2.clone();
+    let g2_clone = membership2.group.clone();
+    let c2_clone = membership2.member.clone();
     reader2.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<Collected>| {
-            let config = RedisConsumerConfig::new(g2_clone.clone(), [s2_clone.clone()]);
+            let config =
+                RedisConsumerConfig::new(g2_clone.clone(), c2_clone.clone(), [s2_clone.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
             }

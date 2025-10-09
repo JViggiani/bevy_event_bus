@@ -7,8 +7,7 @@ use bevy_event_bus::config::redis::{
 use bevy_event_bus::{BackendStatus, EventBusPlugins, RedisEventReader, RedisEventWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
-    run_app_updates, unique_consumer_group, unique_consumer_group_member, unique_topic,
-    update_until,
+    run_app_updates, unique_consumer_group_membership, unique_topic, update_until,
 };
 use integration_tests::utils::performance::record_performance_results;
 use integration_tests::utils::redis_setup;
@@ -67,11 +66,13 @@ fn duration_between(start: Option<Instant>, end: Option<Instant>, label: &str) -
 #[ignore] // Performance test - run manually
 fn test_message_throughput() {
     let stream = unique_topic("perf_throughput");
-    let consumer_group = unique_consumer_group("perf_group");
-    let consumer_name = unique_consumer_group_member("perf_consumer");
+    let membership = unique_consumer_group_membership("perf_group");
+    let consumer_group = membership.group.clone();
+    let consumer_name = membership.member.clone();
 
     let stream_clone_for_topology = stream.clone();
     let consumer_group_clone_for_topology = consumer_group.clone();
+    let consumer_name_clone_for_topology = consumer_name.clone();
     let (backend, _context) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone_for_topology.clone()))
@@ -80,6 +81,7 @@ fn test_message_throughput() {
                 RedisConsumerGroupSpec::new(
                     [stream_clone_for_topology.clone()],
                     consumer_group_clone_for_topology.clone(),
+                    consumer_name_clone_for_topology.clone(),
                 ),
             )
             .add_event_single::<TestEvent>(stream_clone_for_topology.clone());
@@ -152,8 +154,11 @@ fn test_message_throughput() {
                 return;
             }
 
-            let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()])
-                .set_consumer_name(consumer_clone.clone());
+            let config = RedisConsumerConfig::new(
+                group_clone.clone(),
+                consumer_clone.clone(),
+                [stream_clone.clone()],
+            );
 
             let events = r.read(&config);
             if !events.is_empty() {
@@ -243,11 +248,13 @@ fn test_message_throughput() {
 #[ignore] // Performance test - run manually
 fn test_high_volume_small_messages() {
     let stream = unique_topic("perf_small");
-    let consumer_group = unique_consumer_group("perf_small_group");
-    let consumer_name = unique_consumer_group_member("perf_small_consumer");
+    let membership = unique_consumer_group_membership("perf_small_group");
+    let consumer_group = membership.group.clone();
+    let consumer_name = membership.member.clone();
 
     let stream_clone_for_topology = stream.clone();
     let consumer_group_clone_for_topology = consumer_group.clone();
+    let consumer_name_clone_for_topology = consumer_name.clone();
     let (backend, _context) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone_for_topology.clone()))
@@ -256,6 +263,7 @@ fn test_high_volume_small_messages() {
                 RedisConsumerGroupSpec::new(
                     [stream_clone_for_topology.clone()],
                     consumer_group_clone_for_topology.clone(),
+                    consumer_name_clone_for_topology.clone(),
                 ),
             )
             .add_event_single::<TestEvent>(stream_clone_for_topology.clone());
@@ -328,8 +336,11 @@ fn test_high_volume_small_messages() {
                 return;
             }
 
-            let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()])
-                .set_consumer_name(consumer_clone.clone());
+            let config = RedisConsumerConfig::new(
+                group_clone.clone(),
+                consumer_clone.clone(),
+                [stream_clone.clone()],
+            );
 
             let events = r.read(&config);
             if !events.is_empty() {
@@ -406,8 +417,9 @@ fn test_high_volume_small_messages() {
 #[ignore] // Performance test - run manually
 fn test_large_message_throughput() {
     let stream = unique_topic("perf_large");
-    let consumer_group = unique_consumer_group("perf_large_group");
-    let consumer_name = unique_consumer_group_member("perf_large_consumer");
+    let membership = unique_consumer_group_membership("perf_large_group");
+    let consumer_group = membership.group.clone();
+    let consumer_name = membership.member.clone();
 
     #[derive(Event, Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
     struct LargeEvent {
@@ -418,6 +430,7 @@ fn test_large_message_throughput() {
 
     let stream_clone_for_topology = stream.clone();
     let consumer_group_clone_for_topology = consumer_group.clone();
+    let consumer_name_clone_for_topology = consumer_name.clone();
     let (backend, _context) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone_for_topology.clone()))
@@ -426,6 +439,7 @@ fn test_large_message_throughput() {
                 RedisConsumerGroupSpec::new(
                     [stream_clone_for_topology.clone()],
                     consumer_group_clone_for_topology.clone(),
+                    consumer_name_clone_for_topology.clone(),
                 ),
             )
             .add_event_single::<LargeEvent>(stream_clone_for_topology.clone());
@@ -489,8 +503,11 @@ fn test_large_message_throughput() {
                 return;
             }
 
-            let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()])
-                .set_consumer_name(consumer_clone.clone());
+            let config = RedisConsumerConfig::new(
+                group_clone.clone(),
+                consumer_clone.clone(),
+                [stream_clone.clone()],
+            );
 
             let events = r.read(&config);
             if !events.is_empty() {

@@ -9,7 +9,8 @@ use bevy_event_bus::{
 };
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
-    run_app_updates, unique_consumer_group, unique_topic, update_until,
+    ConsumerGroupMembership, run_app_updates, unique_consumer_group_membership, unique_topic,
+    update_until,
 };
 use integration_tests::utils::redis_setup;
 
@@ -17,7 +18,7 @@ use integration_tests::utils::redis_setup;
 struct Topic(String);
 
 #[derive(Resource, Clone)]
-struct ConsumerGroup(Option<String>);
+struct ConsumerMembership(Option<ConsumerGroupMembership>);
 
 #[derive(Resource, Default)]
 struct Received {
@@ -70,11 +71,15 @@ fn redis_writer_emit_batch(mut writer: RedisEventWriter, mut payload: ResMut<Wri
 fn redis_reader_ack_system(
     mut reader: RedisEventReader<TestEvent>,
     topic: Res<Topic>,
-    group: Res<ConsumerGroup>,
+    membership: Res<ConsumerMembership>,
     mut received: ResMut<Received>,
 ) {
-    let config = match group.0.as_ref() {
-        Some(group_id) => RedisConsumerConfig::new(group_id.clone(), [topic.0.clone()]),
+    let config = match membership.0.as_ref() {
+        Some(group_membership) => RedisConsumerConfig::new(
+            group_membership.group.clone(),
+            group_membership.member.clone(),
+            [topic.0.clone()],
+        ),
         None => RedisConsumerConfig::ungrouped([topic.0.clone()]),
     };
 
@@ -90,17 +95,24 @@ fn redis_reader_ack_system(
 #[test]
 fn manual_ack_clears_messages_and_tracks_success() {
     let stream = unique_topic("redis-manual-ack");
-    let group = unique_consumer_group("redis-manual-ack-group");
+    let membership = unique_consumer_group_membership("redis-manual-ack-group");
+    let group = membership.group.clone();
+    let consumer_name = membership.member.clone();
 
     let stream_clone = stream.clone();
     let group_clone = group.clone();
+    let consumer_clone = consumer_name.clone();
     let (backend, context) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone.clone()))
             .add_consumer_group(
                 group_clone.clone(),
-                RedisConsumerGroupSpec::new([stream_clone.clone()], group_clone.clone())
-                    .manual_ack(true),
+                RedisConsumerGroupSpec::new(
+                    [stream_clone.clone()],
+                    group_clone.clone(),
+                    consumer_clone.clone(),
+                )
+                .manual_ack(true),
             )
             .add_event_single::<TestEvent>(stream_clone.clone());
     })
@@ -110,14 +122,13 @@ fn manual_ack_clears_messages_and_tracks_success() {
     let reader_backend = backend;
 
     let topic = stream;
-    let consumer_group = group;
 
     // Reader app drains events and acknowledges them immediately. Install the backend here first
     // so that the message stream and manual acknowledgement resources bind to the reader app.
     let mut reader_app = App::new();
     reader_app.add_plugins(EventBusPlugins(reader_backend));
     reader_app.insert_resource(Topic(topic.clone()));
-    reader_app.insert_resource(ConsumerGroup(Some(consumer_group)));
+    reader_app.insert_resource(ConsumerMembership(Some(membership.clone())));
     reader_app.insert_resource(Received::default());
     reader_app.add_systems(Update, redis_reader_ack_system);
 
@@ -184,17 +195,24 @@ fn manual_ack_batches_multiple_messages() {
     const TOTAL_MESSAGES: usize = 64;
 
     let stream = unique_topic("redis-manual-ack-batch");
-    let group = unique_consumer_group("redis-manual-ack-batch-group");
+    let membership = unique_consumer_group_membership("redis-manual-ack-batch-group");
+    let group = membership.group.clone();
+    let consumer_name = membership.member.clone();
 
     let stream_clone = stream.clone();
     let group_clone = group.clone();
+    let consumer_clone = consumer_name.clone();
     let (backend, context) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone.clone()))
             .add_consumer_group(
                 group_clone.clone(),
-                RedisConsumerGroupSpec::new([stream_clone.clone()], group_clone.clone())
-                    .manual_ack(true),
+                RedisConsumerGroupSpec::new(
+                    [stream_clone.clone()],
+                    group_clone.clone(),
+                    consumer_clone.clone(),
+                )
+                .manual_ack(true),
             )
             .add_event_single::<TestEvent>(stream_clone.clone());
     })
@@ -206,7 +224,7 @@ fn manual_ack_batches_multiple_messages() {
     let mut reader_app = App::new();
     reader_app.add_plugins(EventBusPlugins(reader_backend));
     reader_app.insert_resource(Topic(stream.clone()));
-    reader_app.insert_resource(ConsumerGroup(Some(group.clone())));
+    reader_app.insert_resource(ConsumerMembership(Some(membership.clone())));
     reader_app.insert_resource(Received::default());
     reader_app.add_systems(Update, redis_reader_ack_system);
 

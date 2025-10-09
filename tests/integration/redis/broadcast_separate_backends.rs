@@ -7,8 +7,7 @@ use bevy_event_bus::config::redis::{
 use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
-    run_app_updates, unique_consumer_group, unique_consumer_group_member, unique_topic,
-    update_until,
+    run_app_updates, unique_consumer_group_membership, unique_topic, update_until,
 };
 use integration_tests::utils::redis_setup;
 
@@ -20,30 +19,40 @@ struct EventCollector(Vec<TestEvent>);
 #[test]
 fn test_broadcast_with_separate_backends() {
     let stream = unique_topic("broadcast-separate");
-    let consumer_group1 = unique_consumer_group("group1");
-    let consumer_group2 = unique_consumer_group("group2");
+    let membership1 = unique_consumer_group_membership("group1");
+    let membership2 = unique_consumer_group_membership("group2");
 
     let reader1_stream = stream.clone();
-    let reader1_group = consumer_group1.clone();
+    let reader1_group = membership1.group.clone();
+    let reader1_consumer = membership1.member.clone();
     let (backend1, _context1) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(reader1_stream.clone()))
             .add_consumer_group(
                 reader1_group.clone(),
-                RedisConsumerGroupSpec::new([reader1_stream.clone()], reader1_group.clone()),
+                RedisConsumerGroupSpec::new(
+                    [reader1_stream.clone()],
+                    reader1_group.clone(),
+                    reader1_consumer.clone(),
+                ),
             )
             .add_event_single::<TestEvent>(reader1_stream.clone());
     })
     .expect("Redis backend1 setup successful");
 
     let reader2_stream = stream.clone();
-    let reader2_group = consumer_group2.clone();
+    let reader2_group = membership2.group.clone();
+    let reader2_consumer = membership2.member.clone();
     let (backend2, _context2) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(reader2_stream.clone()))
             .add_consumer_group(
                 reader2_group.clone(),
-                RedisConsumerGroupSpec::new([reader2_stream.clone()], reader2_group.clone()),
+                RedisConsumerGroupSpec::new(
+                    [reader2_stream.clone()],
+                    reader2_group.clone(),
+                    reader2_consumer.clone(),
+                ),
             )
             .add_event_single::<TestEvent>(reader2_stream.clone());
     })
@@ -63,13 +72,12 @@ fn test_broadcast_with_separate_backends() {
     reader1.insert_resource(EventCollector::default());
 
     let s1 = stream.clone();
-    let g1 = consumer_group1.clone();
-    let consumer1 = unique_consumer_group_member(&consumer_group1);
+    let g1 = membership1.group.clone();
+    let c1 = membership1.member.clone();
     reader1.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(g1.clone(), [s1.clone()])
-                .set_consumer_name(consumer1.clone());
+            let config = RedisConsumerConfig::new(g1.clone(), c1.clone(), [s1.clone()]);
             let initial_count = c.0.len();
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
@@ -86,13 +94,12 @@ fn test_broadcast_with_separate_backends() {
     reader2.insert_resource(EventCollector::default());
 
     let s2 = stream.clone();
-    let g2 = consumer_group2.clone();
-    let consumer2 = unique_consumer_group_member(&consumer_group2);
+    let g2 = membership2.group.clone();
+    let c2 = membership2.member.clone();
     reader2.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(g2.clone(), [s2.clone()])
-                .set_consumer_name(consumer2.clone());
+            let config = RedisConsumerConfig::new(g2.clone(), c2.clone(), [s2.clone()]);
             let initial_count = c.0.len();
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());

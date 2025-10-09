@@ -6,7 +6,9 @@ use bevy_event_bus::config::redis::{
 };
 use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
 use integration_tests::utils::TestEvent;
-use integration_tests::utils::helpers::{run_app_updates, unique_consumer_group, unique_topic};
+use integration_tests::utils::helpers::{
+    run_app_updates, unique_consumer_group_membership, unique_topic,
+};
 use integration_tests::utils::redis_setup;
 
 #[derive(Resource, Default)]
@@ -16,16 +18,23 @@ struct EventCollector(Vec<TestEvent>);
 #[test]
 fn test_read_from_topology_defined_consumer_group() {
     let stream = unique_topic("topology-defined");
-    let topology_group = unique_consumer_group("topology-group");
+    let topology_membership = unique_consumer_group_membership("topology-group");
+    let topology_group = topology_membership.group.clone();
+    let topology_consumer = topology_membership.member.clone();
 
     let stream_clone = stream.clone();
     let topology_group_clone = topology_group.clone();
+    let topology_consumer_clone = topology_consumer.clone();
     let (backend, _context) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone.clone()))
             .add_consumer_group(
                 topology_group_clone.clone(),
-                RedisConsumerGroupSpec::new([stream_clone.clone()], topology_group_clone.clone()),
+                RedisConsumerGroupSpec::new(
+                    [stream_clone.clone()],
+                    topology_group_clone.clone(),
+                    topology_consumer_clone.clone(),
+                ),
             )
             .add_event_single::<TestEvent>(stream_clone.clone());
     })
@@ -38,11 +47,12 @@ fn test_read_from_topology_defined_consumer_group() {
 
     let s = stream.clone();
     let g = topology_group.clone();
+    let consumer = topology_consumer.clone();
     reader.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
             // Reference the consumer group that was defined in topology
-            let config = RedisConsumerConfig::new(g.clone(), [s.clone()]);
+            let config = RedisConsumerConfig::new(g.clone(), consumer.clone(), [s.clone()]);
 
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
@@ -102,17 +112,26 @@ fn test_read_from_topology_defined_consumer_group() {
 #[test]
 fn test_read_from_non_topology_consumer_group_should_fail() {
     let stream = unique_topic("non-topology");
-    let topology_group = unique_consumer_group("topology-group");
-    let non_topology_group = unique_consumer_group("non-topology-group");
+    let topology_membership = unique_consumer_group_membership("topology-group");
+    let topology_group = topology_membership.group.clone();
+    let topology_consumer = topology_membership.member.clone();
+    let non_topology_membership = unique_consumer_group_membership("non-topology-group");
+    let non_topology_group = non_topology_membership.group.clone();
+    let non_topology_consumer = non_topology_membership.member.clone();
 
     let stream_clone = stream.clone();
     let topology_group_clone = topology_group.clone();
+    let topology_consumer_clone = topology_consumer.clone();
     let (backend, _context) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone.clone()))
             .add_consumer_group(
                 topology_group_clone.clone(),
-                RedisConsumerGroupSpec::new([stream_clone.clone()], topology_group_clone.clone()),
+                RedisConsumerGroupSpec::new(
+                    [stream_clone.clone()],
+                    topology_group_clone.clone(),
+                    topology_consumer_clone.clone(),
+                ),
             )
             .add_event_single::<TestEvent>(stream_clone.clone());
     })
@@ -125,11 +144,12 @@ fn test_read_from_non_topology_consumer_group_should_fail() {
 
     let s = stream.clone();
     let g = non_topology_group.clone(); // This group was NOT defined in topology!
+    let consumer = non_topology_consumer.clone();
     reader.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
             // Try to reference a consumer group that was NOT defined in topology
-            let config = RedisConsumerConfig::new(g.clone(), [s.clone()]);
+            let config = RedisConsumerConfig::new(g.clone(), consumer.clone(), [s.clone()]);
 
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
@@ -193,7 +213,9 @@ fn test_read_from_non_topology_consumer_group_should_fail() {
 #[test]
 fn test_topology_setup_principle() {
     let stream = unique_topic("setup-principle");
-    let consumer_group = unique_consumer_group("principle-group");
+    let membership = unique_consumer_group_membership("principle-group");
+    let consumer_group = membership.group.clone();
+    let consumer_name = membership.member.clone();
 
     println!("=== EXPENSIVE SETUP AT STARTUP ===");
 
@@ -202,12 +224,17 @@ fn test_topology_setup_principle() {
 
     let stream_clone = stream.clone();
     let consumer_group_clone = consumer_group.clone();
+    let consumer_name_clone = consumer_name.clone();
     let (backend, _context) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone.clone()))
             .add_consumer_group(
                 consumer_group_clone.clone(),
-                RedisConsumerGroupSpec::new([stream_clone.clone()], consumer_group_clone.clone()),
+                RedisConsumerGroupSpec::new(
+                    [stream_clone.clone()],
+                    consumer_group_clone.clone(),
+                    consumer_name_clone.clone(),
+                ),
             )
             .add_event_single::<TestEvent>(stream_clone.clone());
     })
@@ -229,13 +256,14 @@ fn test_topology_setup_principle() {
     // These should be cheap - just referencing pre-existing consumer groups
     let s = stream.clone();
     let g = consumer_group.clone();
+    let consumer = consumer_name.clone();
     reader.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
             let start_read = std::time::Instant::now();
 
             // This should be cheap - consumer group already exists and is ready
-            let config = RedisConsumerConfig::new(g.clone(), [s.clone()]);
+            let config = RedisConsumerConfig::new(g.clone(), consumer.clone(), [s.clone()]);
 
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());

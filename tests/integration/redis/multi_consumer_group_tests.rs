@@ -6,25 +6,34 @@ use bevy_event_bus::config::redis::{
 };
 use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
 use integration_tests::utils::TestEvent;
-use integration_tests::utils::helpers::{unique_consumer_group, unique_topic, update_until};
+use integration_tests::utils::helpers::{
+    unique_consumer_group_membership, unique_topic, update_until,
+};
 use integration_tests::utils::redis_setup;
 
 /// Test creating consumer groups programmatically
 #[test]
 fn test_create_consumer_group() {
     let stream = unique_topic("test_create_cg");
-    let consumer_group = unique_consumer_group("test_cg");
+    let membership = unique_consumer_group_membership("test_cg");
+    let consumer_group = membership.group.clone();
+    let consumer_name = membership.member.clone();
 
-    let stream_clone = stream.clone();
-    let consumer_group_clone = consumer_group.clone();
+    let stream_for_setup = stream.clone();
+    let consumer_group_for_setup = consumer_group.clone();
+    let consumer_for_setup = consumer_name.clone();
     let (backend, _context) = redis_setup::prepare_backend(move |builder| {
         builder
-            .add_stream(RedisStreamSpec::new(stream_clone.clone()))
+            .add_stream(RedisStreamSpec::new(stream_for_setup.clone()))
             .add_consumer_group(
-                consumer_group_clone.clone(),
-                RedisConsumerGroupSpec::new([stream_clone.clone()], consumer_group_clone.clone()),
+                consumer_group_for_setup.clone(),
+                RedisConsumerGroupSpec::new(
+                    [stream_for_setup.clone()],
+                    consumer_group_for_setup.clone(),
+                    consumer_for_setup.clone(),
+                ),
             )
-            .add_event_single::<TestEvent>(stream_clone.clone());
+            .add_event_single::<TestEvent>(stream_for_setup.clone());
     })
     .expect("Redis backend setup successful");
 
@@ -35,8 +44,13 @@ fn test_create_consumer_group() {
     // Just verify the app can use it without error
     let stream_clone = stream.clone();
     let group_clone = consumer_group.clone();
+    let consumer_clone = consumer_name.clone();
     app.add_systems(Update, move |mut r: RedisEventReader<TestEvent>| {
-        let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()]);
+        let config = RedisConsumerConfig::new(
+            group_clone.clone(),
+            consumer_clone.clone(),
+            [stream_clone.clone()],
+        );
         let _ = r.read(&config).len(); // Should not panic
     });
 
@@ -47,7 +61,9 @@ fn test_create_consumer_group() {
 #[test]
 fn test_receive_with_group() {
     let stream = unique_topic("test_receive_with_group");
-    let consumer_group = unique_consumer_group("test_group_receive");
+    let membership = unique_consumer_group_membership("test_group_receive");
+    let consumer_group = membership.group.clone();
+    let consumer_name = membership.member.clone();
 
     let writer_db =
         redis_setup::allocate_database().expect("Writer Redis backend setup successful");
@@ -66,13 +82,18 @@ fn test_receive_with_group() {
 
     let reader_stream = stream.clone();
     let reader_group = consumer_group.clone();
+    let reader_consumer = consumer_name.clone();
     let (reader_backend, _context2) = redis_setup::with_database(reader_db, || {
         redis_setup::prepare_backend(move |builder| {
             builder
                 .add_stream(RedisStreamSpec::new(reader_stream.clone()))
                 .add_consumer_group(
                     reader_group.clone(),
-                    RedisConsumerGroupSpec::new([reader_stream.clone()], reader_group.clone()),
+                    RedisConsumerGroupSpec::new(
+                        [reader_stream.clone()],
+                        reader_group.clone(),
+                        reader_consumer.clone(),
+                    ),
                 )
                 .add_event_single::<TestEvent>(reader_stream.clone());
         })
@@ -107,10 +128,15 @@ fn test_receive_with_group() {
     // Receive with consumer group
     let stream_clone = stream.clone();
     let group_clone = consumer_group.clone();
+    let consumer_clone = consumer_name.clone();
     reader.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<Collected>| {
-            let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()]);
+            let config = RedisConsumerConfig::new(
+                group_clone.clone(),
+                consumer_clone.clone(),
+                [stream_clone.clone()],
+            );
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
             }
@@ -137,8 +163,10 @@ fn test_receive_with_group() {
 #[test]
 fn test_multiple_consumer_groups_independence() {
     let stream = unique_topic("test_multi_groups");
-    let group1 = unique_consumer_group("test_group_1");
-    let group2 = unique_consumer_group("test_group_2");
+    let membership1 = unique_consumer_group_membership("test_group_1");
+    let membership2 = unique_consumer_group_membership("test_group_2");
+    let group1 = membership1.group.clone();
+    let group2 = membership2.group.clone();
 
     let reader1_db = redis_setup::allocate_database().expect("Redis backend1 setup successful");
     let reader2_db = redis_setup::allocate_database().expect("Redis backend2 setup successful");
@@ -147,13 +175,18 @@ fn test_multiple_consumer_groups_independence() {
 
     let reader1_stream = stream.clone();
     let reader1_group = group1.clone();
+    let reader1_consumer = membership1.member.clone();
     let (backend1, _context1) = redis_setup::with_database(reader1_db, || {
         redis_setup::prepare_backend(move |builder| {
             builder
                 .add_stream(RedisStreamSpec::new(reader1_stream.clone()))
                 .add_consumer_group(
                     reader1_group.clone(),
-                    RedisConsumerGroupSpec::new([reader1_stream.clone()], reader1_group.clone()),
+                    RedisConsumerGroupSpec::new(
+                        [reader1_stream.clone()],
+                        reader1_group.clone(),
+                        reader1_consumer.clone(),
+                    ),
                 )
                 .add_event_single::<TestEvent>(reader1_stream.clone());
         })
@@ -162,13 +195,18 @@ fn test_multiple_consumer_groups_independence() {
 
     let reader2_stream = stream.clone();
     let reader2_group = group2.clone();
+    let reader2_consumer = membership2.member.clone();
     let (backend2, _context2) = redis_setup::with_database(reader2_db, || {
         redis_setup::prepare_backend(move |builder| {
             builder
                 .add_stream(RedisStreamSpec::new(reader2_stream.clone()))
                 .add_consumer_group(
                     reader2_group.clone(),
-                    RedisConsumerGroupSpec::new([reader2_stream.clone()], reader2_group.clone()),
+                    RedisConsumerGroupSpec::new(
+                        [reader2_stream.clone()],
+                        reader2_group.clone(),
+                        reader2_consumer.clone(),
+                    ),
                 )
                 .add_event_single::<TestEvent>(reader2_stream.clone());
         })
@@ -215,10 +253,11 @@ fn test_multiple_consumer_groups_independence() {
     // Reader1 with group1
     let s1 = stream.clone();
     let g1 = group1.clone();
+    let c1 = membership1.member.clone();
     reader1.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<Collected>| {
-            let config = RedisConsumerConfig::new(g1.clone(), [s1.clone()]);
+            let config = RedisConsumerConfig::new(g1.clone(), c1.clone(), [s1.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
             }
@@ -228,10 +267,11 @@ fn test_multiple_consumer_groups_independence() {
     // Reader2 with group2
     let s2 = stream.clone();
     let g2 = group2.clone();
+    let c2 = membership2.member.clone();
     reader2.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<Collected>| {
-            let config = RedisConsumerConfig::new(g2.clone(), [s2.clone()]);
+            let config = RedisConsumerConfig::new(g2.clone(), c2.clone(), [s2.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
             }
@@ -280,7 +320,9 @@ fn test_multiple_consumer_groups_independence() {
 fn test_consumer_group_with_multiple_streams() {
     let stream1 = unique_topic("test_multi_stream_1");
     let stream2 = unique_topic("test_multi_stream_2");
-    let consumer_group = unique_consumer_group("test_group_multi_streams");
+    let membership = unique_consumer_group_membership("test_group_multi_streams");
+    let consumer_group = membership.group.clone();
+    let consumer_name = membership.member.clone();
 
     let reader_db =
         redis_setup::allocate_database().expect("Reader Redis backend setup successful");
@@ -290,6 +332,7 @@ fn test_consumer_group_with_multiple_streams() {
     let reader_stream1 = stream1.clone();
     let reader_stream2 = stream2.clone();
     let reader_group = consumer_group.clone();
+    let reader_consumer = consumer_name.clone();
     let (reader_backend, _context1) = redis_setup::with_database(reader_db, || {
         redis_setup::prepare_backend(move |builder| {
             builder
@@ -300,6 +343,7 @@ fn test_consumer_group_with_multiple_streams() {
                     RedisConsumerGroupSpec::new(
                         [reader_stream1.clone(), reader_stream2.clone()],
                         reader_group.clone(),
+                        reader_consumer.clone(),
                     ),
                 )
                 .add_event_single::<TestEvent>(reader_stream1.clone())
@@ -360,11 +404,20 @@ fn test_consumer_group_with_multiple_streams() {
     let s1_clone = stream1.clone();
     let s2_clone = stream2.clone();
     let group_clone = consumer_group.clone();
+    let consumer_clone = consumer_name.clone();
     reader.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<Collected>| {
-            let config1 = RedisConsumerConfig::new(group_clone.clone(), [s1_clone.clone()]);
-            let config2 = RedisConsumerConfig::new(group_clone.clone(), [s2_clone.clone()]);
+            let config1 = RedisConsumerConfig::new(
+                group_clone.clone(),
+                consumer_clone.clone(),
+                [s1_clone.clone()],
+            );
+            let config2 = RedisConsumerConfig::new(
+                group_clone.clone(),
+                consumer_clone.clone(),
+                [s2_clone.clone()],
+            );
 
             for wrapper in r.read(&config1) {
                 c.stream1_events.push(wrapper.event().clone());

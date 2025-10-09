@@ -11,7 +11,7 @@ use bevy_event_bus::{
 };
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
-    run_app_updates, unique_consumer_group, unique_topic, update_until,
+    run_app_updates, unique_consumer_group_membership, unique_topic, update_until,
 };
 use integration_tests::utils::redis_setup::{self, build_basic_app_simple};
 use serde::{Deserialize, Serialize};
@@ -152,7 +152,9 @@ fn drain_metrics_emitted_and_updated() {
 #[test]
 fn unlimited_buffer_separate_backends() {
     let stream = unique_topic("unlimited_buffer");
-    let consumer_group = unique_consumer_group("unlimited_group");
+    let membership = unique_consumer_group_membership("unlimited_group");
+    let consumer_group = membership.group.clone();
+    let consumer_name = membership.member.clone();
 
     let reader_db =
         redis_setup::allocate_database().expect("Reader Redis backend setup successful");
@@ -161,6 +163,7 @@ fn unlimited_buffer_separate_backends() {
 
     let stream_for_reader = stream.clone();
     let group_for_reader = consumer_group.clone();
+    let consumer_for_reader = consumer_name.clone();
     let (reader_backend, _context_reader) = redis_setup::with_database(reader_db, || {
         redis_setup::prepare_backend(move |builder| {
             builder
@@ -170,6 +173,7 @@ fn unlimited_buffer_separate_backends() {
                     RedisConsumerGroupSpec::new(
                         [stream_for_reader.clone()],
                         group_for_reader.clone(),
+                        consumer_for_reader.clone(),
                     ),
                 )
                 .add_event_single::<TestEvent>(stream_for_reader.clone());
@@ -219,10 +223,15 @@ fn unlimited_buffer_separate_backends() {
     // Read without explicit limits - should gather all available
     let stream_clone = stream.clone();
     let group_clone = consumer_group.clone();
+    let consumer_clone = consumer_name.clone();
     reader.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut stats: ResMut<BackgroundStats>| {
-            let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()]);
+            let config = RedisConsumerConfig::new(
+                group_clone.clone(),
+                consumer_clone.clone(),
+                [stream_clone.clone()],
+            );
             // No explicit count limit - should read all available
 
             let events_this_frame = r.read(&config).len();
@@ -256,13 +265,16 @@ fn unlimited_buffer_separate_backends() {
 #[test]
 fn drain_metrics_separate_backends() {
     let stream = unique_topic("drain_metrics");
-    let consumer_group = unique_consumer_group("drain_metrics_group");
+    let membership = unique_consumer_group_membership("drain_metrics_group");
+    let consumer_group = membership.group.clone();
+    let consumer_name = membership.member.clone();
 
     let reader_db = redis_setup::allocate_database().expect("Reader Redis setup should succeed");
     let writer_db = redis_setup::allocate_database().expect("Writer Redis setup should succeed");
 
     let stream_for_reader = stream.clone();
     let group_for_reader = consumer_group.clone();
+    let consumer_for_reader = consumer_name.clone();
     let (reader_backend, _context_reader) = redis_setup::with_database(reader_db, || {
         redis_setup::prepare_backend(move |builder| {
             builder
@@ -272,6 +284,7 @@ fn drain_metrics_separate_backends() {
                     RedisConsumerGroupSpec::new(
                         [stream_for_reader.clone()],
                         group_for_reader.clone(),
+                        consumer_for_reader.clone(),
                     ),
                 )
                 .add_event_single::<TestEvent>(stream_for_reader.clone());
@@ -328,10 +341,15 @@ fn drain_metrics_separate_backends() {
     // Track drain metrics
     let stream_clone = stream.clone();
     let group_clone = consumer_group.clone();
+    let consumer_clone = consumer_name.clone();
     reader.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut stats: ResMut<BackgroundStats>| {
-            let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()]);
+            let config = RedisConsumerConfig::new(
+                group_clone.clone(),
+                consumer_clone.clone(),
+                [stream_clone.clone()],
+            );
 
             let drained_this_frame = r.read(&config).len();
             stats.events_received += drained_this_frame;
@@ -369,10 +387,13 @@ fn drain_metrics_separate_backends() {
 #[test]
 fn drain_empty_separate_backends() {
     let stream = unique_topic("drain_empty");
-    let consumer_group = unique_consumer_group("drain_empty_group");
+    let membership = unique_consumer_group_membership("drain_empty_group");
+    let consumer_group = membership.group.clone();
+    let consumer_name = membership.member.clone();
 
     let stream_for_backend = stream.clone();
     let group_for_backend = consumer_group.clone();
+    let consumer_for_backend = consumer_name.clone();
     let (backend, _context) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_backend.clone()))
@@ -381,6 +402,7 @@ fn drain_empty_separate_backends() {
                 RedisConsumerGroupSpec::new(
                     [stream_for_backend.clone()],
                     group_for_backend.clone(),
+                    consumer_for_backend.clone(),
                 ),
             )
             .add_event_single::<TestEvent>(stream_for_backend.clone());
@@ -400,11 +422,16 @@ fn drain_empty_separate_backends() {
     // Try to drain from empty stream
     let stream_clone = stream.clone();
     let group_clone = consumer_group.clone();
+    let consumer_clone = consumer_name.clone();
     reader.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut stats: ResMut<BackgroundStats>| {
-            let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()])
-                .read_block_timeout(Duration::from_millis(100)); // Short timeout
+            let config = RedisConsumerConfig::new(
+                group_clone.clone(),
+                consumer_clone.clone(),
+                [stream_clone.clone()],
+            )
+            .read_block_timeout(Duration::from_millis(100)); // Short timeout
 
             let drained = r.read(&config).len();
             stats.events_received += drained;
@@ -430,13 +457,16 @@ fn drain_empty_separate_backends() {
 #[test]
 fn frame_limit_separate_backends() {
     let stream = unique_topic("frame_limit_test");
-    let consumer_group = unique_consumer_group("frame_limit_group");
+    let membership = unique_consumer_group_membership("frame_limit_group");
+    let consumer_group = membership.group.clone();
+    let consumer_name = membership.member.clone();
 
     let reader_db = redis_setup::allocate_database().expect("Reader Redis setup should succeed");
     let writer_db = redis_setup::allocate_database().expect("Writer Redis setup should succeed");
 
     let stream_for_reader = stream.clone();
     let group_for_reader = consumer_group.clone();
+    let consumer_for_reader = consumer_name.clone();
     let (reader_backend, _context_reader) = redis_setup::with_database(reader_db, || {
         redis_setup::prepare_backend(move |builder| {
             builder
@@ -446,6 +476,7 @@ fn frame_limit_separate_backends() {
                     RedisConsumerGroupSpec::new(
                         [stream_for_reader.clone()],
                         group_for_reader.clone(),
+                        consumer_for_reader.clone(),
                     ),
                 )
                 .add_event_single::<TestEvent>(stream_for_reader.clone());
@@ -504,10 +535,15 @@ fn frame_limit_separate_backends() {
     // Read with strict frame limit
     let stream_clone = stream.clone();
     let group_clone = consumer_group.clone();
+    let consumer_clone = consumer_name.clone();
     reader.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut limiter: ResMut<FrameLimiter>| {
-            let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()]);
+            let config = RedisConsumerConfig::new(
+                group_clone.clone(),
+                consumer_clone.clone(),
+                [stream_clone.clone()],
+            );
 
             let received_this_frame = r.read(&config).len();
             limiter.max_per_frame.push(received_this_frame);

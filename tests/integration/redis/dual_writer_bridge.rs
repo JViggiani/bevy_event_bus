@@ -7,7 +7,7 @@ use bevy_event_bus::config::redis::{
 use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
-    run_app_updates, unique_consumer_group, unique_topic, update_until,
+    run_app_updates, unique_consumer_group_membership, unique_topic, update_until,
 };
 use integration_tests::utils::redis_setup;
 
@@ -16,7 +16,9 @@ use integration_tests::utils::redis_setup;
 #[test]
 fn external_redis_events_independent_operation() {
     let stream = unique_topic("dual-writer");
-    let consumer_group = unique_consumer_group("dual-writer-group");
+    let membership = unique_consumer_group_membership("dual-writer-group");
+    let consumer_group = membership.group.clone();
+    let consumer_name = membership.member.clone();
 
     let writer1_db =
         redis_setup::allocate_database().expect("Writer1 Redis backend setup successful");
@@ -47,13 +49,18 @@ fn external_redis_events_independent_operation() {
 
     let reader_stream = stream.clone();
     let reader_group = consumer_group.clone();
+    let reader_consumer = consumer_name.clone();
     let (reader_backend, _context3) = redis_setup::with_database(reader_db, || {
         redis_setup::prepare_backend(move |builder| {
             builder
                 .add_stream(RedisStreamSpec::new(reader_stream.clone()))
                 .add_consumer_group(
                     reader_group.clone(),
-                    RedisConsumerGroupSpec::new([reader_stream.clone()], reader_group.clone()),
+                    RedisConsumerGroupSpec::new(
+                        [reader_stream.clone()],
+                        reader_group.clone(),
+                        reader_consumer.clone(),
+                    ),
                 )
                 .add_event_single::<TestEvent>(reader_stream.clone());
         })
@@ -111,10 +118,11 @@ fn external_redis_events_independent_operation() {
     }); // Reader collects all events
     let sr = stream.clone();
     let gr = consumer_group.clone();
+    let cr = consumer_name.clone();
     reader.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<Collected>| {
-            let config = RedisConsumerConfig::new(gr.clone(), [sr.clone()]);
+            let config = RedisConsumerConfig::new(gr.clone(), cr.clone(), [sr.clone()]);
             let events_before = c.0.len();
             println!(
                 "Reader system called with stream: {} group: {}, current events: {}",

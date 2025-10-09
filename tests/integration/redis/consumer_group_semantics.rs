@@ -8,7 +8,7 @@ use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
     run_app_updates, unique_consumer_group, unique_consumer_group_member, unique_topic,
-    update_until,
+    update_two_apps_until, update_until,
 };
 use integration_tests::utils::redis_setup;
 
@@ -46,8 +46,8 @@ fn same_consumer_group_distributes_messages_round_robin() {
                 RedisConsumerGroupSpec::new(
                     [stream_for_reader1.clone()],
                     group_for_reader1.clone(),
-                )
-                .consumer_name(consumer_for_reader1.clone()),
+                    consumer_for_reader1.clone(),
+                ),
             )
             .add_event_single::<TestEvent>(stream_for_reader1.clone());
     })
@@ -65,8 +65,8 @@ fn same_consumer_group_distributes_messages_round_robin() {
                 RedisConsumerGroupSpec::new(
                     [stream_for_reader2.clone()],
                     group_for_reader2.clone(),
-                )
-                .consumer_name(consumer_for_reader2.clone()),
+                    consumer_for_reader2.clone(),
+                ),
             )
             .add_event_single::<TestEvent>(stream_for_reader2.clone());
     })
@@ -83,11 +83,7 @@ fn same_consumer_group_distributes_messages_round_robin() {
     reader1.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config =
-                RedisConsumerConfig::new(
-                    g1.clone(),
-                    [s1.clone()],
-                ).set_consumer_name(c1.clone());
+            let config = RedisConsumerConfig::new(g1.clone(), c1.clone(), [s1.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
             }
@@ -105,8 +101,7 @@ fn same_consumer_group_distributes_messages_round_robin() {
     reader2.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config =
-                RedisConsumerConfig::new(g2.clone(), [s2.clone()]).set_consumer_name(c2.clone());
+            let config = RedisConsumerConfig::new(g2.clone(), c2.clone(), [s2.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
             }
@@ -142,28 +137,26 @@ fn same_consumer_group_distributes_messages_round_robin() {
     // Send events
     run_app_updates(&mut writer, 7);
 
-    // Wait for message distribution
-    let (received1, _) = update_until(&mut reader1, 10_000, |app| {
-        let collected = app.world().resource::<EventCollector>();
-        !collected.0.is_empty()
-    });
-
-    let (received2, _) = update_until(&mut reader2, 10_000, |app| {
-        let collected = app.world().resource::<EventCollector>();
-        !collected.0.is_empty()
-    });
+    // Wait for both readers to receive their fair share and drain the work queue.
+    let (drain_complete, _) = update_two_apps_until(
+        &mut reader1,
+        &mut reader2,
+        10_000,
+        |reader1_app, reader2_app| {
+            let collected1 = reader1_app.world().resource::<EventCollector>();
+            let collected2 = reader2_app.world().resource::<EventCollector>();
+            let total_events = collected1.0.len() + collected2.0.len();
+            total_events >= 6 && collected1.0.len() > 0 && collected2.0.len() > 0
+        },
+    );
 
     let collected1 = reader1.world().resource::<EventCollector>();
     let collected2 = reader2.world().resource::<EventCollector>();
 
     // Combined total should match dispatched events and both readers should contribute.
     assert!(
-        received1,
-        "Reader1 should receive events via shared consumer group"
-    );
-    assert!(
-        received2,
-        "Reader2 should receive events via shared consumer group"
+        drain_complete,
+        "Both readers should receive all dispatched events"
     );
 
     let total_events = collected1.0.len() + collected2.0.len();
@@ -193,6 +186,8 @@ fn different_consumer_groups_receive_all_events() {
     let stream = unique_topic("broadcast-stream");
     let consumer_group1 = unique_consumer_group("group1");
     let consumer_group2 = unique_consumer_group("group2");
+    let consumer_name1 = unique_consumer_group_member(&consumer_group1);
+    let consumer_name2 = unique_consumer_group_member(&consumer_group2);
 
     // Writer topology - no consumer groups (write-only)
     let stream_for_writer_topology = stream.clone();
@@ -206,6 +201,7 @@ fn different_consumer_groups_receive_all_events() {
     // Reader1 topology - with consumer group 1
     let stream_for_reader1 = stream.clone();
     let group_for_reader1 = consumer_group1.clone();
+    let consumer_for_reader1 = consumer_name1.clone();
     let (reader1_backend, _reader1_ctx) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_reader1.clone()))
@@ -214,6 +210,7 @@ fn different_consumer_groups_receive_all_events() {
                 RedisConsumerGroupSpec::new(
                     [stream_for_reader1.clone()],
                     group_for_reader1.clone(),
+                    consumer_for_reader1.clone(),
                 )
                 .start_id("0"),
             )
@@ -224,6 +221,7 @@ fn different_consumer_groups_receive_all_events() {
     // Reader2 topology - with consumer group 2
     let stream_for_reader2 = stream.clone();
     let group_for_reader2 = consumer_group2.clone();
+    let consumer_for_reader2 = consumer_name2.clone();
     let (reader2_backend, _reader2_ctx) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_reader2.clone()))
@@ -232,6 +230,7 @@ fn different_consumer_groups_receive_all_events() {
                 RedisConsumerGroupSpec::new(
                     [stream_for_reader2.clone()],
                     group_for_reader2.clone(),
+                    consumer_for_reader2.clone(),
                 )
                 .start_id("0"),
             )
@@ -246,12 +245,11 @@ fn different_consumer_groups_receive_all_events() {
 
     let s1 = stream.clone();
     let g1 = consumer_group1.clone();
-    let consumer1 = unique_consumer_group_member(&consumer_group1);
+    let consumer1 = consumer_name1.clone();
     reader1.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(g1.clone(), [s1.clone()])
-                .set_consumer_name(consumer1.clone());
+            let config = RedisConsumerConfig::new(g1.clone(), consumer1.clone(), [s1.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
             }
@@ -265,12 +263,11 @@ fn different_consumer_groups_receive_all_events() {
 
     let s2 = stream.clone();
     let g2 = consumer_group2.clone();
-    let consumer2 = unique_consumer_group_member(&consumer_group2);
+    let consumer2 = consumer_name2.clone();
     reader2.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(g2.clone(), [s2.clone()])
-                .set_consumer_name(consumer2.clone());
+            let config = RedisConsumerConfig::new(g2.clone(), consumer2.clone(), [s2.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
             }

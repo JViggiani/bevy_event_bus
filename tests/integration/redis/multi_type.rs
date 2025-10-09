@@ -5,7 +5,7 @@ use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
 use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
-use integration_tests::utils::helpers::{unique_consumer_group, unique_topic};
+use integration_tests::utils::helpers::{unique_consumer_group_membership, unique_topic};
 use integration_tests::utils::redis_setup;
 use integration_tests::utils::{TestEvent, UserLoginEvent};
 
@@ -15,7 +15,9 @@ use integration_tests::utils::{TestEvent, UserLoginEvent};
 #[test]
 fn multiple_event_types_same_stream() {
     let stream = unique_topic("multi_types");
-    let consumer_group = unique_consumer_group("multi_types_group");
+    let membership = unique_consumer_group_membership("multi_types_group");
+    let consumer_group = membership.group.clone();
+    let consumer_name = membership.member.clone();
 
     let writer_db =
         redis_setup::allocate_database().expect("Writer Redis backend setup successful");
@@ -35,13 +37,18 @@ fn multiple_event_types_same_stream() {
 
     let reader_stream = stream.clone();
     let reader_group = consumer_group.clone();
+    let reader_consumer = consumer_name.clone();
     let (backend_reader, _context2) = redis_setup::with_database(reader_db, || {
         redis_setup::prepare_backend(move |builder| {
             builder
                 .add_stream(RedisStreamSpec::new(reader_stream.clone()))
                 .add_consumer_group(
                     reader_group.clone(),
-                    RedisConsumerGroupSpec::new([reader_stream.clone()], reader_group.clone()),
+                    RedisConsumerGroupSpec::new(
+                        [reader_stream.clone()],
+                        reader_group.clone(),
+                        reader_consumer.clone(),
+                    ),
                 )
                 .add_event_single::<TestEvent>(reader_stream.clone())
                 .add_event_single::<UserLoginEvent>(reader_stream.clone());
@@ -60,22 +67,32 @@ fn multiple_event_types_same_stream() {
     struct Stream(String);
 
     #[derive(Resource, Clone)]
-    struct ConsumerGroup(String);
+    struct ConsumerMembership {
+        group: String,
+        consumer: String,
+    }
 
     let mut reader_app = App::new();
     reader_app.add_plugins(EventBusPlugins(backend_reader));
     reader_app.insert_resource(Collected::default());
     reader_app.insert_resource(Stream(stream.clone()));
-    reader_app.insert_resource(ConsumerGroup(consumer_group.clone()));
+    reader_app.insert_resource(ConsumerMembership {
+        group: consumer_group.clone(),
+        consumer: consumer_name.clone(),
+    });
 
     // System functions instead of closures
     fn test_reader_system(
         mut reader: RedisEventReader<TestEvent>,
         stream: Res<Stream>,
-        group: Res<ConsumerGroup>,
+        membership: Res<ConsumerMembership>,
         mut collected: ResMut<Collected>,
     ) {
-        let config = RedisConsumerConfig::new(group.0.clone(), [stream.0.clone()]);
+        let config = RedisConsumerConfig::new(
+            membership.group.clone(),
+            membership.consumer.clone(),
+            [stream.0.clone()],
+        );
         for wrapper in reader.read(&config) {
             collected.test_events.push(wrapper.event().clone());
         }
@@ -84,10 +101,14 @@ fn multiple_event_types_same_stream() {
     fn login_reader_system(
         mut reader: RedisEventReader<UserLoginEvent>,
         stream: Res<Stream>,
-        group: Res<ConsumerGroup>,
+        membership: Res<ConsumerMembership>,
         mut collected: ResMut<Collected>,
     ) {
-        let config = RedisConsumerConfig::new(group.0.clone(), [stream.0.clone()]);
+        let config = RedisConsumerConfig::new(
+            membership.group.clone(),
+            membership.consumer.clone(),
+            [stream.0.clone()],
+        );
         for wrapper in reader.read(&config) {
             collected.login_events.push(wrapper.event().clone());
         }
@@ -158,7 +179,9 @@ fn multiple_event_types_same_stream() {
 #[test]
 fn interleaved_multi_type_frames() {
     let stream = unique_topic("interleaved");
-    let consumer_group = unique_consumer_group("interleaved_group");
+    let membership = unique_consumer_group_membership("interleaved_group");
+    let consumer_group = membership.group.clone();
+    let consumer_name = membership.member.clone();
 
     let writer_db =
         redis_setup::allocate_database().expect("Writer Redis backend setup successful");
@@ -178,13 +201,18 @@ fn interleaved_multi_type_frames() {
 
     let reader_stream = stream.clone();
     let reader_group = consumer_group.clone();
+    let reader_consumer = consumer_name.clone();
     let (reader_backend, _context2) = redis_setup::with_database(reader_db, || {
         redis_setup::prepare_backend(move |builder| {
             builder
                 .add_stream(RedisStreamSpec::new(reader_stream.clone()))
                 .add_consumer_group(
                     reader_group.clone(),
-                    RedisConsumerGroupSpec::new([reader_stream.clone()], reader_group.clone()),
+                    RedisConsumerGroupSpec::new(
+                        [reader_stream.clone()],
+                        reader_group.clone(),
+                        reader_consumer.clone(),
+                    ),
                 )
                 .add_event_single::<TestEvent>(reader_stream.clone())
                 .add_event_single::<UserLoginEvent>(reader_stream.clone());
@@ -251,10 +279,11 @@ fn interleaved_multi_type_frames() {
 
     let s1 = stream.clone();
     let g1 = consumer_group.clone();
+    let c1 = consumer_name.clone();
     reader.add_systems(
         Update,
         move |mut r1: RedisEventReader<TestEvent>, mut results: ResMut<Results>| {
-            let config = RedisConsumerConfig::new(g1.clone(), [s1.clone()]);
+            let config = RedisConsumerConfig::new(g1.clone(), c1.clone(), [s1.clone()]);
             for wrapper in r1.read(&config) {
                 results.test_events.push(wrapper.event().clone());
             }
@@ -263,10 +292,11 @@ fn interleaved_multi_type_frames() {
 
     let s2 = stream.clone();
     let g2 = consumer_group.clone();
+    let c2 = consumer_name.clone();
     reader.add_systems(
         Update,
         move |mut r2: RedisEventReader<UserLoginEvent>, mut results: ResMut<Results>| {
-            let config = RedisConsumerConfig::new(g2.clone(), [s2.clone()]);
+            let config = RedisConsumerConfig::new(g2.clone(), c2.clone(), [s2.clone()]);
             for wrapper in r2.read(&config) {
                 results.login_events.push(wrapper.event().clone());
             }

@@ -5,7 +5,9 @@ use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
 use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
-use integration_tests::utils::helpers::{unique_consumer_group, unique_topic, update_until};
+use integration_tests::utils::helpers::{
+    unique_consumer_group_membership, unique_topic, update_until,
+};
 use integration_tests::utils::redis_setup;
 use integration_tests::utils::{TestEvent, UserLoginEvent};
 
@@ -13,16 +15,23 @@ use integration_tests::utils::{TestEvent, UserLoginEvent};
 #[test]
 fn test_basic_multi_type_redis() {
     let stream = unique_topic("basic-multi-type");
-    let consumer_group = unique_consumer_group("basic_multi_group");
+    let membership = unique_consumer_group_membership("basic_multi_group");
+    let consumer_group = membership.group.clone();
+    let consumer_name = membership.member.clone();
 
     let stream_clone = stream.clone();
     let consumer_group_clone = consumer_group.clone();
+    let consumer_name_clone = consumer_name.clone();
     let (backend, _context) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone.clone()))
             .add_consumer_group(
                 consumer_group_clone.clone(),
-                RedisConsumerGroupSpec::new([stream_clone.clone()], consumer_group_clone.clone()),
+                RedisConsumerGroupSpec::new(
+                    [stream_clone.clone()],
+                    consumer_group_clone.clone(),
+                    consumer_name_clone.clone(),
+                ),
             )
             .add_event_single::<TestEvent>(stream_clone.clone())
             .add_event_single::<UserLoginEvent>(stream_clone.clone());
@@ -46,17 +55,27 @@ fn test_basic_multi_type_redis() {
     #[derive(Resource, Clone)]
     struct Stream(String);
     #[derive(Resource, Clone)]
-    struct ConsumerGroup(String);
+    struct ConsumerMembership {
+        group: String,
+        consumer: String,
+    }
     reader_app.insert_resource(Stream(stream.clone()));
-    reader_app.insert_resource(ConsumerGroup(consumer_group));
+    reader_app.insert_resource(ConsumerMembership {
+        group: consumer_group,
+        consumer: consumer_name,
+    });
 
     fn test_reader_system(
         mut reader: RedisEventReader<TestEvent>,
         stream: Res<Stream>,
-        group: Res<ConsumerGroup>,
+        membership: Res<ConsumerMembership>,
         mut collected: ResMut<Collected>,
     ) {
-        let config = RedisConsumerConfig::new(group.0.clone(), [stream.0.clone()]);
+        let config = RedisConsumerConfig::new(
+            membership.group.clone(),
+            membership.consumer.clone(),
+            [stream.0.clone()],
+        );
         for wrapper in reader.read(&config) {
             collected.test_events.push(wrapper.event().clone());
         }
@@ -65,10 +84,14 @@ fn test_basic_multi_type_redis() {
     fn login_reader_system(
         mut reader: RedisEventReader<UserLoginEvent>,
         stream: Res<Stream>,
-        group: Res<ConsumerGroup>,
+        membership: Res<ConsumerMembership>,
         mut collected: ResMut<Collected>,
     ) {
-        let config = RedisConsumerConfig::new(group.0.clone(), [stream.0.clone()]);
+        let config = RedisConsumerConfig::new(
+            membership.group.clone(),
+            membership.consumer.clone(),
+            [stream.0.clone()],
+        );
         for wrapper in reader.read(&config) {
             collected.login_events.push(wrapper.event().clone());
         }
