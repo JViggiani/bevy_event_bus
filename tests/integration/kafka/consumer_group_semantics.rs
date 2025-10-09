@@ -71,27 +71,6 @@ fn same_consumer_group_distributes_messages_round_robin() {
             builder.add_event_single::<TestEvent>(topic_for_reader2.clone());
         }));
 
-    // Setup writer app
-    let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(writer_backend));
-
-    writer.add_systems(
-        Update,
-        move |mut w: KafkaEventWriter, mut sent: Local<usize>| {
-            if *sent < 6 {
-                let config = KafkaProducerConfig::new([topic_for_runtime_writer.clone()]);
-                w.write(
-                    &config,
-                    TestEvent {
-                        message: format!("message_{}", *sent),
-                        value: *sent as i32,
-                    },
-                );
-                *sent += 1;
-            }
-        },
-    );
-
     // Setup reader1 app
     let mut reader1 = App::new();
     reader1.add_plugins(EventBusPlugins(reader1_backend));
@@ -126,20 +105,41 @@ fn same_consumer_group_distributes_messages_round_robin() {
         },
     );
 
+    // Setup writer app
+    let mut writer = App::new();
+    writer.add_plugins(EventBusPlugins(writer_backend));
+
+    writer.add_systems(
+        Update,
+        move |mut w: KafkaEventWriter, mut sent: Local<usize>| {
+            if *sent < 6 {
+                let config = KafkaProducerConfig::new([topic_for_runtime_writer.clone()]);
+                w.write(
+                    &config,
+                    TestEvent {
+                        message: format!("message_{}", *sent),
+                        value: *sent as i32,
+                    },
+                );
+                *sent += 1;
+            }
+        },
+    );
+
     // Start readers first to establish consumer group
-    run_app_updates(&mut reader1, 2);
-    run_app_updates(&mut reader2, 2);
+    run_app_updates(&mut reader1, 3);
+    run_app_updates(&mut reader2, 3);
 
     // Send events
     run_app_updates(&mut writer, 7);
 
     // Wait for message distribution
-    let (received1, _) = update_until(&mut reader1, 10000, |app| {
+    let (received1, _) = update_until(&mut reader1, 10_000, |app| {
         let collected = app.world().resource::<EventCollector>();
         !collected.0.is_empty()
     });
 
-    let (received2, _) = update_until(&mut reader2, 10000, |app| {
+    let (received2, _) = update_until(&mut reader2, 10_000, |app| {
         let collected = app.world().resource::<EventCollector>();
         !collected.0.is_empty()
     });
@@ -290,19 +290,19 @@ fn different_consumer_groups_receive_all_events() {
     );
 
     // Start readers first to establish consumer groups
-    run_app_updates(&mut reader1, 2);
-    run_app_updates(&mut reader2, 2);
+    run_app_updates(&mut reader1, 3);
+    run_app_updates(&mut reader2, 3);
 
     // Send events
     run_app_updates(&mut writer, 5);
 
     // Wait for message broadcast
-    let (received1, _) = update_until(&mut reader1, 10000, |app| {
+    let (received1, _) = update_until(&mut reader1, 10_000, |app| {
         let collected = app.world().resource::<EventCollector>();
         collected.0.len() >= 4
     });
 
-    let (received2, _) = update_until(&mut reader2, 10000, |app| {
+    let (received2, _) = update_until(&mut reader2, 10_000, |app| {
         let collected = app.world().resource::<EventCollector>();
         collected.0.len() >= 4
     });
@@ -335,27 +335,28 @@ fn different_consumer_groups_receive_all_events() {
 fn writer_only_works_without_consumer_groups() {
     let topic = unique_topic("writer-only");
 
-    // Writer topology - no consumer groups, just topic and event binding
-    let topic_for_writer = topic.clone();
+    // Writer topology - no consumer groups (write-only)
+    let topic_for_writer_topology = topic.clone();
     let (writer_backend, _bootstrap) =
         kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
             builder.add_topic(
-                KafkaTopicSpec::new(topic_for_writer.clone())
+                KafkaTopicSpec::new(topic_for_writer_topology.clone())
                     .partitions(1)
                     .replication(1),
             );
-            builder.add_event_single::<TestEvent>(topic_for_writer.clone());
+            builder.add_event_single::<TestEvent>(topic_for_writer_topology.clone());
         }));
 
     // Setup writer app
     let mut writer = App::new();
     writer.add_plugins(EventBusPlugins(writer_backend));
 
+    let topic_for_runtime_writer = topic.clone();
     writer.add_systems(
         Update,
         move |mut w: KafkaEventWriter, mut events_sent: Local<usize>| {
             if *events_sent < 3 {
-                let config = KafkaProducerConfig::new([topic.clone()]);
+                let config = KafkaProducerConfig::new([topic_for_runtime_writer.clone()]);
                 w.write(
                     &config,
                     TestEvent {
