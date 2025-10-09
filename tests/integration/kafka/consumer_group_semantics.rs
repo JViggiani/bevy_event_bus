@@ -8,7 +8,7 @@ use bevy_event_bus::config::kafka::{
 use bevy_event_bus::{EventBusPlugins, KafkaEventReader, KafkaEventWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
-    run_app_updates, unique_consumer_group, unique_topic, update_until,
+    run_app_updates, unique_consumer_group, unique_topic, update_two_apps_until, update_until,
 };
 use integration_tests::utils::kafka_setup;
 
@@ -133,24 +133,26 @@ fn same_consumer_group_distributes_messages_round_robin() {
     // Send events
     run_app_updates(&mut writer, 7);
 
-    // Wait for message distribution
-    let (received1, _) = update_until(&mut reader1, 10_000, |app| {
-        let collected = app.world().resource::<EventCollector>();
-        !collected.0.is_empty()
-    });
-
-    let (received2, _) = update_until(&mut reader2, 10_000, |app| {
-        let collected = app.world().resource::<EventCollector>();
-        !collected.0.is_empty()
-    });
+    // Wait for message distribution and ensure the consumer group drains the full payload.
+    let (drain_complete, _) = update_two_apps_until(
+        &mut reader1,
+        &mut reader2,
+        10_000,
+        |reader1_app, reader2_app| {
+            let collected1 = reader1_app.world().resource::<EventCollector>();
+            let collected2 = reader2_app.world().resource::<EventCollector>();
+            let total_events = collected1.0.len() + collected2.0.len();
+            total_events >= 6 && (collected1.0.len() > 0 || collected2.0.len() > 0)
+        },
+    );
 
     let collected1 = reader1.world().resource::<EventCollector>();
     let collected2 = reader2.world().resource::<EventCollector>();
 
-    // Both readers should have received events (round-robin distribution)
+    // Combined total should match dispatched events and the group should make progress.
     assert!(
-        received1 || received2,
-        "At least one reader should receive events"
+        drain_complete,
+        "Consumer group should receive all dispatched events"
     );
 
     let total_events = collected1.0.len() + collected2.0.len();
