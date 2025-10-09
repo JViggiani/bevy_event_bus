@@ -33,14 +33,11 @@ fn configuration_with_readers_writers_works() {
     let (backend_reader, _reader_context) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_reader.clone()))
-            .add_consumer_group(
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream_for_reader.clone()],
                 consumer_group_for_reader.clone(),
-                RedisConsumerGroupSpec::new(
-                    [stream_for_reader.clone()],
-                    consumer_group_for_reader.clone(),
-                    consumer_name_for_reader.clone(),
-                ),
-            )
+                consumer_name_for_reader.clone(),
+            ))
             .add_event_single::<TestEvent>(stream_for_reader.clone());
     })
     .expect("Reader Redis backend setup successful");
@@ -136,14 +133,11 @@ fn redis_specific_methods_work() {
     let (backend, _context) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_backend.clone()).maxlen(1000))
-            .add_consumer_group(
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream_for_backend.clone()],
                 consumer_group_for_backend.clone(),
-                RedisConsumerGroupSpec::new(
-                    [stream_for_backend.clone()],
-                    consumer_group_for_backend.clone(),
-                    consumer_name_for_backend.clone(),
-                ),
-            )
+                consumer_name_for_backend.clone(),
+            ))
             .add_event_single::<TestEvent>(stream_for_backend.clone());
     })
     .expect("Redis backend setup successful");

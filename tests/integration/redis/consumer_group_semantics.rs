@@ -41,14 +41,11 @@ fn same_consumer_group_distributes_messages_round_robin() {
     let (reader1_backend, _reader1_ctx) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_reader1.clone()))
-            .add_consumer_group(
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream_for_reader1.clone()],
                 group_for_reader1.clone(),
-                RedisConsumerGroupSpec::new(
-                    [stream_for_reader1.clone()],
-                    group_for_reader1.clone(),
-                    consumer_for_reader1.clone(),
-                ),
-            )
+                consumer_for_reader1.clone(),
+            ))
             .add_event_single::<TestEvent>(stream_for_reader1.clone());
     })
     .expect("Redis reader1 backend setup successful");
@@ -60,14 +57,11 @@ fn same_consumer_group_distributes_messages_round_robin() {
     let (reader2_backend, _reader2_ctx) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_reader2.clone()))
-            .add_consumer_group(
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream_for_reader2.clone()],
                 group_for_reader2.clone(),
-                RedisConsumerGroupSpec::new(
-                    [stream_for_reader2.clone()],
-                    group_for_reader2.clone(),
-                    consumer_for_reader2.clone(),
-                ),
-            )
+                consumer_for_reader2.clone(),
+            ))
             .add_event_single::<TestEvent>(stream_for_reader2.clone());
     })
     .expect("Redis reader2 backend setup successful");
@@ -205,15 +199,11 @@ fn different_consumer_groups_receive_all_events() {
     let (reader1_backend, _reader1_ctx) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_reader1.clone()))
-            .add_consumer_group(
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream_for_reader1.clone()],
                 group_for_reader1.clone(),
-                RedisConsumerGroupSpec::new(
-                    [stream_for_reader1.clone()],
-                    group_for_reader1.clone(),
-                    consumer_for_reader1.clone(),
-                )
-                .start_id("0"),
-            )
+                consumer_for_reader1.clone(),
+            ))
             .add_event_single::<TestEvent>(stream_for_reader1.clone());
     })
     .expect("Reader1 Redis backend setup successful");
@@ -225,15 +215,11 @@ fn different_consumer_groups_receive_all_events() {
     let (reader2_backend, _reader2_ctx) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_reader2.clone()))
-            .add_consumer_group(
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream_for_reader2.clone()],
                 group_for_reader2.clone(),
-                RedisConsumerGroupSpec::new(
-                    [stream_for_reader2.clone()],
-                    group_for_reader2.clone(),
-                    consumer_for_reader2.clone(),
-                )
-                .start_id("0"),
-            )
+                consumer_for_reader2.clone(),
+            ))
             .add_event_single::<TestEvent>(stream_for_reader2.clone());
     })
     .expect("Reader2 Redis backend setup successful");

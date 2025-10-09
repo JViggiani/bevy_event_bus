@@ -25,14 +25,11 @@ fn test_basic_multi_type_redis() {
     let (backend, _context) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone.clone()))
-            .add_consumer_group(
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream_clone.clone()],
                 consumer_group_clone.clone(),
-                RedisConsumerGroupSpec::new(
-                    [stream_clone.clone()],
-                    consumer_group_clone.clone(),
-                    consumer_name_clone.clone(),
-                ),
-            )
+                consumer_name_clone.clone(),
+            ))
             .add_event_single::<TestEvent>(stream_clone.clone())
             .add_event_single::<UserLoginEvent>(stream_clone.clone());
     })

@@ -45,7 +45,6 @@ fn test_start_id_from_beginning() {
             builder
                 .add_stream(RedisStreamSpec::new(reader_stream.clone()))
                 .add_consumer_group(
-                    reader_group.clone(),
                     RedisConsumerGroupSpec::new(
                         [reader_stream.clone()],
                         reader_group.clone(),
@@ -143,7 +142,6 @@ fn test_start_id_from_end() {
             builder
                 .add_stream(RedisStreamSpec::new(reader_stream.clone()))
                 .add_consumer_group(
-                    reader_group.clone(),
                     RedisConsumerGroupSpec::new(
                         [reader_stream.clone()],
                         reader_group.clone(),

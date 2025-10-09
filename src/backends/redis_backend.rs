@@ -589,7 +589,6 @@ impl RedisEventBusBackend {
                 Ok(m) => m,
                 Err(err) => {
                     error!(error = %err, "Failed to create Redis ack connection");
-                    println!("Redis ack connection failed: {err}");
                     return;
                 }
             };
@@ -1000,7 +999,6 @@ impl EventBusBackend for RedisEventBusBackend {
             Ok(m) => m,
             Err(err) => {
                 error!(error = %err, "Redis connection failed");
-                println!("Redis connection failed: {err}");
                 self.state.running.store(false, Ordering::SeqCst);
                 return false;
             }

@@ -76,14 +76,11 @@ fn test_message_throughput() {
     let (backend, _context) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone_for_topology.clone()))
-            .add_consumer_group(
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream_clone_for_topology.clone()],
                 consumer_group_clone_for_topology.clone(),
-                RedisConsumerGroupSpec::new(
-                    [stream_clone_for_topology.clone()],
-                    consumer_group_clone_for_topology.clone(),
-                    consumer_name_clone_for_topology.clone(),
-                ),
-            )
+                consumer_name_clone_for_topology.clone(),
+            ))
             .add_event_single::<TestEvent>(stream_clone_for_topology.clone());
     })
     .expect("Redis backend setup successful");
@@ -162,7 +159,6 @@ fn test_message_throughput() {
 
             let events = r.read(&config);
             if !events.is_empty() {
-                println!("Received batch of {} events", events.len());
                 stats.mark_receive_start();
                 stats.received += events.len();
                 if stats.received >= TARGET_MESSAGES {
@@ -258,14 +254,11 @@ fn test_high_volume_small_messages() {
     let (backend, _context) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone_for_topology.clone()))
-            .add_consumer_group(
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream_clone_for_topology.clone()],
                 consumer_group_clone_for_topology.clone(),
-                RedisConsumerGroupSpec::new(
-                    [stream_clone_for_topology.clone()],
-                    consumer_group_clone_for_topology.clone(),
-                    consumer_name_clone_for_topology.clone(),
-                ),
-            )
+                consumer_name_clone_for_topology.clone(),
+            ))
             .add_event_single::<TestEvent>(stream_clone_for_topology.clone());
     })
     .expect("Redis backend setup successful");
@@ -434,14 +427,11 @@ fn test_large_message_throughput() {
     let (backend, _context) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone_for_topology.clone()))
-            .add_consumer_group(
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream_clone_for_topology.clone()],
                 consumer_group_clone_for_topology.clone(),
-                RedisConsumerGroupSpec::new(
-                    [stream_clone_for_topology.clone()],
-                    consumer_group_clone_for_topology.clone(),
-                    consumer_name_clone_for_topology.clone(),
-                ),
-            )
+                consumer_name_clone_for_topology.clone(),
+            ))
             .add_event_single::<LargeEvent>(stream_clone_for_topology.clone());
     })
     .expect("Redis backend setup successful");

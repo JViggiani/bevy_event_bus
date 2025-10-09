@@ -54,14 +54,11 @@ fn external_redis_events_independent_operation() {
         redis_setup::prepare_backend(move |builder| {
             builder
                 .add_stream(RedisStreamSpec::new(reader_stream.clone()))
-                .add_consumer_group(
+                .add_consumer_group(RedisConsumerGroupSpec::new(
+                    [reader_stream.clone()],
                     reader_group.clone(),
-                    RedisConsumerGroupSpec::new(
-                        [reader_stream.clone()],
-                        reader_group.clone(),
-                        reader_consumer.clone(),
-                    ),
-                )
+                    reader_consumer.clone(),
+                ))
                 .add_event_single::<TestEvent>(reader_stream.clone());
         })
     })

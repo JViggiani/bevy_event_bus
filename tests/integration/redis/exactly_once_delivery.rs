@@ -34,7 +34,6 @@ fn no_event_duplication_exactly_once_delivery() {
         builder
             .add_stream(RedisStreamSpec::new(reader1_stream.clone()))
             .add_consumer_group(
-                reader1_group.clone(),
                 RedisConsumerGroupSpec::new(
                     [reader1_stream.clone()],
                     reader1_group.clone(),
@@ -53,7 +52,6 @@ fn no_event_duplication_exactly_once_delivery() {
         builder
             .add_stream(RedisStreamSpec::new(reader2_stream.clone()))
             .add_consumer_group(
-                reader2_group.clone(),
                 RedisConsumerGroupSpec::new(
                     [reader2_stream.clone()],
                     reader2_group.clone(),

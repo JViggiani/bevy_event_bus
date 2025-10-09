@@ -29,14 +29,11 @@ fn test_working_consumer_group_patterns() {
     let (backend, _context) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone.clone()))
-            .add_consumer_group(
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream_clone.clone()],
                 consumer_group_clone.clone(),
-                RedisConsumerGroupSpec::new(
-                    [stream_clone.clone()],
-                    consumer_group_clone.clone(),
-                    consumer1_for_setup.clone(),
-                ),
-            )
+                consumer1_for_setup.clone(),
+            ))
             .add_event_single::<TestEvent>(stream_clone.clone());
     })
     .expect("Redis backend setup successful");
@@ -179,22 +176,16 @@ fn test_broadcast_with_different_groups_working_pattern() {
     let (backend, _context) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone.clone()))
-            .add_consumer_group(
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream_clone.clone()],
                 consumer_group1_clone.clone(),
-                RedisConsumerGroupSpec::new(
-                    [stream_clone.clone()],
-                    consumer_group1_clone.clone(),
-                    group1_consumer_for_setup.clone(),
-                ),
-            )
-            .add_consumer_group(
+                group1_consumer_for_setup.clone(),
+            ))
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream_clone.clone()],
                 consumer_group2_clone.clone(),
-                RedisConsumerGroupSpec::new(
-                    [stream_clone.clone()],
-                    consumer_group2_clone.clone(),
-                    group2_consumer_for_setup.clone(),
-                ),
-            )
+                group2_consumer_for_setup.clone(),
+            ))
             .add_event_single::<TestEvent>(stream_clone.clone());
     })
     .expect("Redis backend setup successful");

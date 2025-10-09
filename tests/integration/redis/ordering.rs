@@ -41,14 +41,11 @@ fn per_stream_order_preserved() {
         redis_setup::prepare_backend(move |builder| {
             builder
                 .add_stream(RedisStreamSpec::new(reader_stream.clone()))
-                .add_consumer_group(
+                .add_consumer_group(RedisConsumerGroupSpec::new(
+                    [reader_stream.clone()],
                     reader_group.clone(),
-                    RedisConsumerGroupSpec::new(
-                        [reader_stream.clone()],
-                        reader_group.clone(),
-                        reader_consumer.clone(),
-                    ),
-                )
+                    reader_consumer.clone(),
+                ))
                 .add_event_single::<TestEvent>(reader_stream.clone());
         })
     })
@@ -149,14 +146,11 @@ fn cross_stream_interleave_each_ordered() {
             builder
                 .add_stream(RedisStreamSpec::new(reader_stream1.clone()))
                 .add_stream(RedisStreamSpec::new(reader_stream2.clone()))
-                .add_consumer_group(
+                .add_consumer_group(RedisConsumerGroupSpec::new(
+                    [reader_stream1.clone(), reader_stream2.clone()],
                     reader_group.clone(),
-                    RedisConsumerGroupSpec::new(
-                        [reader_stream1.clone(), reader_stream2.clone()],
-                        reader_group.clone(),
-                        reader_consumer.clone(),
-                    ),
-                )
+                    reader_consumer.clone(),
+                ))
                 .add_event_single::<TestEvent>(reader_stream1.clone())
                 .add_event_single::<TestEvent>(reader_stream2.clone());
         })

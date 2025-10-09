@@ -22,14 +22,11 @@ fn multi_stream_isolation() {
     let (backend1, _context1) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(reader1_stream.clone()))
-            .add_consumer_group(
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [reader1_stream.clone()],
                 reader1_group.clone(),
-                RedisConsumerGroupSpec::new(
-                    [reader1_stream.clone()],
-                    reader1_group.clone(),
-                    reader1_consumer.clone(),
-                ),
-            )
+                reader1_consumer.clone(),
+            ))
             .add_event_single::<TestEvent>(reader1_stream.clone());
     })
     .expect("Redis backend1 setup successful");
@@ -40,14 +37,11 @@ fn multi_stream_isolation() {
     let (backend2, _context2) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(reader2_stream.clone()))
-            .add_consumer_group(
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [reader2_stream.clone()],
                 reader2_group.clone(),
-                RedisConsumerGroupSpec::new(
-                    [reader2_stream.clone()],
-                    reader2_group.clone(),
-                    reader2_consumer.clone(),
-                ),
-            )
+                reader2_consumer.clone(),
+            ))
             .add_event_single::<TestEvent>(reader2_stream.clone());
     })
     .expect("Redis backend2 setup successful");

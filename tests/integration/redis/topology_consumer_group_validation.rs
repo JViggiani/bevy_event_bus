@@ -29,12 +29,12 @@ fn test_read_from_topology_defined_consumer_group() {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone.clone()))
             .add_consumer_group(
-                topology_group_clone.clone(),
                 RedisConsumerGroupSpec::new(
                     [stream_clone.clone()],
                     topology_group_clone.clone(),
                     topology_consumer_clone.clone(),
-                ),
+                )
+                .start_id("0-0"),
             )
             .add_event_single::<TestEvent>(stream_clone.clone());
     })
@@ -126,12 +126,12 @@ fn test_read_from_non_topology_consumer_group_should_fail() {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone.clone()))
             .add_consumer_group(
-                topology_group_clone.clone(),
                 RedisConsumerGroupSpec::new(
                     [stream_clone.clone()],
                     topology_group_clone.clone(),
                     topology_consumer_clone.clone(),
-                ),
+                )
+                .start_id("0-0"),
             )
             .add_event_single::<TestEvent>(stream_clone.clone());
     })
@@ -228,14 +228,11 @@ fn test_topology_setup_principle() {
     let (backend, _context) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone.clone()))
-            .add_consumer_group(
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream_clone.clone()],
                 consumer_group_clone.clone(),
-                RedisConsumerGroupSpec::new(
-                    [stream_clone.clone()],
-                    consumer_group_clone.clone(),
-                    consumer_name_clone.clone(),
-                ),
-            )
+                consumer_name_clone.clone(),
+            ))
             .add_event_single::<TestEvent>(stream_clone.clone());
     })
     .expect("Redis backend setup successful");

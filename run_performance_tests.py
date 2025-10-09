@@ -15,7 +15,7 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, List, Optional, Sequence
 
@@ -101,7 +101,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 def build_bench_name(explicit: Optional[str]) -> str:
     if explicit:
         return explicit
-    return f"performance_run_{datetime.utcnow():%Y%m%d_%H%M%S}"  # UTC for reproducibility
+    return f"performance_run_{datetime.now(timezone.utc):%Y%m%d_%H%M%S}"  # UTC for reproducibility
 
 
 def build_test_selector(backend: str, test: str) -> str:

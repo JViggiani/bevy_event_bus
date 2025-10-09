@@ -158,6 +158,9 @@ pub struct RedisConsumerGroupSpec {
 }
 
 impl RedisConsumerGroupSpec {
+    /// Construct a specification for a Redis consumer group that will be provisioned as part of
+    /// the topology. The consumer will only observe new messages by default; use
+    /// [`Self::start_id`] to opt into backlog replay.
     pub fn new<I, S>(
         streams: I,
         consumer_group: impl Into<String>,
@@ -172,12 +175,17 @@ impl RedisConsumerGroupSpec {
             !consumer_name.trim().is_empty(),
             "consumer_name must not be empty when defining a Redis consumer group"
         );
+        let consumer_group = consumer_group.into();
+        assert!(
+            !consumer_group.trim().is_empty(),
+            "consumer_group must not be empty when defining a Redis consumer group"
+        );
         Self {
             streams: streams.into_iter().map(Into::into).collect(),
-            consumer_group: consumer_group.into(),
+            consumer_group,
             consumer_name,
             manual_ack: false,
-            start_id: "0-0".to_string(),
+            start_id: "$".to_string(),
         }
     }
 
@@ -186,6 +194,11 @@ impl RedisConsumerGroupSpec {
         self
     }
 
+    /// Override the stream position used when creating the consumer group.
+    ///
+    /// By default this is set to `$`, which instructs Redis to deliver only messages appended
+    /// after the group is created. To replay the full backlog instead, set the value to
+    /// `"0-0"` or any other valid Redis stream entry identifier.
     pub fn start_id(mut self, id: impl Into<String>) -> Self {
         self.start_id = id.into();
         self
@@ -265,12 +278,13 @@ impl RedisTopologyBuilder {
         self
     }
 
-    pub fn add_consumer_group(
-        &mut self,
-        id: impl Into<String>,
-        spec: RedisConsumerGroupSpec,
-    ) -> &mut Self {
-        self.consumer_groups.insert(id.into(), spec);
+    pub fn add_consumer_group(&mut self, spec: RedisConsumerGroupSpec) -> &mut Self {
+        let key = spec.consumer_group.clone();
+        assert!(
+            !self.consumer_groups.contains_key(&key),
+            "consumer group '{key}' is already defined in this topology"
+        );
+        self.consumer_groups.insert(key, spec);
         self
     }
 

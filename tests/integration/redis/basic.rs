@@ -24,14 +24,11 @@ fn redis_single_direction_writer_reader_flow() {
     let (backend_reader, _ctx_reader) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_reader.clone()))
-            .add_consumer_group(
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream_for_reader.clone()],
                 group_for_reader.clone(),
-                RedisConsumerGroupSpec::new(
-                    [stream_for_reader.clone()],
-                    group_for_reader.clone(),
-                    name_for_reader.clone(),
-                ),
-            )
+                name_for_reader.clone(),
+            ))
             .add_event_single::<TestEvent>(stream_for_reader.clone());
     })
     .expect("reader backend setup");
@@ -125,14 +122,11 @@ fn redis_bidirectional_apps_exchange_events() {
     let (backend_a, _ctx_a) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_app_a.clone()))
-            .add_consumer_group(
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream_for_app_a.clone()],
                 group_for_app_a.clone(),
-                RedisConsumerGroupSpec::new(
-                    [stream_for_app_a.clone()],
-                    group_for_app_a.clone(),
-                    consumer_for_app_a.clone(),
-                ),
-            )
+                consumer_for_app_a.clone(),
+            ))
             .add_event_single::<TestEvent>(stream_for_app_a.clone());
     })
     .expect("app A backend setup");
@@ -143,14 +137,11 @@ fn redis_bidirectional_apps_exchange_events() {
     let (backend_b, _ctx_b) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_app_b.clone()))
-            .add_consumer_group(
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream_for_app_b.clone()],
                 group_for_app_b.clone(),
-                RedisConsumerGroupSpec::new(
-                    [stream_for_app_b.clone()],
-                    group_for_app_b.clone(),
-                    consumer_for_app_b.clone(),
-                ),
-            )
+                consumer_for_app_b.clone(),
+            ))
             .add_event_single::<TestEvent>(stream_for_app_b.clone());
     })
     .expect("app B backend setup");

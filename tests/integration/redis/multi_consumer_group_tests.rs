@@ -25,14 +25,11 @@ fn test_create_consumer_group() {
     let (backend, _context) = redis_setup::prepare_backend(move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_setup.clone()))
-            .add_consumer_group(
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream_for_setup.clone()],
                 consumer_group_for_setup.clone(),
-                RedisConsumerGroupSpec::new(
-                    [stream_for_setup.clone()],
-                    consumer_group_for_setup.clone(),
-                    consumer_for_setup.clone(),
-                ),
-            )
+                consumer_for_setup.clone(),
+            ))
             .add_event_single::<TestEvent>(stream_for_setup.clone());
     })
     .expect("Redis backend setup successful");
@@ -87,14 +84,11 @@ fn test_receive_with_group() {
         redis_setup::prepare_backend(move |builder| {
             builder
                 .add_stream(RedisStreamSpec::new(reader_stream.clone()))
-                .add_consumer_group(
+                .add_consumer_group(RedisConsumerGroupSpec::new(
+                    [reader_stream.clone()],
                     reader_group.clone(),
-                    RedisConsumerGroupSpec::new(
-                        [reader_stream.clone()],
-                        reader_group.clone(),
-                        reader_consumer.clone(),
-                    ),
-                )
+                    reader_consumer.clone(),
+                ))
                 .add_event_single::<TestEvent>(reader_stream.clone());
         })
     })
@@ -180,14 +174,11 @@ fn test_multiple_consumer_groups_independence() {
         redis_setup::prepare_backend(move |builder| {
             builder
                 .add_stream(RedisStreamSpec::new(reader1_stream.clone()))
-                .add_consumer_group(
+                .add_consumer_group(RedisConsumerGroupSpec::new(
+                    [reader1_stream.clone()],
                     reader1_group.clone(),
-                    RedisConsumerGroupSpec::new(
-                        [reader1_stream.clone()],
-                        reader1_group.clone(),
-                        reader1_consumer.clone(),
-                    ),
-                )
+                    reader1_consumer.clone(),
+                ))
                 .add_event_single::<TestEvent>(reader1_stream.clone());
         })
     })
@@ -200,14 +191,11 @@ fn test_multiple_consumer_groups_independence() {
         redis_setup::prepare_backend(move |builder| {
             builder
                 .add_stream(RedisStreamSpec::new(reader2_stream.clone()))
-                .add_consumer_group(
+                .add_consumer_group(RedisConsumerGroupSpec::new(
+                    [reader2_stream.clone()],
                     reader2_group.clone(),
-                    RedisConsumerGroupSpec::new(
-                        [reader2_stream.clone()],
-                        reader2_group.clone(),
-                        reader2_consumer.clone(),
-                    ),
-                )
+                    reader2_consumer.clone(),
+                ))
                 .add_event_single::<TestEvent>(reader2_stream.clone());
         })
     })
@@ -338,14 +326,11 @@ fn test_consumer_group_with_multiple_streams() {
             builder
                 .add_stream(RedisStreamSpec::new(reader_stream1.clone()))
                 .add_stream(RedisStreamSpec::new(reader_stream2.clone()))
-                .add_consumer_group(
+                .add_consumer_group(RedisConsumerGroupSpec::new(
+                    [reader_stream1.clone(), reader_stream2.clone()],
                     reader_group.clone(),
-                    RedisConsumerGroupSpec::new(
-                        [reader_stream1.clone(), reader_stream2.clone()],
-                        reader_group.clone(),
-                        reader_consumer.clone(),
-                    ),
-                )
+                    reader_consumer.clone(),
+                ))
                 .add_event_single::<TestEvent>(reader_stream1.clone())
                 .add_event_single::<TestEvent>(reader_stream2.clone());
         })

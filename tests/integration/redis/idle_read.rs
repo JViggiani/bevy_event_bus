@@ -23,14 +23,11 @@ fn idle_empty_stream_poll_does_not_block() {
     let request = redis_setup::build_request(options, move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_backend.clone()))
-            .add_consumer_group(
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream_for_backend.clone()],
                 group_for_backend.clone(),
-                RedisConsumerGroupSpec::new(
-                    [stream_for_backend.clone()],
-                    group_for_backend.clone(),
-                    consumer_for_backend.clone(),
-                ),
-            )
+                consumer_for_backend.clone(),
+            ))
             .add_event_single::<TestEvent>(stream_for_backend.clone());
     });
 

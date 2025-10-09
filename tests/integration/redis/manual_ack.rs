@@ -106,7 +106,6 @@ fn manual_ack_clears_messages_and_tracks_success() {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone.clone()))
             .add_consumer_group(
-                group_clone.clone(),
                 RedisConsumerGroupSpec::new(
                     [stream_clone.clone()],
                     group_clone.clone(),
@@ -206,7 +205,6 @@ fn manual_ack_batches_multiple_messages() {
         builder
             .add_stream(RedisStreamSpec::new(stream_clone.clone()))
             .add_consumer_group(
-                group_clone.clone(),
                 RedisConsumerGroupSpec::new(
                     [stream_clone.clone()],
                     group_clone.clone(),
