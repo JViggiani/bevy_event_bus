@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
 use bevy_event_bus::{
     EventBusConfig, EventBusPlugins, KafkaConsumerConfig, KafkaEventBusBackend, KafkaEventReader,
-    KafkaEventWriter, KafkaProducerConfig,
+    KafkaEventWriter, KafkaProducerConfig, TopologyMode,
 };
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{
@@ -153,7 +153,8 @@ fn kafka_specific_methods_work() {
                 )
                 .add_event_single::<TestEvent>(topic_for_config.clone());
         },
-    ));
+    ))
+    .expect("Kafka backend initialization failed for configuration test");
     let mut app = App::new();
     app.add_plugins(EventBusPlugins(backend));
 
@@ -248,4 +249,83 @@ fn builder_pattern_works() {
     assert_eq!(producer_config.get_acks(), "all");
     assert_eq!(producer_config.get_retries(), 3);
     assert_eq!(producer_config.get_batch_size(), 16384);
+}
+
+/// Verifies that topology validation detects missing Kafka topics when validation mode is used.
+#[test]
+fn kafka_topic_validation_detects_missing_topic() {
+    let missing_topic = unique_topic("validate_missing_topic");
+    let (_backend, bootstrap) = kafka_setup::prepare_backend(kafka_setup::latest(|_| {}));
+
+    let result = KafkaEventBusBackend::new(kafka_backend_config_for_tests(
+        &bootstrap,
+        None,
+        |builder| {
+            builder
+                .add_topic(KafkaTopicSpec::new(missing_topic.clone()).mode(TopologyMode::Validate));
+        },
+    ));
+
+    assert!(
+        result.is_err(),
+        "Validation should fail for a missing Kafka topic"
+    );
+}
+
+/// Verifies that validation mode succeeds when the topic already exists.
+#[test]
+fn kafka_topic_validation_allows_existing_topic() {
+    let topic = unique_topic("validate_existing_topic");
+    let (_backend, bootstrap) = kafka_setup::prepare_backend(kafka_setup::latest(|_| {}));
+    let ready = kafka_setup::ensure_topic_ready(&bootstrap, &topic, 1, Duration::from_secs(10));
+    assert!(ready, "Topic {} was not ready in time", topic);
+
+    let backend = KafkaEventBusBackend::new(kafka_backend_config_for_tests(
+        &bootstrap,
+        None,
+        |builder| {
+            builder.add_topic(
+                KafkaTopicSpec::new(topic.clone())
+                    .partitions(1)
+                    .replication(1)
+                    .mode(TopologyMode::Validate),
+            );
+        },
+    ))
+    .expect("Validation should succeed for an existing topic");
+
+    drop(backend);
+}
+
+/// Ensures that validation mode detects absent consumer groups without provisioning them.
+#[test]
+fn kafka_consumer_group_validation_detects_missing_group() {
+    let topic = unique_topic("validate_group_missing_topic");
+    let consumer_group = unique_consumer_group("validate_missing_group");
+    let (_backend, bootstrap) = kafka_setup::prepare_backend(kafka_setup::latest(|_| {}));
+    let ready = kafka_setup::ensure_topic_ready(&bootstrap, &topic, 1, Duration::from_secs(10));
+    assert!(ready, "Topic {} was not ready in time", topic);
+
+    let result = KafkaEventBusBackend::new(kafka_backend_config_for_tests(
+        &bootstrap,
+        None,
+        |builder| {
+            builder
+                .add_topic(
+                    KafkaTopicSpec::new(topic.clone())
+                        .partitions(1)
+                        .replication(1)
+                        .mode(TopologyMode::Validate),
+                )
+                .add_consumer_group(
+                    consumer_group.clone(),
+                    KafkaConsumerGroupSpec::new([topic.clone()]).mode(TopologyMode::Validate),
+                );
+        },
+    ));
+
+    assert!(
+        result.is_err(),
+        "Validation should fail for a missing Kafka consumer group"
+    );
 }

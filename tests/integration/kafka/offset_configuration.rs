@@ -200,7 +200,8 @@ fn offset_configuration_latest_ignores_historical_events() {
         .connection
         .insert_additional_config("auto.offset.reset", "latest");
 
-    let backend_latest = KafkaEventBusBackend::new(latest_config);
+    let backend_latest = KafkaEventBusBackend::new(latest_config)
+        .expect("Kafka backend initialization failed for latest offset test");
     let mut latest_app = App::new();
     latest_app.add_plugins(EventBusPlugins(backend_latest));
 
@@ -340,7 +341,8 @@ fn default_offset_configuration_is_latest() {
                 )
                 .add_event_single::<TestEvent>(topic_for_config.clone());
         },
-    ));
+    ))
+    .expect("Kafka backend initialization failed for default offset test");
     let mut app = App::new();
     app.add_plugins(EventBusPlugins(backend));
 

@@ -19,6 +19,7 @@ use std::{
         Arc, Mutex, RwLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
+    thread,
     time::{Duration, Instant},
 };
 use tokio::task::JoinHandle;
@@ -26,8 +27,9 @@ use tracing::{debug, warn};
 
 use bevy::prelude::*;
 use bevy_event_bus::{
+    TopologyMode,
     backends::event_bus_backend::{
-        BackendPluginSetup, ConsumerGroupManager, EventBusBackend, LagReportingBackend,
+        BackendConfigError, BackendPluginSetup, EventBusBackend, LagReportingBackend,
         LagReportingDescriptor, LagReportingHandle, ManualCommitController, ManualCommitDescriptor,
         ManualCommitHandle, ManualCommitStyle, ReceiveOptions, SendOptions,
     },
@@ -311,9 +313,13 @@ impl ProducerContext for EventBusProducerContext {
 }
 
 impl KafkaEventBusBackend {
-    pub fn new(config: KafkaBackendConfig) -> Self {
-        let producer = Arc::new(build_producer(&config.connection));
-        ensure_topics(&config.connection, &config.topology);
+    pub fn new(config: KafkaBackendConfig) -> Result<Self, BackendConfigError> {
+        prepare_kafka_topology(&config.connection, &config.topology)?;
+
+        let producer = Arc::new(
+            build_producer(&config.connection)
+                .map_err(|err| BackendConfigError::new("kafka", err.to_string()))?,
+        );
 
         let consumers = Arc::new(Mutex::new(build_consumers(
             &config.connection,
@@ -344,9 +350,9 @@ impl KafkaEventBusBackend {
             lag_handle: Mutex::new(None),
             dropped: Arc::new(AtomicUsize::new(0)),
         };
-        Self {
+        Ok(Self {
             state: Arc::new(state),
-        }
+        })
     }
 
     /// Returns true if the backend topology provisions the supplied consumer group identifier.
@@ -753,17 +759,6 @@ impl EventBusBackend for KafkaEventBusBackend {
 }
 
 #[async_trait]
-impl ConsumerGroupManager for KafkaEventBusBackend {
-    async fn create_consumer_group(
-        &mut self,
-        _topics: &[String],
-        _group_id: &str,
-    ) -> Result<(), String> {
-        Err("Dynamic consumer group creation is not supported at runtime".into())
-    }
-}
-
-#[async_trait]
 impl ManualCommitController for KafkaEventBusBackend {
     async fn enable_manual_commits(&mut self, group_id: &str) -> Result<(), String> {
         let consumers = self.state.consumers.lock().unwrap();
@@ -819,10 +814,8 @@ impl LagReportingBackend for KafkaEventBusBackend {
     }
 }
 
-fn build_producer(connection: &KafkaConnectionConfig) -> BaseProducer<EventBusProducerContext> {
-    let mut cfg = ClientConfig::new();
+fn apply_connection_settings(cfg: &mut ClientConfig, connection: &KafkaConnectionConfig) {
     cfg.set("bootstrap.servers", connection.bootstrap_servers());
-    cfg.set("message.timeout.ms", connection.timeout_ms().to_string());
 
     if let Some(client_id) = connection.client_id() {
         cfg.set("client.id", client_id);
@@ -831,49 +824,248 @@ fn build_producer(connection: &KafkaConnectionConfig) -> BaseProducer<EventBusPr
     for (key, value) in connection.additional_config() {
         cfg.set(key, value);
     }
-
-    cfg.create_with_context(EventBusProducerContext)
-        .expect("Failed to create Kafka producer")
 }
 
-fn ensure_topics(connection: &KafkaConnectionConfig, topology: &KafkaTopologyConfig) {
+fn build_producer(
+    connection: &KafkaConnectionConfig,
+) -> Result<BaseProducer<EventBusProducerContext>, KafkaError> {
+    let mut cfg = ClientConfig::new();
+    apply_connection_settings(&mut cfg, connection);
+    cfg.set("message.timeout.ms", connection.timeout_ms().to_string());
+
+    cfg.create_with_context(EventBusProducerContext)
+}
+
+fn prepare_kafka_topology(
+    connection: &KafkaConnectionConfig,
+    topology: &KafkaTopologyConfig,
+) -> Result<(), BackendConfigError> {
+    prepare_topics(connection, topology)
+        .map_err(|reason| BackendConfigError::new("kafka", reason))?;
+    prepare_consumer_groups(connection, topology)
+        .map_err(|reason| BackendConfigError::new("kafka", reason))?;
+    Ok(())
+}
+
+fn prepare_topics(
+    connection: &KafkaConnectionConfig,
+    topology: &KafkaTopologyConfig,
+) -> Result<(), String> {
     if topology.topics().is_empty() {
-        return;
+        return Ok(());
     }
 
     let mut cfg = ClientConfig::new();
-    cfg.set("bootstrap.servers", connection.bootstrap_servers());
-    if let Some(client_id) = connection.client_id() {
-        cfg.set("client.id", client_id);
+    apply_connection_settings(&mut cfg, connection);
+    cfg.set("allow.auto.create.topics", "false");
+
+    let admin = cfg
+        .create::<AdminClient<DefaultClientContext>>()
+        .map_err(|err| format!("Failed to create Kafka admin client: {err}"))?;
+
+    let mut provision_specs = Vec::new();
+    let mut validate_specs = Vec::new();
+    for spec in topology.topics() {
+        match spec.mode {
+            TopologyMode::Provision => provision_specs.push(spec),
+            TopologyMode::Validate => validate_specs.push(spec),
+        }
     }
 
-    match cfg.create::<AdminClient<DefaultClientContext>>() {
-        Ok(admin) => {
-            let options = AdminOptions::new();
-            let topics: Vec<NewTopic> = topology
-                .topics()
-                .iter()
-                .map(|spec| {
-                    let partitions = spec.partitions.unwrap_or(1);
-                    let replication = spec
-                        .replication
-                        .map(|r| TopicReplication::Fixed(r as i32))
-                        .unwrap_or(TopicReplication::Fixed(1));
-                    NewTopic::new(&spec.name, partitions, replication)
-                })
-                .collect();
+    if !provision_specs.is_empty() {
+        let options = AdminOptions::new();
+        let topics: Vec<NewTopic> = provision_specs
+            .iter()
+            .map(|spec| {
+                let partitions = spec.partitions.unwrap_or(1);
+                let replication = spec
+                    .replication
+                    .map(|r| TopicReplication::Fixed(r as i32))
+                    .unwrap_or(TopicReplication::Fixed(1));
+                NewTopic::new(&spec.name, partitions, replication)
+            })
+            .collect();
 
-            if !topics.is_empty() {
-                if let Err(err) = runtime::block_on(admin.create_topics(topics.iter(), &options)) {
-                    let msg = err.to_string();
-                    if !msg.contains("TopicAlreadyExists") {
-                        warn!(error = %msg, "Topic creation batch failed");
-                    }
+        if !topics.is_empty() {
+            if let Err(err) = runtime::block_on(admin.create_topics(topics.iter(), &options)) {
+                let msg = err.to_string();
+                if !msg.contains("TopicAlreadyExists") {
+                    return Err(format!("Topic creation batch failed: {msg}"));
                 }
             }
         }
-        Err(err) => warn!(error = %err, "Failed to create Kafka admin client"),
     }
+
+    for spec in validate_specs {
+        let metadata = admin
+            .inner()
+            .fetch_metadata(Some(&spec.name), Duration::from_secs(5))
+            .map_err(|err| {
+                format!(
+                    "Failed to fetch metadata for Kafka topic '{}': {err}",
+                    spec.name
+                )
+            })?;
+
+        let topic_metadata = metadata
+            .topics()
+            .iter()
+            .find(|topic| topic.name() == spec.name)
+            .ok_or_else(|| {
+                format!(
+                    "Kafka topic '{}' metadata missing during validation",
+                    spec.name
+                )
+            })?;
+
+        if let Some(error) = topic_metadata.error() {
+            return Err(format!(
+                "Kafka topic '{}' reported error during validation: {:?}",
+                spec.name, error
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn prepare_consumer_groups(
+    connection: &KafkaConnectionConfig,
+    topology: &KafkaTopologyConfig,
+) -> Result<(), String> {
+    if topology.consumer_groups().is_empty() {
+        return Ok(());
+    }
+
+    for (group_id, spec) in topology.consumer_groups() {
+        if spec.mode == TopologyMode::Provision {
+            provision_consumer_group(connection, group_id, spec)?;
+        }
+    }
+
+    let mut validator = build_validation_consumer(connection)?;
+
+    for (group_id, spec) in topology.consumer_groups() {
+        validate_consumer_group(&mut validator, group_id).map_err(|err| match spec.mode {
+            TopologyMode::Provision => format!(
+                "Kafka consumer group '{}' could not be provisioned: {err}",
+                group_id
+            ),
+            TopologyMode::Validate => format!(
+                "Kafka consumer group '{}' is missing while configured with TopologyMode::Validate: {err}",
+                group_id
+            ),
+        })?;
+    }
+
+    Ok(())
+}
+
+fn provision_consumer_group(
+    connection: &KafkaConnectionConfig,
+    group_id: &str,
+    spec: &KafkaConsumerGroupSpec,
+) -> Result<(), String> {
+    let consumer = build_consumer(connection, group_id, spec).map_err(|err| {
+        format!(
+            "Failed to build Kafka consumer while provisioning group '{}': {err}",
+            group_id
+        )
+    })?;
+
+    if !spec.topics.is_empty() {
+        let topic_refs: Vec<&str> = spec.topics.iter().map(String::as_str).collect();
+        consumer.subscribe(&topic_refs).map_err(|err| {
+            format!(
+                "Failed to subscribe while provisioning Kafka consumer group '{}': {err}",
+                group_id
+            )
+        })?;
+    }
+
+    const REGISTRATION_ATTEMPTS: usize = 10;
+    for attempt in 0..REGISTRATION_ATTEMPTS {
+        if let Some(Err(err)) = consumer.poll(Duration::from_millis(100)) {
+            warn!(
+                group = %group_id,
+                error = %err,
+                "Kafka consumer poll error while provisioning group"
+            );
+        }
+
+        match consumer
+            .client()
+            .fetch_group_list(Some(group_id), Duration::from_secs(2))
+        {
+            Ok(metadata) => {
+                let found = metadata
+                    .groups()
+                    .iter()
+                    .any(|group| group.name() == group_id);
+                if found {
+                    return Ok(());
+                }
+            }
+            Err(err) => {
+                warn!(
+                    group = %group_id,
+                    error = %err,
+                    "Kafka consumer group metadata fetch failed during provisioning"
+                );
+            }
+        }
+
+        if attempt + 1 < REGISTRATION_ATTEMPTS {
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    Err(format!(
+        "Kafka consumer group '{}' not reported by broker after provisioning",
+        group_id
+    ))
+}
+
+fn build_validation_consumer(connection: &KafkaConnectionConfig) -> Result<BaseConsumer, String> {
+    let mut cfg = ClientConfig::new();
+    apply_connection_settings(&mut cfg, connection);
+    cfg.set("group.id", "__bevy_event_bus.topology_validator");
+    cfg.set("enable.auto.commit", "false");
+    cfg.set("allow.auto.create.topics", "false");
+    cfg.set("socket.timeout.ms", "5000");
+
+    cfg.create()
+        .map_err(|err| format!("Failed to create Kafka validation consumer: {err}"))
+}
+
+fn validate_consumer_group(consumer: &mut BaseConsumer, group_id: &str) -> Result<(), String> {
+    const VALIDATION_RETRIES: usize = 10;
+
+    for attempt in 0..VALIDATION_RETRIES {
+        let metadata = consumer
+            .client()
+            .fetch_group_list(Some(group_id), Duration::from_secs(5))
+            .map_err(|err| {
+                format!(
+                    "Failed to fetch metadata for Kafka consumer group '{}': {err}",
+                    group_id
+                )
+            })?;
+
+        let found = metadata
+            .groups()
+            .iter()
+            .any(|group| group.name() == group_id);
+        if found {
+            return Ok(());
+        }
+
+        if attempt + 1 < VALIDATION_RETRIES {
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    Err("group not reported by broker".to_string())
 }
 
 fn build_consumers(
@@ -912,7 +1104,7 @@ fn build_consumer(
     spec: &KafkaConsumerGroupSpec,
 ) -> Result<BaseConsumer, KafkaError> {
     let mut cfg = ClientConfig::new();
-    cfg.set("bootstrap.servers", connection.bootstrap_servers());
+    apply_connection_settings(&mut cfg, connection);
     cfg.set("group.id", group_id);
     cfg.set(
         "enable.auto.commit",
@@ -929,9 +1121,6 @@ fn build_consumer(
     );
     if let Some(client_id) = connection.client_id() {
         cfg.set("client.id", &format!("{}_{}", client_id, group_id));
-    }
-    for (key, value) in connection.additional_config() {
-        cfg.set(key, value);
     }
 
     cfg.create()

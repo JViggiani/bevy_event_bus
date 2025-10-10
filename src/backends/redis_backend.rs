@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use crossbeam_channel::{Receiver, SendTimeoutError, Sender, TryRecvError, TrySendError, bounded};
 use redis::aio::ConnectionManager;
 use redis::streams::{StreamId, StreamKey, StreamReadReply};
-use redis::{RedisError, Value as RedisValue, from_redis_value};
+use redis::{ErrorKind as RedisErrorKind, RedisError, Value as RedisValue, from_redis_value};
 use std::any::Any;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Debug;
@@ -14,11 +14,12 @@ use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, warn};
 
+use crate::config::TopologyMode;
 use bevy::prelude::*;
 use bevy_event_bus::{
     backends::event_bus_backend::{
-        BackendPluginSetup, EventBusBackend, ManualCommitDescriptor, ManualCommitHandle,
-        ManualCommitStyle, ReceiveOptions, SendOptions, StreamTrimStrategy,
+        BackendConfigError, BackendPluginSetup, EventBusBackend, ManualCommitDescriptor,
+        ManualCommitHandle, ManualCommitStyle, ReceiveOptions, SendOptions, StreamTrimStrategy,
     },
     config::redis::{
         RedisBackendConfig, RedisConnectionConfig, RedisConsumerGroupSpec, RedisRuntimeTuning,
@@ -203,8 +204,8 @@ impl Debug for RedisEventBusBackend {
     }
 }
 
-fn build_client(connection: &RedisConnectionConfig) -> redis::Client {
-    redis::Client::open(connection.connection_string()).expect("Failed to create Redis client")
+fn build_client(connection: &RedisConnectionConfig) -> Result<redis::Client, RedisError> {
+    redis::Client::open(connection.connection_string())
 }
 
 fn build_stream_write_map(topology: &RedisTopologyConfig) -> HashMap<String, StreamWriteConfig> {
@@ -221,34 +222,145 @@ fn build_stream_write_map(topology: &RedisTopologyConfig) -> HashMap<String, Str
     map
 }
 
-async fn ensure_streams(
+fn redis_topology_error(message: impl Into<String>) -> RedisError {
+    RedisError::from((
+        RedisErrorKind::ExtensionError,
+        "bevy_event_bus::redis_topology",
+        message.into(),
+    ))
+}
+
+async fn stream_exists(manager: &mut ConnectionManager, stream: &str) -> Result<bool, RedisError> {
+    let exists: i64 = redis::cmd("EXISTS")
+        .arg(stream)
+        .query_async(manager)
+        .await?;
+    Ok(exists > 0)
+}
+
+async fn ensure_consumer_group_present(
     manager: &mut ConnectionManager,
-    topology: &RedisTopologyConfig,
+    stream: &str,
+    spec: &RedisConsumerGroupSpec,
 ) -> Result<(), RedisError> {
-    for spec in topology.consumer_groups().values() {
-        for stream in &spec.streams {
-            let mut cmd = redis::cmd("XGROUP");
-            cmd.arg("CREATE")
-                .arg(stream)
-                .arg(&spec.consumer_group)
-                .arg(&spec.start_id)
-                .arg("MKSTREAM");
-            match cmd.query_async::<_, RedisValue>(manager).await {
-                Ok(_) => {
-                    debug!(stream = %stream, group = %spec.consumer_group, "Created Redis consumer group")
+    let response = redis::cmd("XINFO")
+        .arg("GROUPS")
+        .arg(stream)
+        .query_async::<_, RedisValue>(manager)
+        .await?;
+
+    let groups = match response {
+        RedisValue::Bulk(groups) => groups,
+        _ => {
+            return Err(redis_topology_error(format!(
+                "Unexpected response while inspecting groups for Redis stream '{}'",
+                stream
+            )));
+        }
+    };
+
+    for group in groups {
+        if let RedisValue::Bulk(entries) = group {
+            let mut iter = entries.iter();
+            while let Some(key) = iter.next() {
+                if redis_value_to_string(key).as_deref() == Some("name") {
+                    if let Some(value) = iter.next() {
+                        if redis_value_to_string(value).as_deref()
+                            == Some(spec.consumer_group.as_str())
+                        {
+                            return Ok(());
+                        }
+                    }
                 }
-                Err(err) if err.code() == Some("BUSYGROUP") => {
-                    debug!(
-                        stream = %stream,
-                        group = %spec.consumer_group,
-                        "Redis consumer group already exists"
-                    );
-                }
-                Err(err) => return Err(err),
             }
         }
     }
+
+    Err(redis_topology_error(format!(
+        "Redis consumer group '{}' is missing on stream '{}' while configured with TopologyMode::Validate",
+        spec.consumer_group, stream
+    )))
+}
+
+async fn ensure_redis_topology(
+    manager: &mut ConnectionManager,
+    topology: &RedisTopologyConfig,
+) -> Result<(), RedisError> {
+    let mut known_streams = HashSet::new();
+
+    for spec in topology.streams() {
+        known_streams.insert(spec.name.clone());
+
+        if matches!(spec.mode, TopologyMode::Validate)
+            && !stream_exists(manager, &spec.name).await?
+        {
+            return Err(redis_topology_error(format!(
+                "Redis stream '{}' is missing while configured with TopologyMode::Validate",
+                spec.name
+            )));
+        }
+    }
+
+    for spec in topology.consumer_groups().values() {
+        for stream in &spec.streams {
+            if !known_streams.contains(stream) {
+                match spec.mode {
+                    TopologyMode::Provision => {
+                        known_streams.insert(stream.clone());
+                    }
+                    TopologyMode::Validate => {
+                        if !stream_exists(manager, stream).await? {
+                            return Err(redis_topology_error(format!(
+                                "Redis stream '{}' is missing while validating consumer group '{}'",
+                                stream, spec.consumer_group
+                            )));
+                        }
+                        known_streams.insert(stream.clone());
+                    }
+                }
+            }
+
+            match spec.mode {
+                TopologyMode::Provision => {
+                    provision_consumer_group(manager, stream, spec).await?;
+                }
+                TopologyMode::Validate => {
+                    ensure_consumer_group_present(manager, stream, spec).await?;
+                }
+            }
+        }
+    }
+
     Ok(())
+}
+
+async fn provision_consumer_group(
+    manager: &mut ConnectionManager,
+    stream: &str,
+    spec: &RedisConsumerGroupSpec,
+) -> Result<(), RedisError> {
+    let mut cmd = redis::cmd("XGROUP");
+    cmd.arg("CREATE")
+        .arg(stream)
+        .arg(&spec.consumer_group)
+        .arg(&spec.start_id)
+        .arg("MKSTREAM");
+
+    match cmd.query_async::<_, RedisValue>(manager).await {
+        Ok(_) => {
+            debug!(stream = %stream, group = %spec.consumer_group, "Created Redis consumer group");
+            Ok(())
+        }
+        Err(err) if err.code() == Some("BUSYGROUP") => {
+            debug!(
+                stream = %stream,
+                group = %spec.consumer_group,
+                "Redis consumer group already exists"
+            );
+            Ok(())
+        }
+        Err(err) => Err(err),
+    }
 }
 
 fn redis_value_to_bytes(value: &RedisValue) -> Option<Vec<u8>> {
@@ -319,8 +431,17 @@ fn convert_stream_entries(
 }
 
 impl RedisEventBusBackend {
-    pub fn new(config: RedisBackendConfig) -> Self {
-        let client = build_client(&config.connection);
+    pub fn new(config: RedisBackendConfig) -> Result<Self, BackendConfigError> {
+        let client = build_client(&config.connection)
+            .map_err(|err| BackendConfigError::new("redis", err.to_string()))?;
+        runtime::block_on(async {
+            let mut manager = ConnectionManager::new(client.clone())
+                .await
+                .map_err(|err| BackendConfigError::new("redis", err.to_string()))?;
+            ensure_redis_topology(&mut manager, &config.topology)
+                .await
+                .map_err(|err| BackendConfigError::new("redis", err.to_string()))
+        })?;
         let manual_ack = config
             .topology
             .consumer_groups()
@@ -358,9 +479,9 @@ impl RedisEventBusBackend {
             stream_writes,
         };
 
-        Self {
+        Ok(Self {
             state: Arc::new(state),
-        }
+        })
     }
 
     fn spawn_runtime_tasks(&self) {
@@ -999,14 +1120,14 @@ impl EventBusBackend for RedisEventBusBackend {
         let mut manager = match ConnectionManager::new(self.state.client.clone()).await {
             Ok(m) => m,
             Err(err) => {
-                error!(error = %err, "Redis connection failed");
+                error!(error = %err, "Failed to build Redis connection manager");
                 self.state.running.store(false, Ordering::SeqCst);
                 return false;
             }
         };
 
-        if let Err(err) = ensure_streams(&mut manager, &self.state.config.topology).await {
-            error!(error = %err, "Ensuring Redis streams failed");
+        if let Err(err) = ensure_redis_topology(&mut manager, &self.state.config.topology).await {
+            error!(error = %err, "Redis topology preparation failed");
             self.state.running.store(false, Ordering::SeqCst);
             return false;
         }

@@ -1,6 +1,6 @@
 //! Kafka-specific configuration objects for type-safe backend inference
 
-use super::{EventBusConfig, Kafka, ProcessingLimits};
+use super::{EventBusConfig, Kafka, ProcessingLimits, TopologyMode};
 use crate::{
     BusEvent, EventBusError, backends::event_bus_backend::EventBusBackendConfig,
     decoder::DecoderRegistry,
@@ -251,6 +251,7 @@ pub struct KafkaTopicSpec {
     pub name: String,
     pub partitions: Option<i32>,
     pub replication: Option<i16>,
+    pub mode: TopologyMode,
 }
 
 impl KafkaTopicSpec {
@@ -259,6 +260,7 @@ impl KafkaTopicSpec {
             name: name.into(),
             partitions: None,
             replication: None,
+            mode: TopologyMode::Provision,
         }
     }
 
@@ -269,6 +271,12 @@ impl KafkaTopicSpec {
 
     pub fn replication(mut self, replication: i16) -> Self {
         self.replication = Some(replication);
+        self
+    }
+
+    /// Override the topology mode used when preparing this topic.
+    pub fn mode(mut self, mode: TopologyMode) -> Self {
+        self.mode = mode;
         self
     }
 }
@@ -286,6 +294,7 @@ pub struct KafkaConsumerGroupSpec {
     pub topics: Vec<String>,
     pub manual_commits: bool,
     pub initial_offset: KafkaInitialOffset,
+    pub mode: TopologyMode,
 }
 
 impl KafkaConsumerGroupSpec {
@@ -294,6 +303,7 @@ impl KafkaConsumerGroupSpec {
             topics: topics.into_iter().map(Into::into).collect(),
             manual_commits: false,
             initial_offset: KafkaInitialOffset::Latest,
+            mode: TopologyMode::Provision,
         }
     }
 
@@ -304,6 +314,12 @@ impl KafkaConsumerGroupSpec {
 
     pub fn initial_offset(mut self, offset: KafkaInitialOffset) -> Self {
         self.initial_offset = offset;
+        self
+    }
+
+    /// Override the topology mode used when preparing this consumer group.
+    pub fn mode(mut self, mode: TopologyMode) -> Self {
+        self.mode = mode;
         self
     }
 }

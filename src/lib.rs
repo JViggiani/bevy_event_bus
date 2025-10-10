@@ -24,7 +24,7 @@ pub use backends::event_bus_backend::StreamTrimStrategy;
 pub use config::Kafka;
 #[cfg(feature = "redis")]
 pub use config::Redis;
-pub use config::{BackendMarker, EventBusConfig, InMemory, ProcessingLimits};
+pub use config::{BackendMarker, EventBusConfig, InMemory, ProcessingLimits, TopologyMode};
 pub use decoder::{DecodedEvent, DecoderFn, DecoderRegistry, TypedDecoder};
 pub use error::{EventBusDecodeError, EventBusError, EventBusErrorType};
 pub use event::BusEvent;
@@ -76,7 +76,7 @@ pub mod prelude {
         EventBusDecodeError, EventBusError, EventBusErrorType, EventBusPlugin, EventBusPlugins,
         EventMetadata, EventWrapper, ProcessedMessage, StreamTrimStrategy, TopicDecodedEvents,
         TypedDecoder,
-        config::{BackendMarker, EventBusConfig, InMemory, ProcessingLimits},
+        config::{BackendMarker, EventBusConfig, InMemory, ProcessingLimits, TopologyMode},
     };
 
     #[cfg(feature = "redis")]

@@ -6,8 +6,7 @@ use bevy_event_bus::config::kafka::{
 use bevy_event_bus::{
     EventBusBackend, KafkaEventBusBackend,
     backends::event_bus_backend::{
-        ConsumerGroupManager, LagReportingBackend, ManualCommitController, ReceiveOptions,
-        SendOptions,
+        LagReportingBackend, ManualCommitController, ReceiveOptions, SendOptions,
     },
 };
 use integration_tests::utils::events::TestEvent;
@@ -35,7 +34,7 @@ where
     .expect("setup panicked")
 }
 #[tokio::test]
-async fn test_create_consumer_group() {
+async fn test_consumer_group_ready_after_connect() {
     let topic = unique_topic("test_create_consumer_group");
     let group_id = unique_consumer_group("test_group_create");
 
@@ -66,14 +65,6 @@ async fn test_create_consumer_group() {
     assert!(
         consumer_ready,
         "Preconfigured consumer group should become ready without dynamic creation"
-    );
-
-    let dynamic_result = backend
-        .create_consumer_group(&[topic.clone()], &group_id)
-        .await;
-    assert!(
-        dynamic_result.is_err(),
-        "Dynamic consumer group creation should be rejected"
     );
 }
 

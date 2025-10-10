@@ -1,6 +1,6 @@
 //! Redis-specific configuration objects for topology-driven backend setup
 
-use super::{EventBusConfig, Redis};
+use super::{EventBusConfig, Redis, TopologyMode};
 use crate::{
     BusEvent, EventBusError, backends::event_bus_backend::EventBusBackendConfig,
     decoder::DecoderRegistry,
@@ -131,6 +131,7 @@ fn register_event_binding<T: BusEvent + Event>(app: &mut App, streams: &[String]
 pub struct RedisStreamSpec {
     pub name: String,
     pub maxlen: Option<usize>,
+    pub mode: TopologyMode,
 }
 
 impl RedisStreamSpec {
@@ -138,11 +139,18 @@ impl RedisStreamSpec {
         Self {
             name: name.into(),
             maxlen: None,
+            mode: TopologyMode::Provision,
         }
     }
 
     pub fn maxlen(mut self, maxlen: usize) -> Self {
         self.maxlen = Some(maxlen);
+        self
+    }
+
+    /// Override the topology mode used when preparing this stream.
+    pub fn mode(mut self, mode: TopologyMode) -> Self {
+        self.mode = mode;
         self
     }
 }
@@ -155,6 +163,7 @@ pub struct RedisConsumerGroupSpec {
     pub consumer_name: String,
     pub manual_ack: bool,
     pub start_id: String,
+    pub mode: TopologyMode,
 }
 
 impl RedisConsumerGroupSpec {
@@ -186,6 +195,7 @@ impl RedisConsumerGroupSpec {
             consumer_name,
             manual_ack: false,
             start_id: "$".to_string(),
+            mode: TopologyMode::Provision,
         }
     }
 
@@ -201,6 +211,12 @@ impl RedisConsumerGroupSpec {
     /// `"0-0"` or any other valid Redis stream entry identifier.
     pub fn start_id(mut self, id: impl Into<String>) -> Self {
         self.start_id = id.into();
+        self
+    }
+
+    /// Override the topology mode used when preparing this consumer group.
+    pub fn mode(mut self, mode: TopologyMode) -> Self {
+        self.mode = mode;
         self
     }
 }

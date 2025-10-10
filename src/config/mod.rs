@@ -44,6 +44,15 @@ pub struct Redis;
 #[cfg(feature = "redis")]
 impl BackendMarker for Redis {}
 
+/// Controls whether topology elements should be provisioned or only validated at runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TopologyMode {
+    /// Create or update the topology element if it does not already exist.
+    Provision,
+    /// Require the topology element to exist and fail if it is missing or inaccessible.
+    Validate,
+}
+
 /// Configuration for frame-level processing limits
 #[derive(Debug, Clone)]
 pub struct ProcessingLimits {

@@ -380,7 +380,8 @@ where
 
     let config = KafkaBackendConfig::new(connection, topology, Duration::from_secs(1));
 
-    let backend = KafkaEventBusBackend::new(config);
+    let backend = KafkaEventBusBackend::new(config)
+        .unwrap_or_else(|err| panic!("Kafka backend initialization failed: {err}"));
     info!("Kafka test setup complete (ready)");
     (backend, bootstrap)
 }

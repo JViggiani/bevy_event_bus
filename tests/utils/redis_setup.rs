@@ -229,7 +229,7 @@ fn build_backend_from_parts(
     ensure_topology_provisioned(&connection_string, &topology)?;
 
     let config = RedisBackendConfig::new(connection, topology, read_block_timeout);
-    let backend = RedisEventBusBackend::new(config);
+    let backend = RedisEventBusBackend::new(config).map_err(|err| anyhow!(err))?;
     let context = RedisTestContext::new(connection_string);
     Ok((backend, context))
 }

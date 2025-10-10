@@ -2,15 +2,20 @@
 
 use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
-    RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
+    RedisBackendConfig, RedisConnectionConfig, RedisConsumerConfig, RedisConsumerGroupSpec,
+    RedisProducerConfig, RedisStreamSpec, RedisTopologyBuilder,
 };
-use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
+use bevy_event_bus::{
+    EventBusBackend, EventBusPlugins, RedisEventBusBackend, RedisEventReader, RedisEventWriter,
+    TopologyMode, block_on,
+};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
     run_app_updates, unique_consumer_group, unique_consumer_group_member, unique_topic,
     update_two_apps_until, update_until,
 };
 use integration_tests::utils::redis_setup;
+use std::time::Duration;
 
 #[test]
 fn redis_single_direction_writer_reader_flow() {
@@ -101,6 +106,152 @@ fn redis_single_direction_writer_reader_flow() {
     });
 
     assert!(received, "Expected reader to observe the writer's event");
+}
+
+/// Ensures validation mode fails when the configured Redis stream is absent.
+#[test]
+fn redis_stream_validation_detects_missing_stream() {
+    let stream = unique_topic("redis_validate_missing_stream");
+    let (_noop_backend, ctx) = redis_setup::prepare_backend(|_| {}).expect("setup backend");
+    drop(_noop_backend);
+
+    let connection_string = ctx.connection_string().to_string();
+    let connection = RedisConnectionConfig::new(connection_string.clone());
+
+    let mut builder = RedisTopologyBuilder::default();
+    builder.add_stream(RedisStreamSpec::new(stream.clone()).mode(TopologyMode::Validate));
+
+    let config = RedisBackendConfig::new(connection, builder.build(), Duration::from_millis(25));
+    let err = RedisEventBusBackend::new(config)
+        .expect_err("backend initialization should fail when stream is missing");
+    assert_eq!(err.backend(), "redis");
+    assert!(
+        err.reason().contains("Redis stream") && err.reason().contains("TopologyMode::Validate"),
+        "unexpected error message: {}",
+        err.reason()
+    );
+}
+
+/// Ensures validation mode succeeds when the Redis stream already exists.
+#[test]
+fn redis_stream_validation_allows_existing_stream() {
+    let stream = unique_topic("redis_validate_existing_stream");
+    let (_noop_backend, ctx) = redis_setup::prepare_backend(|_| {}).expect("setup backend");
+    drop(_noop_backend);
+
+    let connection_string = ctx.connection_string().to_string();
+    let client = redis::Client::open(connection_string.as_str()).expect("redis client");
+    let mut conn = client.get_connection().expect("redis connection");
+    redis::cmd("XADD")
+        .arg(&stream)
+        .arg("*")
+        .arg("seed")
+        .arg("value")
+        .query::<redis::Value>(&mut conn)
+        .expect("seed stream");
+    drop(conn);
+
+    let connection = RedisConnectionConfig::new(connection_string.clone());
+    let mut builder = RedisTopologyBuilder::default();
+    builder.add_stream(RedisStreamSpec::new(stream.clone()).mode(TopologyMode::Validate));
+
+    let config = RedisBackendConfig::new(connection, builder.build(), Duration::from_millis(25));
+    let mut backend = RedisEventBusBackend::new(config).expect("backend init");
+
+    let connected = block_on(backend.connect());
+    assert!(connected, "Redis backend should connect when stream exists");
+    let _ = block_on(backend.disconnect());
+}
+
+/// Ensures validation mode fails when the consumer group is missing.
+#[test]
+fn redis_consumer_group_validation_detects_missing_group() {
+    let stream = unique_topic("redis_validate_missing_group_stream");
+    let consumer_group = unique_consumer_group("redis_validate_missing_group");
+    let consumer_name = unique_consumer_group_member(&consumer_group);
+
+    let (_noop_backend, ctx) = redis_setup::prepare_backend(|_| {}).expect("setup backend");
+    drop(_noop_backend);
+
+    let connection_string = ctx.connection_string().to_string();
+    let client = redis::Client::open(connection_string.as_str()).expect("redis client");
+    let mut conn = client.get_connection().expect("redis connection");
+    redis::cmd("XADD")
+        .arg(&stream)
+        .arg("*")
+        .arg("seed")
+        .arg("value")
+        .query::<redis::Value>(&mut conn)
+        .expect("seed stream");
+    drop(conn);
+
+    let connection = RedisConnectionConfig::new(connection_string.clone());
+    let mut builder = RedisTopologyBuilder::default();
+    builder
+        .add_stream(RedisStreamSpec::new(stream.clone()).mode(TopologyMode::Validate))
+        .add_consumer_group(
+            RedisConsumerGroupSpec::new([stream.clone()], consumer_group.clone(), consumer_name)
+                .mode(TopologyMode::Validate),
+        );
+
+    let config = RedisBackendConfig::new(connection, builder.build(), Duration::from_millis(25));
+    let err = RedisEventBusBackend::new(config)
+        .expect_err("backend initialization should fail when consumer group is missing");
+    assert_eq!(err.backend(), "redis");
+    assert!(
+        err.reason().contains("consumer group") && err.reason().contains("TopologyMode::Validate"),
+        "unexpected error message: {}",
+        err.reason()
+    );
+}
+
+/// Ensures validation mode succeeds when the consumer group already exists.
+#[test]
+fn redis_consumer_group_validation_allows_existing_group() {
+    let stream = unique_topic("redis_validate_existing_group_stream");
+    let consumer_group = unique_consumer_group("redis_validate_existing_group");
+    let consumer_name = unique_consumer_group_member(&consumer_group);
+
+    let (_noop_backend, ctx) = redis_setup::prepare_backend(|_| {}).expect("setup backend");
+    drop(_noop_backend);
+
+    let connection_string = ctx.connection_string().to_string();
+    let client = redis::Client::open(connection_string.as_str()).expect("redis client");
+    let mut conn = client.get_connection().expect("redis connection");
+    redis::cmd("XADD")
+        .arg(&stream)
+        .arg("*")
+        .arg("seed")
+        .arg("value")
+        .query::<redis::Value>(&mut conn)
+        .expect("seed stream");
+    redis::cmd("XGROUP")
+        .arg("CREATE")
+        .arg(&stream)
+        .arg(&consumer_group)
+        .arg("$")
+        .query::<redis::Value>(&mut conn)
+        .expect("create consumer group");
+    drop(conn);
+
+    let connection = RedisConnectionConfig::new(connection_string.clone());
+    let mut builder = RedisTopologyBuilder::default();
+    builder
+        .add_stream(RedisStreamSpec::new(stream.clone()).mode(TopologyMode::Validate))
+        .add_consumer_group(
+            RedisConsumerGroupSpec::new([stream.clone()], consumer_group.clone(), consumer_name)
+                .mode(TopologyMode::Validate),
+        );
+
+    let config = RedisBackendConfig::new(connection, builder.build(), Duration::from_millis(25));
+    let mut backend = RedisEventBusBackend::new(config).expect("backend init");
+
+    let connected = block_on(backend.connect());
+    assert!(
+        connected,
+        "Redis backend should connect when consumer group exists"
+    );
+    let _ = block_on(backend.disconnect());
 }
 
 #[test]

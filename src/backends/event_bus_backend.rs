@@ -224,16 +224,6 @@ pub trait EventBusBackend: Send + Sync + 'static + Debug {
     }
 }
 
-/// Trait implemented by backends that can provision consumer groups dynamically at runtime.
-#[async_trait]
-pub trait ConsumerGroupManager: EventBusBackend {
-    async fn create_consumer_group(
-        &mut self,
-        topics: &[String],
-        group_id: &str,
-    ) -> Result<(), String>;
-}
-
 /// Trait implemented by backends that expose manual commit controls.
 #[async_trait]
 pub trait ManualCommitController: EventBusBackend {
