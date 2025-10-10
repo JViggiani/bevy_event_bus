@@ -100,11 +100,10 @@ fn no_event_duplication_exactly_once_delivery() {
     // Two readers with same consumer group - only one should get the event
     let s1 = stream.clone();
     let g1 = consumer_group.clone();
-    let c1 = backend_consumer1.clone();
     reader1.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<Collected>| {
-            let config = RedisConsumerConfig::new(g1.clone(), c1.clone(), [s1.clone()]);
+            let config = RedisConsumerConfig::new(g1.clone(), [s1.clone()]);
             for wrapper in r.read(&config) {
                 // Acknowledge to ensure exactly-once semantics
                 if let Err(e) = r.acknowledge(&wrapper) {
@@ -117,11 +116,10 @@ fn no_event_duplication_exactly_once_delivery() {
 
     let s2 = stream.clone();
     let g2 = consumer_group.clone();
-    let c2 = backend_consumer2.clone();
     reader2.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<Collected>| {
-            let config = RedisConsumerConfig::new(g2.clone(), c2.clone(), [s2.clone()]);
+            let config = RedisConsumerConfig::new(g2.clone(), [s2.clone()]);
             for wrapper in r.read(&config) {
                 // Acknowledge to ensure exactly-once semantics
                 if let Err(e) = r.acknowledge(&wrapper) {

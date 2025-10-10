@@ -75,11 +75,9 @@ fn redis_reader_ack_system(
     mut received: ResMut<Received>,
 ) {
     let config = match membership.0.as_ref() {
-        Some(group_membership) => RedisConsumerConfig::new(
-            group_membership.group.clone(),
-            group_membership.member.clone(),
-            [topic.0.clone()],
-        ),
+        Some(group_membership) => {
+            RedisConsumerConfig::new(group_membership.group.clone(), [topic.0.clone()])
+        }
         None => RedisConsumerConfig::ungrouped([topic.0.clone()]),
     };
 

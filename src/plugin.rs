@@ -6,7 +6,7 @@ use bevy_event_bus::decoder::DecoderRegistry;
 use bevy_event_bus::resources::{
     ConsumerMetrics, DecodedEventBuffer, DrainMetricsEvent, DrainedTopicMetadata,
     EventBusConsumerConfig, EventMetadata, IncomingMessage, MessageQueue, ProcessedMessage,
-    TopicDecodedEvents,
+    ProvisionedTopology, TopicDecodedEvents,
 };
 use bevy_event_bus::runtime::{block_on, ensure_runtime};
 use bevy_event_bus::writers::EventBusErrorQueue;
@@ -86,6 +86,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
         let boxed = self.0.clone_box();
         app.insert_resource(EventBusBackendResource::from_box(boxed));
         app.insert_resource(EventBusErrorQueue::default());
+        app.init_resource::<ProvisionedTopology>();
         self.0.apply_event_bindings(app);
         bevy_event_bus::writers::outbound_bridge::activate_registered_bridges(app);
         // Connect backend and capture runtime resources (message queue, commit channels, lag cache).
@@ -103,6 +104,16 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
             };
 
             let mut capabilities = BackendCapabilities::new(backend_name.clone());
+
+            if let Some(topology) = backend_setup.kafka_topology.take() {
+                let mut registry = app.world_mut().resource_mut::<ProvisionedTopology>();
+                registry.record_kafka(topology);
+            }
+
+            if let Some(topology) = backend_setup.redis_topology.take() {
+                let mut registry = app.world_mut().resource_mut::<ProvisionedTopology>();
+                registry.record_redis(topology);
+            }
 
             if let Some(rx) = backend_setup.message_stream.take() {
                 app.world_mut()

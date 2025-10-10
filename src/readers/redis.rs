@@ -1,13 +1,13 @@
 #![cfg(feature = "redis")]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 use bevy_event_bus::config::EventBusConfig;
 use bevy_event_bus::resources::{
-    DrainedTopicMetadata, EventWrapper, RedisAckQueue, RedisAckRequest,
+    DrainedTopicMetadata, EventWrapper, ProvisionedTopology, RedisAckQueue, RedisAckRequest,
 };
-use bevy_event_bus::{BusEvent, readers::BusEventReader};
+use bevy_event_bus::{BusEvent, EventBusError, EventBusErrorType, readers::BusEventReader};
 use crossbeam_channel::TrySendError;
 
 /// Errors that can occur when working with the Redis-specific reader.
@@ -19,8 +19,8 @@ pub enum RedisReaderError {
     AckQueueFull,
     /// The event is missing Redis metadata, preventing acknowledgement.
     MissingRedisMetadata,
-    /// The event was produced without a consumer group, so acknowledgement is undefined.
-    MissingConsumerGroup,
+    /// The reader configuration or associated metadata is invalid.
+    InvalidReadConfig(String),
 }
 
 impl std::fmt::Display for RedisReaderError {
@@ -41,8 +41,8 @@ impl std::fmt::Display for RedisReaderError {
                     "event is missing Redis metadata required for acknowledgement"
                 )
             }
-            RedisReaderError::MissingConsumerGroup => {
-                write!(f, "event does not reference a consumer group")
+            RedisReaderError::InvalidReadConfig(reason) => {
+                write!(f, "invalid Redis reader configuration: {reason}")
             }
         }
     }
@@ -57,21 +57,25 @@ pub struct RedisEventReader<'w, 's, T: BusEvent + Event> {
     metadata_drained: Option<ResMut<'w, DrainedTopicMetadata>>,
     metadata_offsets: Local<'s, HashMap<String, usize>>,
     ack_queue: Option<Res<'w, RedisAckQueue>>,
+    topology: Option<Res<'w, ProvisionedTopology>>,
+    invalid_config_reports: Local<'s, HashSet<String>>,
+    error_writer: EventWriter<'w, EventBusError<T>>,
 }
 
 impl<'w, 's, T: BusEvent + Event> RedisEventReader<'w, 's, T> {
     /// Read all messages for the supplied Redis configuration.
     pub fn read<C: EventBusConfig>(&mut self, config: &C) -> Vec<EventWrapper<T>> {
-        // Extract consumer group from Redis config if available
-        let required_consumer_group = if let Some(redis_config) =
-            config
-                .as_any()
-                .downcast_ref::<crate::config::redis::RedisConsumerConfig>()
-        {
-            redis_config.consumer_group()
-        } else {
-            None
-        };
+        let redis_config = config
+            .as_any()
+            .downcast_ref::<bevy_event_bus::config::redis::RedisConsumerConfig>();
+
+        if let Some(redis_config) = redis_config {
+            if !self.validate_configuration(redis_config) {
+                return Vec::new();
+            }
+        }
+
+        let required_consumer_group = redis_config.and_then(|cfg| cfg.consumer_group());
 
         let mut all_events = Vec::new();
         let topics = config.topics();
@@ -138,10 +142,11 @@ impl<'w, 's, T: BusEvent + Event> RedisEventReader<'w, 's, T> {
             .redis_metadata()
             .ok_or(RedisReaderError::MissingRedisMetadata)?;
 
-        let consumer_group = metadata
-            .consumer_group
-            .as_ref()
-            .ok_or(RedisReaderError::MissingConsumerGroup)?;
+        let consumer_group = metadata.consumer_group.as_ref().ok_or_else(|| {
+            RedisReaderError::InvalidReadConfig(
+                "event does not reference a consumer group".to_string(),
+            )
+        })?;
 
         let request = RedisAckRequest::new(&metadata.stream, &metadata.entry_id, consumer_group);
 
@@ -149,6 +154,103 @@ impl<'w, 's, T: BusEvent + Event> RedisEventReader<'w, 's, T> {
             Ok(_) => Ok(()),
             Err(TrySendError::Full(_)) => Err(RedisReaderError::AckQueueFull),
             Err(TrySendError::Disconnected(_)) => Err(RedisReaderError::AckQueueUnavailable),
+        }
+    }
+}
+
+impl<'w, 's, T: BusEvent + Event> RedisEventReader<'w, 's, T> {
+    fn validate_configuration(
+        &mut self,
+        config: &bevy_event_bus::config::redis::RedisConsumerConfig,
+    ) -> bool {
+        let Some(topology) = self.topology.as_ref().and_then(|topo| topo.redis()) else {
+            return true;
+        };
+
+        let topology_streams = topology.stream_names();
+
+        if let Some(group_id) = config.consumer_group() {
+            if let Some(spec) = topology.consumer_groups().get(group_id) {
+                if let Some(stream) = config
+                    .streams()
+                    .iter()
+                    .find(|stream| !topology_streams.contains(*stream))
+                {
+                    let reason = format!(
+                        "Stream '{}' is not provisioned in the Redis topology",
+                        stream
+                    );
+                    self.record_invalid_config(config, stream.clone(), Some(group_id), reason);
+                    return false;
+                }
+
+                if let Some(stream) = config
+                    .streams()
+                    .iter()
+                    .find(|stream| !spec.streams.iter().any(|s| s == *stream))
+                {
+                    let reason = format!(
+                        "Stream '{}' is not assigned to consumer group '{}' in the topology",
+                        stream, group_id
+                    );
+                    self.record_invalid_config(config, stream.clone(), Some(group_id), reason);
+                    return false;
+                }
+            } else {
+                let stream = config
+                    .primary_stream()
+                    .map(|s| s.to_string())
+                    .or_else(|| config.streams().first().cloned())
+                    .unwrap_or_else(|| "unknown".to_string());
+                let reason = format!(
+                    "Consumer group '{}' is not provisioned in the Redis topology",
+                    group_id
+                );
+                self.record_invalid_config(config, stream, Some(group_id), reason);
+                return false;
+            }
+        } else if let Some(stream) = config
+            .streams()
+            .iter()
+            .find(|stream| !topology_streams.contains(*stream))
+        {
+            let reason = format!(
+                "Stream '{}' is not provisioned in the Redis topology",
+                stream
+            );
+            self.record_invalid_config(config, stream.clone(), None, reason);
+            return false;
+        }
+
+        true
+    }
+
+    fn record_invalid_config(
+        &mut self,
+        config: &bevy_event_bus::config::redis::RedisConsumerConfig,
+        stream: String,
+        group: Option<&str>,
+        reason: String,
+    ) {
+        let key = format!("{}:{reason}", config.config_id());
+        if self.invalid_config_reports.insert(key) {
+            let error = EventBusError {
+                topic: stream.clone(),
+                error_type: EventBusErrorType::InvalidReadConfig,
+                error_message: reason.clone(),
+                timestamp: std::time::SystemTime::now(),
+                original_event: None,
+                backend: Some(String::from("redis")),
+                metadata: None,
+            };
+            self.error_writer.write(error);
+            tracing::warn!(
+                backend = "redis",
+                consumer_group = group.unwrap_or("ungrouped"),
+                stream = %stream,
+                reason = %reason,
+                "Redis reader configuration invalid"
+            );
         }
     }
 }

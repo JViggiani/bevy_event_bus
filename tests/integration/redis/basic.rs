@@ -52,21 +52,16 @@ fn redis_single_direction_writer_reader_flow() {
     struct Stream(String);
     #[derive(Resource, Clone)]
     struct ConsumerGroup(String);
-    #[derive(Resource, Clone)]
-    struct ConsumerName(String);
     reader_app.insert_resource(Stream(stream.clone()));
     reader_app.insert_resource(ConsumerGroup(consumer_group.clone()));
-    reader_app.insert_resource(ConsumerName(consumer_name));
 
     fn reader_system(
         mut reader: RedisEventReader<TestEvent>,
         stream: Res<Stream>,
         group: Res<ConsumerGroup>,
-        consumer: Res<ConsumerName>,
         mut collected: ResMut<Collected>,
     ) {
-        let config =
-            RedisConsumerConfig::new(group.0.clone(), consumer.0.clone(), [stream.0.clone()]);
+        let config = RedisConsumerConfig::new(group.0.clone(), [stream.0.clone()]);
         for wrapper in reader.read(&config) {
             collected.0.push(wrapper.event().clone());
         }
@@ -154,8 +149,6 @@ fn redis_bidirectional_apps_exchange_events() {
 
     #[derive(Resource, Clone)]
     struct GroupName(String);
-    #[derive(Resource, Clone)]
-    struct ConsumerName(String);
 
     #[derive(Resource, Clone)]
     struct OutgoingEvents {
@@ -169,10 +162,8 @@ fn redis_bidirectional_apps_exchange_events() {
         stream: Res<StreamName>,
         group: Res<GroupName>,
         mut received: ResMut<Received>,
-        consumer: Res<ConsumerName>,
     ) {
-        let config =
-            RedisConsumerConfig::new(group.0.clone(), consumer.0.clone(), [stream.0.clone()]);
+        let config = RedisConsumerConfig::new(group.0.clone(), [stream.0.clone()]);
         for wrapper in reader.read(&config) {
             received.0.push(wrapper.event().clone());
         }
@@ -198,7 +189,7 @@ fn redis_bidirectional_apps_exchange_events() {
     app_a.insert_resource(Received::default());
     app_a.insert_resource(StreamName(stream.clone()));
     app_a.insert_resource(GroupName(group_a));
-    app_a.insert_resource(ConsumerName(consumer_a));
+    let _ = consumer_a;
     app_a.insert_resource(OutgoingEvents {
         stream: stream.clone(),
         events: vec![event_from_a.clone()],
@@ -215,7 +206,7 @@ fn redis_bidirectional_apps_exchange_events() {
     app_b.insert_resource(Received::default());
     app_b.insert_resource(StreamName(stream.clone()));
     app_b.insert_resource(GroupName(group_b));
-    app_b.insert_resource(ConsumerName(consumer_b));
+    let _ = consumer_b;
     app_b.insert_resource(OutgoingEvents {
         stream,
         events: vec![event_from_b.clone()],

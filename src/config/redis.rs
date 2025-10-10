@@ -437,7 +437,6 @@ impl EventBusBackendConfig for RedisBackendConfig {
 pub struct RedisConsumerConfig {
     streams: Vec<String>,
     consumer_group: Option<String>,
-    consumer_name: Option<String>,
     read_block_timeout: Duration,
 }
 
@@ -446,10 +445,9 @@ impl RedisConsumerConfig {
     ///
     /// This mirrors the API style of [`KafkaConsumerConfig::new`], requiring the caller to
     /// specify both the logical group identifier and the set of streams that should be polled.
-    pub fn new<G, N, I, S>(consumer_group: G, consumer_name: N, streams: I) -> Self
+    pub fn new<G, I, S>(consumer_group: G, streams: I) -> Self
     where
         G: Into<String>,
-        N: Into<String>,
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
@@ -459,18 +457,11 @@ impl RedisConsumerConfig {
             "consumer_group must not be empty when constructing a Redis consumer config"
         );
 
-        let consumer_name = consumer_name.into();
-        assert!(
-            !consumer_name.trim().is_empty(),
-            "consumer_name must not be empty when constructing a Redis consumer config"
-        );
-
         let streams: Vec<String> = streams.into_iter().map(Into::into).collect();
         validate_streams(&streams);
         Self {
             streams,
             consumer_group: Some(consumer_group),
-            consumer_name: Some(consumer_name),
             read_block_timeout: Duration::from_millis(100),
         }
     }
@@ -487,7 +478,6 @@ impl RedisConsumerConfig {
         Self {
             streams,
             consumer_group: None,
-            consumer_name: None,
             read_block_timeout: Duration::from_millis(100),
         }
     }
@@ -524,11 +514,6 @@ impl RedisConsumerConfig {
         self.consumer_group.as_deref()
     }
 
-    /// Return the configured consumer name, if any.
-    pub fn consumer_name(&self) -> Option<&str> {
-        self.consumer_name.as_deref()
-    }
-
     /// Return the blocking read timeout.
     pub fn block_timeout(&self) -> Duration {
         self.read_block_timeout
@@ -553,7 +538,7 @@ mod tests {
     #[test]
     fn new_requires_non_empty_consumer_group() {
         let result = std::panic::catch_unwind(|| {
-            RedisConsumerConfig::new("  ", "reader", ["stream"]);
+            RedisConsumerConfig::new("  ", ["stream"]);
         });
         assert!(result.is_err());
     }
@@ -561,7 +546,7 @@ mod tests {
     #[test]
     fn new_requires_non_empty_stream_list() {
         let result = std::panic::catch_unwind(|| {
-            RedisConsumerConfig::new("group", "reader", Vec::<String>::new());
+            RedisConsumerConfig::new("group", Vec::<String>::new());
         });
         assert!(result.is_err());
     }
@@ -584,9 +569,8 @@ mod tests {
 
     #[test]
     fn valid_configuration_succeeds() {
-        let config = RedisConsumerConfig::new("group", "reader", ["stream"]);
+        let config = RedisConsumerConfig::new("group", ["stream"]);
         assert_eq!(config.consumer_group(), Some("group"));
-        assert_eq!(config.consumer_name(), Some("reader"));
         assert_eq!(config.streams(), &[String::from("stream")]);
     }
 }

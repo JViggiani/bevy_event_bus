@@ -141,7 +141,6 @@ fn test_message_throughput() {
     // High throughput reader
     let stream_clone = stream.clone();
     let group_clone = consumer_group.clone();
-    let consumer_clone = consumer_name.clone();
     reader.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>,
@@ -151,11 +150,7 @@ fn test_message_throughput() {
                 return;
             }
 
-            let config = RedisConsumerConfig::new(
-                group_clone.clone(),
-                consumer_clone.clone(),
-                [stream_clone.clone()],
-            );
+            let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()]);
 
             let events = r.read(&config);
             if !events.is_empty() {
@@ -319,7 +314,6 @@ fn test_high_volume_small_messages() {
     // Process small messages
     let stream_clone = stream.clone();
     let group_clone = consumer_group.clone();
-    let consumer_clone = consumer_name.clone();
     reader.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>,
@@ -329,11 +323,7 @@ fn test_high_volume_small_messages() {
                 return;
             }
 
-            let config = RedisConsumerConfig::new(
-                group_clone.clone(),
-                consumer_clone.clone(),
-                [stream_clone.clone()],
-            );
+            let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()]);
 
             let events = r.read(&config);
             if !events.is_empty() {
@@ -483,7 +473,6 @@ fn test_large_message_throughput() {
     // Process large messages
     let stream_clone = stream.clone();
     let group_clone = consumer_group.clone();
-    let consumer_clone = consumer_name.clone();
     reader.add_systems(
         Update,
         move |mut r: RedisEventReader<LargeEvent>,
@@ -493,11 +482,7 @@ fn test_large_message_throughput() {
                 return;
             }
 
-            let config = RedisConsumerConfig::new(
-                group_clone.clone(),
-                consumer_clone.clone(),
-                [stream_clone.clone()],
-            );
+            let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()]);
 
             let events = r.read(&config);
             if !events.is_empty() {

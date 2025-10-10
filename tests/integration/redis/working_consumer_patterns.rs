@@ -21,7 +21,6 @@ fn test_working_consumer_group_patterns() {
     let stream = unique_topic("working-pattern");
     let consumer_group = unique_consumer_group("working-group");
     let consumer1 = unique_consumer_group_member(&consumer_group);
-    let consumer2 = unique_consumer_group_member(&consumer_group);
 
     let stream_clone = stream.clone();
     let consumer_group_clone = consumer_group.clone();
@@ -45,11 +44,10 @@ fn test_working_consumer_group_patterns() {
 
     let s1 = stream.clone();
     let g1 = consumer_group.clone();
-    let c1 = consumer1.clone();
     reader1.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(g1.clone(), c1.clone(), [s1.clone()]);
+            let config = RedisConsumerConfig::new(g1.clone(), [s1.clone()]);
             let initial_count = c.0.len();
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
@@ -67,11 +65,10 @@ fn test_working_consumer_group_patterns() {
 
     let s2 = stream.clone();
     let g2 = consumer_group.clone();
-    let c2 = consumer2.clone();
     reader2.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(g2.clone(), c2.clone(), [s2.clone()]);
+            let config = RedisConsumerConfig::new(g2.clone(), [s2.clone()]);
             let initial_count = c.0.len();
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
@@ -197,12 +194,10 @@ fn test_broadcast_with_different_groups_working_pattern() {
 
     let s1 = stream.clone();
     let g1 = consumer_group1.clone();
-    let consumer1_clone = group1_consumer.clone();
     reader1.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config =
-                RedisConsumerConfig::new(g1.clone(), consumer1_clone.clone(), [s1.clone()]);
+            let config = RedisConsumerConfig::new(g1.clone(), [s1.clone()]);
             let initial_count = c.0.len();
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
@@ -220,12 +215,10 @@ fn test_broadcast_with_different_groups_working_pattern() {
 
     let s2 = stream.clone();
     let g2 = consumer_group2.clone();
-    let consumer2_clone = group2_consumer.clone();
     reader2.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config =
-                RedisConsumerConfig::new(g2.clone(), consumer2_clone.clone(), [s2.clone()]);
+            let config = RedisConsumerConfig::new(g2.clone(), [s2.clone()]);
             let initial_count = c.0.len();
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());

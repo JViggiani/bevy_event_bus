@@ -7,8 +7,7 @@ use bevy_event_bus::config::redis::{
 use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
-    run_app_updates, unique_consumer_group_member, unique_consumer_group_membership, unique_topic,
-    update_until,
+    run_app_updates, unique_consumer_group_membership, unique_topic, update_until,
 };
 use integration_tests::utils::redis_setup;
 
@@ -22,7 +21,6 @@ fn test_consumer_groups_with_explicit_names() {
     let membership = unique_consumer_group_membership("shared-group");
     let consumer_group = membership.group.clone();
     let consumer_name1 = membership.member.clone();
-    let consumer_name2 = unique_consumer_group_member(&consumer_group);
 
     let stream_clone = stream.clone();
     let consumer_group_clone = consumer_group.clone();
@@ -46,11 +44,10 @@ fn test_consumer_groups_with_explicit_names() {
 
     let s1 = stream.clone();
     let g1 = consumer_group.clone();
-    let c1 = consumer_name1.clone();
     reader1.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(g1.clone(), c1.clone(), [s1.clone()]);
+            let config = RedisConsumerConfig::new(g1.clone(), [s1.clone()]);
             let initial_count = c.0.len();
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
@@ -68,11 +65,10 @@ fn test_consumer_groups_with_explicit_names() {
 
     let s2 = stream.clone();
     let g2 = consumer_group.clone();
-    let c2 = consumer_name2.clone();
     reader2.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(g2.clone(), c2.clone(), [s2.clone()]);
+            let config = RedisConsumerConfig::new(g2.clone(), [s2.clone()]);
             let initial_count = c.0.len();
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());

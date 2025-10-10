@@ -67,11 +67,10 @@ fn test_broadcast_with_separate_backends() {
 
     let s1 = stream.clone();
     let g1 = membership1.group.clone();
-    let c1 = membership1.member.clone();
     reader1.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(g1.clone(), c1.clone(), [s1.clone()]);
+            let config = RedisConsumerConfig::new(g1.clone(), [s1.clone()]);
             let initial_count = c.0.len();
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
@@ -89,11 +88,10 @@ fn test_broadcast_with_separate_backends() {
 
     let s2 = stream.clone();
     let g2 = membership2.group.clone();
-    let c2 = membership2.member.clone();
     reader2.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(g2.clone(), c2.clone(), [s2.clone()]);
+            let config = RedisConsumerConfig::new(g2.clone(), [s2.clone()]);
             let initial_count = c.0.len();
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());

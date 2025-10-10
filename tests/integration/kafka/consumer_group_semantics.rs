@@ -5,7 +5,9 @@ use bevy_event_bus::config::kafka::{
     KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
     KafkaTopicSpec,
 };
-use bevy_event_bus::{EventBusPlugins, KafkaEventReader, KafkaEventWriter};
+use bevy_event_bus::{
+    EventBusError, EventBusErrorType, EventBusPlugins, KafkaEventReader, KafkaEventWriter,
+};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
     run_app_updates, unique_consumer_group, unique_topic, update_two_apps_until, update_until,
@@ -14,6 +16,9 @@ use integration_tests::utils::kafka_setup;
 
 #[derive(Resource, Default)]
 struct EventCollector(Vec<TestEvent>);
+
+#[derive(Resource, Default)]
+struct ErrorCollector(Vec<EventBusError<TestEvent>>);
 
 /// Readers in the same consumer group should share work without duplicates.
 #[test]
@@ -336,6 +341,7 @@ fn different_consumer_groups_receive_all_events() {
 #[test]
 fn writer_only_works_without_consumer_groups() {
     let topic = unique_topic("writer-only");
+    let reader_group = unique_consumer_group("writer-only-reader");
 
     // Writer topology - no consumer groups (write-only)
     let topic_for_writer_topology = topic.clone();
@@ -347,6 +353,23 @@ fn writer_only_works_without_consumer_groups() {
                     .replication(1),
             );
             builder.add_event_single::<TestEvent>(topic_for_writer_topology.clone());
+        }));
+
+    let topic_for_reader_topology = topic.clone();
+    let reader_group_for_builder = reader_group.clone();
+    let (reader_backend, _bootstrap_reader) =
+        kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
+            builder.add_topic(
+                KafkaTopicSpec::new(topic_for_reader_topology.clone())
+                    .partitions(1)
+                    .replication(1),
+            );
+            builder.add_consumer_group(
+                reader_group_for_builder.clone(),
+                KafkaConsumerGroupSpec::new([topic_for_reader_topology.clone()])
+                    .initial_offset(KafkaInitialOffset::Earliest),
+            );
+            builder.add_event_single::<TestEvent>(topic_for_reader_topology.clone());
         }));
 
     // Setup writer app
@@ -371,9 +394,154 @@ fn writer_only_works_without_consumer_groups() {
         },
     );
 
+    // Setup reader app to verify messages originating from writer-only topology
+    let mut reader = App::new();
+    reader.add_plugins(EventBusPlugins(reader_backend));
+    reader.insert_resource(EventCollector::default());
+
+    let topic_for_reader_runtime = topic.clone();
+    let reader_group_runtime = reader_group.clone();
+    reader.add_systems(
+        Update,
+        move |mut r: KafkaEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
+            let config = KafkaConsumerConfig::new(
+                reader_group_runtime.clone(),
+                [topic_for_reader_runtime.clone()],
+            );
+            for wrapper in r.read(&config) {
+                c.0.push(wrapper.event().clone());
+            }
+        },
+    );
+
+    // Warm up reader before events are published
+    run_app_updates(&mut reader, 3);
+
     // Writer should be able to send events without any consumer groups defined
     run_app_updates(&mut writer, 4);
 
-    // Test passes if no panics occur - writer-only mode works
-    println!("Writer-only app successfully sent events without consumer groups");
+    let (received, _) = update_until(&mut reader, 10_000, |app| {
+        let collected = app.world().resource::<EventCollector>();
+        collected.0.len() >= 3
+    });
+
+    assert!(
+        received,
+        "Reader should observe events written by a topology without consumer groups"
+    );
+
+    let collected = reader.world().resource::<EventCollector>();
+    assert_eq!(
+        collected.0.len(),
+        3,
+        "Reader should receive all events from writer-only topology"
+    );
+
+    println!(
+        "Writer-only topology sent events without consumer groups and reader consumed {} events",
+        collected.0.len()
+    );
+}
+
+/// Readers must not receive events when their consumer group is absent from the topology.
+#[test]
+fn reader_does_not_work_without_consumer_group() {
+    let topic = unique_topic("reader-no-group");
+    let missing_group = unique_consumer_group("missing-group");
+
+    let topic_for_topology = topic.clone();
+    let (backend, _bootstrap) =
+        kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
+            builder.add_topic(
+                KafkaTopicSpec::new(topic_for_topology.clone())
+                    .partitions(1)
+                    .replication(1),
+            );
+            builder.add_event_single::<TestEvent>(topic_for_topology.clone());
+        }));
+
+    // Reader attempts to use a consumer group that was never configured
+    let mut reader = App::new();
+    reader.add_plugins(EventBusPlugins(backend.clone()));
+    reader.insert_resource(EventCollector::default());
+    reader.insert_resource(ErrorCollector::default());
+
+    reader.add_systems(
+        Update,
+        |mut errors: EventReader<EventBusError<TestEvent>>,
+         mut collector: ResMut<ErrorCollector>| {
+            for error in errors.read() {
+                collector.0.push(error.clone());
+            }
+        },
+    );
+
+    let topic_for_reader_runtime = topic.clone();
+    let reader_group_runtime = missing_group.clone();
+    reader.add_systems(
+        Update,
+        move |mut r: KafkaEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
+            let config = KafkaConsumerConfig::new(
+                reader_group_runtime.clone(),
+                [topic_for_reader_runtime.clone()],
+            );
+            for wrapper in r.read(&config) {
+                c.0.push(wrapper.event().clone());
+            }
+        },
+    );
+
+    // Writer publishes messages without any registered consumer groups
+    let mut writer = App::new();
+    writer.add_plugins(EventBusPlugins(backend));
+
+    let topic_for_runtime_writer = topic.clone();
+    writer.add_systems(
+        Update,
+        move |mut w: KafkaEventWriter, mut sent: Local<usize>| {
+            if *sent < 2 {
+                let config = KafkaProducerConfig::new([topic_for_runtime_writer.clone()]);
+                w.write(
+                    &config,
+                    TestEvent {
+                        message: format!("missing_group_{}", *sent),
+                        value: *sent as i32,
+                    },
+                );
+                *sent += 1;
+            }
+        },
+    );
+
+    run_app_updates(&mut reader, 3);
+    run_app_updates(&mut writer, 3);
+
+    let (received, _) = update_until(&mut reader, 10_000, |app| {
+        let collected = app.world().resource::<EventCollector>();
+        collected.0.len() >= 1
+    });
+
+    assert!(
+        !received,
+        "Reader should not receive events when its consumer group is missing from topology"
+    );
+
+    {
+        let collected = reader.world().resource::<EventCollector>();
+        assert!(
+            collected.0.is_empty(),
+            "Reader without a configured consumer group must not observe events"
+        );
+        println!("Reader correctly failed to receive events without an associated consumer group");
+    }
+
+    let errors = reader.world().resource::<ErrorCollector>();
+    assert!(
+        !errors.0.is_empty(),
+        "Reader should emit an error event when the consumer group is undefined"
+    );
+    let first_error = &errors.0[0];
+    assert_eq!(first_error.error_type, EventBusErrorType::InvalidReadConfig);
+    assert_eq!(first_error.topic, topic);
+    assert_eq!(first_error.backend.as_deref(), Some("kafka"));
 }

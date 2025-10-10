@@ -87,11 +87,10 @@ fn test_start_id_from_beginning() {
 
     let s = stream.clone();
     let g = consumer_group.clone();
-    let consumer = consumer_name.clone();
     reader.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(g.clone(), consumer.clone(), [s.clone()]);
+            let config = RedisConsumerConfig::new(g.clone(), [s.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
             }
@@ -184,11 +183,10 @@ fn test_start_id_from_end() {
 
     let s = stream.clone();
     let g = consumer_group.clone();
-    let consumer = consumer_name.clone();
     reader.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(g.clone(), consumer.clone(), [s.clone()]);
+            let config = RedisConsumerConfig::new(g.clone(), [s.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
             }

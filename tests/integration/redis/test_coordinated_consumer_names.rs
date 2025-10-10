@@ -44,11 +44,10 @@ fn test_coordinated_consumer_names() {
 
     let s1 = stream.clone();
     let g1 = consumer_group.clone();
-    let c1 = consumer_name.clone();
     reader1.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(g1.clone(), c1.clone(), [s1.clone()]);
+            let config = RedisConsumerConfig::new(g1.clone(), [s1.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
             }

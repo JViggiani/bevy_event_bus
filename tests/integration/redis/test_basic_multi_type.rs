@@ -54,12 +54,10 @@ fn test_basic_multi_type_redis() {
     #[derive(Resource, Clone)]
     struct ConsumerMembership {
         group: String,
-        consumer: String,
     }
     reader_app.insert_resource(Stream(stream.clone()));
     reader_app.insert_resource(ConsumerMembership {
         group: consumer_group,
-        consumer: consumer_name,
     });
 
     fn test_reader_system(
@@ -68,11 +66,7 @@ fn test_basic_multi_type_redis() {
         membership: Res<ConsumerMembership>,
         mut collected: ResMut<Collected>,
     ) {
-        let config = RedisConsumerConfig::new(
-            membership.group.clone(),
-            membership.consumer.clone(),
-            [stream.0.clone()],
-        );
+        let config = RedisConsumerConfig::new(membership.group.clone(), [stream.0.clone()]);
         for wrapper in reader.read(&config) {
             collected.test_events.push(wrapper.event().clone());
         }
@@ -84,11 +78,7 @@ fn test_basic_multi_type_redis() {
         membership: Res<ConsumerMembership>,
         mut collected: ResMut<Collected>,
     ) {
-        let config = RedisConsumerConfig::new(
-            membership.group.clone(),
-            membership.consumer.clone(),
-            [stream.0.clone()],
-        );
+        let config = RedisConsumerConfig::new(membership.group.clone(), [stream.0.clone()]);
         for wrapper in reader.read(&config) {
             collected.login_events.push(wrapper.event().clone());
         }

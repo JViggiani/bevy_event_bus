@@ -7,7 +7,7 @@ use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// CSV header used for persisted performance benchmark results.
-pub const PERFORMANCE_CSV_HEADER: &str = "timestamp_ms,git_hash,run_name,backend,messages_sent,messages_received,payload_size_bytes,send_duration_ms,receive_duration_ms,send_rate_per_sec,receive_rate_per_sec,send_throughput_mb_per_sec,receive_throughput_mb_per_sec,test_name,send_rate_delta_per_sec\n";
+pub const PERFORMANCE_CSV_HEADER: &str = "timestamp_ms,git_hash,run_name,backend,send_rate_delta_pct,receive_rate_delta_pct,messages_sent,messages_received,payload_size_bytes,send_duration_ms,receive_duration_ms,send_rate_per_sec,receive_rate_per_sec,send_throughput_mb_per_sec,receive_throughput_mb_per_sec,test_name\n";
 
 #[derive(Debug, Clone)]
 struct PerformanceCsvRecord {
@@ -22,16 +22,16 @@ struct PerformanceCsvRecord {
 impl PerformanceCsvRecord {
     fn parse(line: &str) -> Option<Self> {
         let columns: Vec<&str> = line.split(',').collect();
-        if columns.len() < 14 {
+        if columns.len() < 16 {
             return None;
         }
 
         let backend = columns.get(3)?.trim().to_string();
         let run_name = columns.get(2)?.trim().to_string();
-        let payload_size_bytes = columns.get(6)?.trim().parse().ok()?;
-        let send_rate_per_sec = columns.get(9)?.trim().parse().ok()?;
-        let receive_rate_per_sec = columns.get(10)?.trim().parse().ok()?;
-        let test_name = columns.get(13)?.trim().to_string();
+        let payload_size_bytes = columns.get(8)?.trim().parse().ok()?;
+        let send_rate_per_sec = columns.get(11)?.trim().parse().ok()?;
+        let receive_rate_per_sec = columns.get(12)?.trim().parse().ok()?;
+        let test_name = columns.get(15)?.trim().to_string();
 
         Some(Self {
             backend,
@@ -85,21 +85,32 @@ pub fn record_performance_results(
     }
 
     let previous_record = find_previous_record(csv_path_ref, backend, test_name).unwrap_or(None);
-    let send_rate_delta = previous_record
+    let (send_rate_delta_pct, receive_rate_delta_pct) = previous_record
         .as_ref()
-        .map(|previous| send_rate - previous.send_rate_per_sec)
-        .unwrap_or(0.0);
-    let receive_rate_delta = previous_record
-        .as_ref()
-        .map(|previous| receive_rate - previous.receive_rate_per_sec)
-        .unwrap_or(0.0);
+        .map(|previous| {
+            let send_pct = if previous.send_rate_per_sec.abs() > f64::EPSILON {
+                ((send_rate - previous.send_rate_per_sec) / previous.send_rate_per_sec) * 100.0
+            } else {
+                0.0
+            };
+            let receive_pct = if previous.receive_rate_per_sec.abs() > f64::EPSILON {
+                ((receive_rate - previous.receive_rate_per_sec) / previous.receive_rate_per_sec)
+                    * 100.0
+            } else {
+                0.0
+            };
+            (send_pct, receive_pct)
+        })
+        .unwrap_or((0.0, 0.0));
 
     let record = format!(
-        "{timestamp},{hash},{run},{backend},{sent},{received},{payload},{send_ms},{receive_ms},{send_rate},{receive_rate},{send_throughput},{receive_throughput},{test},{delta}\n",
+        "{timestamp},{hash},{run},{backend},{send_delta},{receive_delta},{sent},{received},{payload},{send_ms},{receive_ms},{send_rate},{receive_rate},{send_throughput},{receive_throughput},{test}\n",
         timestamp = timestamp_ms,
         hash = git_hash,
         run = run_name,
         backend = backend,
+        send_delta = send_rate_delta_pct,
+        receive_delta = receive_rate_delta_pct,
         sent = messages_sent,
         received = messages_received,
         payload = payload_size,
@@ -110,7 +121,6 @@ pub fn record_performance_results(
         send_throughput = send_throughput_mb,
         receive_throughput = receive_throughput_mb,
         test = test_name,
-        delta = send_rate_delta,
     );
 
     let mut needs_header = true;
@@ -146,8 +156,8 @@ pub fn record_performance_results(
             run = previous.run_name,
         );
         println!(
-            "Δ send rate: {:+.0} msg/s, Δ receive rate: {:+.0} msg/s",
-            send_rate_delta, receive_rate_delta
+            "Δ send rate: {:+.2}% , Δ receive rate: {:+.2}%",
+            send_rate_delta_pct, receive_rate_delta_pct
         );
     } else {
         println!("No previous run recorded for {backend}::{test_name} in {csv_path}.");
@@ -182,29 +192,12 @@ fn ensure_performance_csv_schema(path: &Path) -> std::io::Result<()> {
     let mut lines = content.lines();
     let existing_header = lines.next().unwrap_or_default().trim();
 
-    if existing_header == PERFORMANCE_CSV_HEADER.trim() {
-        return Ok(());
+    if existing_header != PERFORMANCE_CSV_HEADER.trim() {
+        // Schema changed; drop previous contents and start fresh.
+        let mut file = fs::File::create(path)?;
+        file.write_all(PERFORMANCE_CSV_HEADER.as_bytes())?;
     }
 
-    let mut rewritten = String::new();
-    rewritten.push_str(PERFORMANCE_CSV_HEADER);
-
-    for line in lines {
-        if line.trim().is_empty() {
-            continue;
-        }
-
-        // Legacy rows lacked a backend column. Assume Kafka for these entries.
-        let mut columns: Vec<&str> = line.split(',').collect();
-        if columns.len() >= 13 {
-            columns.insert(3, "kafka");
-            rewritten.push_str(&columns.join(","));
-            rewritten.push('\n');
-        }
-    }
-
-    let mut file = fs::File::create(path)?;
-    file.write_all(rewritten.as_bytes())?;
     Ok(())
 }
 

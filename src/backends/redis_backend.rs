@@ -972,6 +972,7 @@ impl EventBusBackend for RedisEventBusBackend {
                 self.state.ack_counters.clone(),
             )));
         }
+        setup.redis_topology = Some(self.state.config.topology.clone());
         setup
     }
 

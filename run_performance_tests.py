@@ -37,6 +37,8 @@ class PerfRecord:
     payload_size_bytes: int
     send_rate_per_sec: float
     receive_rate_per_sec: float
+    send_delta_pct: float
+    receive_delta_pct: float
 
     @classmethod
     def from_csv_row(cls, row: Sequence[str]) -> Optional["PerfRecord"]:
@@ -44,18 +46,22 @@ class PerfRecord:
             return None
 
         try:
-            if len(row) >= 15:
+            if len(row) >= 16:
+                payload = int(float(row[8]))
+                send_rate = float(row[11])
+                receive_rate = float(row[12])
+                backend = row[3].strip()
+                test_name = row[15].strip()
+                send_delta_pct = float(row[4])
+                receive_delta_pct = float(row[5])
+            else:
                 payload = int(float(row[6]))
                 send_rate = float(row[9])
                 receive_rate = float(row[10])
-                backend = row[3].strip()
+                backend = row[3].strip() if len(row) > 3 else "kafka"
                 test_name = row[13].strip()
-            else:
-                payload = int(float(row[5]))
-                send_rate = float(row[8])
-                receive_rate = float(row[9])
-                backend = "kafka"
-                test_name = row[12].strip()
+                send_delta_pct = 0.0
+                receive_delta_pct = 0.0
         except ValueError:
             return None
 
@@ -67,6 +73,8 @@ class PerfRecord:
             payload_size_bytes=payload,
             send_rate_per_sec=send_rate,
             receive_rate_per_sec=receive_rate,
+            send_delta_pct=send_delta_pct,
+            receive_delta_pct=receive_delta_pct,
         )
 
 
@@ -190,18 +198,12 @@ def summarise_runs(records: List[PerfRecord], tests: Sequence[tuple[str, str]]) 
                 f"receive {previous.receive_rate_per_sec:,.0f} msg/s (payload {previous.payload_size_bytes} bytes)"
             )
 
-        send_delta = (
-            current.send_rate_per_sec - previous.send_rate_per_sec if previous else None
-        )
-        receive_delta = (
-            current.receive_rate_per_sec - previous.receive_rate_per_sec if previous else None
-        )
-
-        delta_line = "Δ send n/a, Δ receive n/a"
         if previous:
             delta_line = (
-                f"Δ send {send_delta:+,.0f} msg/s, Δ receive {receive_delta:+,.0f} msg/s"
+                f"Δ send {current.send_delta_pct:+,.2f}% , Δ receive {current.receive_delta_pct:+,.2f}%"
             )
+        else:
+            delta_line = "Δ send n/a, Δ receive n/a"
 
         print(
             f"  Current run '{current.run_name}': send {current.send_rate_per_sec:,.0f} msg/s, "

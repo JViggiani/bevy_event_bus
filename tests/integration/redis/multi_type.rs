@@ -66,7 +66,6 @@ fn multiple_event_types_same_stream() {
     #[derive(Resource, Clone)]
     struct ConsumerMembership {
         group: String,
-        consumer: String,
     }
 
     let mut reader_app = App::new();
@@ -75,7 +74,6 @@ fn multiple_event_types_same_stream() {
     reader_app.insert_resource(Stream(stream.clone()));
     reader_app.insert_resource(ConsumerMembership {
         group: consumer_group.clone(),
-        consumer: consumer_name.clone(),
     });
 
     // System functions instead of closures
@@ -85,11 +83,7 @@ fn multiple_event_types_same_stream() {
         membership: Res<ConsumerMembership>,
         mut collected: ResMut<Collected>,
     ) {
-        let config = RedisConsumerConfig::new(
-            membership.group.clone(),
-            membership.consumer.clone(),
-            [stream.0.clone()],
-        );
+        let config = RedisConsumerConfig::new(membership.group.clone(), [stream.0.clone()]);
         for wrapper in reader.read(&config) {
             collected.test_events.push(wrapper.event().clone());
         }
@@ -101,11 +95,7 @@ fn multiple_event_types_same_stream() {
         membership: Res<ConsumerMembership>,
         mut collected: ResMut<Collected>,
     ) {
-        let config = RedisConsumerConfig::new(
-            membership.group.clone(),
-            membership.consumer.clone(),
-            [stream.0.clone()],
-        );
+        let config = RedisConsumerConfig::new(membership.group.clone(), [stream.0.clone()]);
         for wrapper in reader.read(&config) {
             collected.login_events.push(wrapper.event().clone());
         }
@@ -273,11 +263,10 @@ fn interleaved_multi_type_frames() {
 
     let s1 = stream.clone();
     let g1 = consumer_group.clone();
-    let c1 = consumer_name.clone();
     reader.add_systems(
         Update,
         move |mut r1: RedisEventReader<TestEvent>, mut results: ResMut<Results>| {
-            let config = RedisConsumerConfig::new(g1.clone(), c1.clone(), [s1.clone()]);
+            let config = RedisConsumerConfig::new(g1.clone(), [s1.clone()]);
             for wrapper in r1.read(&config) {
                 results.test_events.push(wrapper.event().clone());
             }
@@ -286,11 +275,10 @@ fn interleaved_multi_type_frames() {
 
     let s2 = stream.clone();
     let g2 = consumer_group.clone();
-    let c2 = consumer_name.clone();
     reader.add_systems(
         Update,
         move |mut r2: RedisEventReader<UserLoginEvent>, mut results: ResMut<Results>| {
-            let config = RedisConsumerConfig::new(g2.clone(), c2.clone(), [s2.clone()]);
+            let config = RedisConsumerConfig::new(g2.clone(), [s2.clone()]);
             for wrapper in r2.read(&config) {
                 results.login_events.push(wrapper.event().clone());
             }

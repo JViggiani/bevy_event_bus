@@ -115,11 +115,10 @@ fn external_redis_events_independent_operation() {
     }); // Reader collects all events
     let sr = stream.clone();
     let gr = consumer_group.clone();
-    let cr = consumer_name.clone();
     reader.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<Collected>| {
-            let config = RedisConsumerConfig::new(gr.clone(), cr.clone(), [sr.clone()]);
+            let config = RedisConsumerConfig::new(gr.clone(), [sr.clone()]);
             let events_before = c.0.len();
             println!(
                 "Reader system called with stream: {} group: {}, current events: {}",

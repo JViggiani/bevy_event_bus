@@ -344,12 +344,12 @@ impl KafkaEventBusBackend {
             lag_handle: Mutex::new(None),
             dropped: Arc::new(AtomicUsize::new(0)),
         };
-
         Self {
             state: Arc::new(state),
         }
     }
 
+    /// Returns true if the backend topology provisions the supplied consumer group identifier.
     pub fn bootstrap_servers(&self) -> &str {
         self.state.config.connection.bootstrap_servers()
     }
@@ -666,6 +666,7 @@ impl EventBusBackend for KafkaEventBusBackend {
             self.take_commit_results(),
         )));
         setup.lag_reporting = Some(Box::new(KafkaLagHandle::new(self.lag_cache())));
+        setup.kafka_topology = Some(self.state.config.topology.clone());
 
         setup
     }

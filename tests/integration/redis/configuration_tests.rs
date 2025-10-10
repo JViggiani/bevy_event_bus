@@ -52,14 +52,10 @@ fn configuration_with_readers_writers_works() {
 
         let stream_clone = stream.clone();
         let consumer_group_clone = consumer_group.clone();
-        let consumer_name_clone = consumer_name.clone();
         let consumer_system =
             move |mut reader: RedisEventReader<TestEvent>, mut collected: ResMut<Collected>| {
-                let config = RedisConsumerConfig::new(
-                    consumer_group_clone.clone(),
-                    consumer_name_clone.clone(),
-                    [stream_clone.clone()],
-                );
+                let config =
+                    RedisConsumerConfig::new(consumer_group_clone.clone(), [stream_clone.clone()]);
                 let events = reader.read(&config);
                 for wrapper in events {
                     collected.0.push(wrapper.event().clone());
@@ -146,11 +142,7 @@ fn redis_specific_methods_work() {
     app.add_plugins(EventBusPlugins(backend));
 
     let redis_producer_config = RedisProducerConfig::new(stream.clone());
-    let redis_consumer_config = RedisConsumerConfig::new(
-        consumer_group.clone(),
-        consumer_name.clone(),
-        [stream.clone()],
-    );
+    let redis_consumer_config = RedisConsumerConfig::new(consumer_group.clone(), [stream.clone()]);
 
     #[derive(Resource)]
     struct TestConfigs {
@@ -215,9 +207,8 @@ fn redis_specific_methods_work() {
 #[test]
 fn builder_pattern_works() {
     // Test that we can build consumer config
-    let consumer_config =
-        RedisConsumerConfig::new("test_group", "test_consumer", ["stream1", "stream2"])
-            .read_block_timeout(Duration::from_millis(1000));
+    let consumer_config = RedisConsumerConfig::new("test_group", ["stream1", "stream2"])
+        .read_block_timeout(Duration::from_millis(1000));
 
     // Test that trait methods work using explicit syntax
     let consumer_topics = EventBusConfig::topics(&consumer_config).to_vec();
@@ -228,7 +219,6 @@ fn builder_pattern_works() {
 
     // Test that specific config getters work
     assert_eq!(consumer_config.consumer_group(), Some("test_group"));
-    assert_eq!(consumer_config.consumer_name(), Some("test_consumer"));
     assert_eq!(consumer_config.block_timeout(), Duration::from_millis(1000));
 
     // Test that we can build producer config

@@ -4,16 +4,21 @@ use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
-use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
+use bevy_event_bus::{
+    EventBusError, EventBusErrorType, EventBusPlugins, RedisEventReader, RedisEventWriter,
+};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
-    run_app_updates, unique_consumer_group, unique_consumer_group_member, unique_topic,
-    update_two_apps_until, update_until,
+    run_app_updates, unique_consumer_group, unique_consumer_group_member,
+    unique_consumer_group_membership, unique_topic, update_two_apps_until, update_until,
 };
 use integration_tests::utils::redis_setup;
 
 #[derive(Resource, Default)]
 struct EventCollector(Vec<TestEvent>);
+
+#[derive(Resource, Default)]
+struct ErrorCollector(Vec<EventBusError<TestEvent>>);
 
 /// Readers in the same consumer group should share work without duplicates.
 #[test]
@@ -73,11 +78,10 @@ fn same_consumer_group_distributes_messages_round_robin() {
 
     let s1 = stream.clone();
     let g1 = consumer_group.clone();
-    let c1 = consumer1.clone();
     reader1.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(g1.clone(), c1.clone(), [s1.clone()]);
+            let config = RedisConsumerConfig::new(g1.clone(), [s1.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
             }
@@ -91,11 +95,10 @@ fn same_consumer_group_distributes_messages_round_robin() {
 
     let s2 = stream.clone();
     let g2 = consumer_group.clone();
-    let c2 = consumer2.clone();
     reader2.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(g2.clone(), c2.clone(), [s2.clone()]);
+            let config = RedisConsumerConfig::new(g2.clone(), [s2.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
             }
@@ -231,11 +234,10 @@ fn different_consumer_groups_receive_all_events() {
 
     let s1 = stream.clone();
     let g1 = consumer_group1.clone();
-    let consumer1 = consumer_name1.clone();
     reader1.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(g1.clone(), consumer1.clone(), [s1.clone()]);
+            let config = RedisConsumerConfig::new(g1.clone(), [s1.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
             }
@@ -249,11 +251,10 @@ fn different_consumer_groups_receive_all_events() {
 
     let s2 = stream.clone();
     let g2 = consumer_group2.clone();
-    let consumer2 = consumer_name2.clone();
     reader2.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
-            let config = RedisConsumerConfig::new(g2.clone(), consumer2.clone(), [s2.clone()]);
+            let config = RedisConsumerConfig::new(g2.clone(), [s2.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
             }
@@ -333,6 +334,7 @@ fn different_consumer_groups_receive_all_events() {
 #[test]
 fn writer_only_works_without_consumer_groups() {
     let stream = unique_topic("writer-only");
+    let reader_membership = unique_consumer_group_membership("writer-only-reader");
 
     // Writer topology - no consumer groups (write-only)
     let stream_for_writer_topology = stream.clone();
@@ -342,6 +344,21 @@ fn writer_only_works_without_consumer_groups() {
             .add_event_single::<TestEvent>(stream_for_writer_topology.clone());
     })
     .expect("Redis writer backend setup successful");
+
+    let stream_for_reader_topology = stream.clone();
+    let reader_group_for_builder = reader_membership.group.clone();
+    let reader_member_for_builder = reader_membership.member.clone();
+    let (reader_backend, _reader_context) = redis_setup::prepare_backend(move |builder| {
+        builder
+            .add_stream(RedisStreamSpec::new(stream_for_reader_topology.clone()))
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream_for_reader_topology.clone()],
+                reader_group_for_builder.clone(),
+                reader_member_for_builder.clone(),
+            ))
+            .add_event_single::<TestEvent>(stream_for_reader_topology.clone());
+    })
+    .expect("Redis reader backend setup successful");
 
     // Setup writer app
     let mut writer = App::new();
@@ -365,9 +382,147 @@ fn writer_only_works_without_consumer_groups() {
         },
     );
 
+    // Setup reader app to verify delivery even when writer topology omits consumer groups
+    let mut reader = App::new();
+    reader.add_plugins(EventBusPlugins(reader_backend));
+    reader.insert_resource(EventCollector::default());
+
+    let s = stream.clone();
+    let reader_group = reader_membership.group.clone();
+    reader.add_systems(
+        Update,
+        move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
+            let config = RedisConsumerConfig::new(reader_group.clone(), [s.clone()]);
+            for wrapper in r.read(&config) {
+                c.0.push(wrapper.event().clone());
+            }
+        },
+    );
+
+    // Start reader first so it will observe newly written events
+    run_app_updates(&mut reader, 3);
+
     // Writer should be able to send events without any consumer groups defined
     run_app_updates(&mut writer, 4);
 
-    // Test passes if no panics occur - writer-only mode works
-    println!("Writer-only app successfully sent events without consumer groups");
+    // Allow the reader to drain all events emitted by the writer-only backend
+    let (received, _) = update_until(&mut reader, 5_000, |app| {
+        let collected = app.world().resource::<EventCollector>();
+        collected.0.len() >= 3
+    });
+
+    assert!(
+        received,
+        "Reader should receive events produced by a writer-only topology"
+    );
+
+    let collected = reader.world().resource::<EventCollector>();
+    assert_eq!(
+        collected.0.len(),
+        3,
+        "Reader should observe all events from writer-only topology"
+    );
+
+    println!(
+        "Writer-only app successfully sent events without consumer groups and reader observed {} events",
+        collected.0.len()
+    );
+}
+
+/// Readers should fail to receive events when the topology does not configure a consumer group.
+#[test]
+fn reader_does_not_work_without_consumer_group() {
+    let stream = unique_topic("reader-no-group");
+    let membership = unique_consumer_group_membership("missing-group");
+
+    let stream_for_topology = stream.clone();
+    let (backend, _context) = redis_setup::prepare_backend(move |builder| {
+        builder
+            .add_stream(RedisStreamSpec::new(stream_for_topology.clone()))
+            .add_event_single::<TestEvent>(stream_for_topology.clone());
+    })
+    .expect("Redis backend setup successful");
+
+    // Reader attempts to use a consumer group that was never configured in topology
+    let mut reader = App::new();
+    reader.add_plugins(EventBusPlugins(backend.clone()));
+    reader.insert_resource(EventCollector::default());
+    reader.insert_resource(ErrorCollector::default());
+
+    reader.add_systems(
+        Update,
+        |mut errors: EventReader<EventBusError<TestEvent>>,
+         mut collector: ResMut<ErrorCollector>| {
+            for error in errors.read() {
+                collector.0.push(error.clone());
+            }
+        },
+    );
+
+    let s = stream.clone();
+    let missing_group = membership.group.clone();
+    reader.add_systems(
+        Update,
+        move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
+            let config = RedisConsumerConfig::new(missing_group.clone(), [s.clone()]);
+            for wrapper in r.read(&config) {
+                c.0.push(wrapper.event().clone());
+            }
+        },
+    );
+
+    // Writer publishes events without any consumer group defined in topology
+    let mut writer = App::new();
+    writer.add_plugins(EventBusPlugins(backend));
+
+    let stream_for_runtime_writer = stream.clone();
+    writer.add_systems(
+        Update,
+        move |mut w: RedisEventWriter, mut sent: Local<usize>| {
+            if *sent < 2 {
+                let config = RedisProducerConfig::new(stream_for_runtime_writer.clone());
+                w.write(
+                    &config,
+                    TestEvent {
+                        message: format!("missing_group_{}", *sent),
+                        value: *sent as i32,
+                    },
+                );
+                *sent += 1;
+            }
+        },
+    );
+
+    // Spin both apps; reader should never receive events because its consumer group is absent
+    run_app_updates(&mut reader, 3);
+    run_app_updates(&mut writer, 3);
+
+    let (received, _) = update_until(&mut reader, 5_000, |app| {
+        let collected = app.world().resource::<EventCollector>();
+        collected.0.len() >= 1
+    });
+
+    assert!(
+        !received,
+        "Reader should not receive events when its consumer group is missing from topology"
+    );
+
+    {
+        let collected = reader.world().resource::<EventCollector>();
+        assert!(
+            collected.0.is_empty(),
+            "Reader without an associated consumer group must not observe events"
+        );
+        println!("Reader correctly failed to receive events without a configured consumer group");
+    }
+
+    let errors = reader.world().resource::<ErrorCollector>();
+    assert!(
+        !errors.0.is_empty(),
+        "Reader should emit an error event when the consumer group is undefined"
+    );
+    let first_error = &errors.0[0];
+    assert_eq!(first_error.error_type, EventBusErrorType::InvalidReadConfig);
+    assert_eq!(first_error.topic, stream);
+    assert_eq!(first_error.backend.as_deref(), Some("redis"));
 }

@@ -337,7 +337,8 @@ fn default_offset_configuration_is_latest() {
                     consumer_for_config.clone(),
                     KafkaConsumerGroupSpec::new([topic_for_config.clone()])
                         .initial_offset(KafkaInitialOffset::Latest),
-                );
+                )
+                .add_event_single::<TestEvent>(topic_for_config.clone());
         },
     ));
     let mut app = App::new();

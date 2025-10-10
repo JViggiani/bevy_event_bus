@@ -84,15 +84,10 @@ fn per_stream_order_preserved() {
     reader.insert_resource(Collected::default());
     let stream_clone = stream.clone();
     let group_clone = consumer_group.clone();
-    let consumer_clone = consumer_name.clone();
     reader.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<Collected>| {
-            let config = RedisConsumerConfig::new(
-                group_clone.clone(),
-                consumer_clone.clone(),
-                [stream_clone.clone()],
-            );
+            let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
             }
@@ -207,20 +202,11 @@ fn cross_stream_interleave_each_ordered() {
     let s1_clone = stream1.clone();
     let s2_clone = stream2.clone();
     let group_clone = consumer_group.clone();
-    let consumer_clone = consumer_name.clone();
     reader.add_systems(
         Update,
         move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<Collected>| {
-            let config1 = RedisConsumerConfig::new(
-                group_clone.clone(),
-                consumer_clone.clone(),
-                [s1_clone.clone()],
-            );
-            let config2 = RedisConsumerConfig::new(
-                group_clone.clone(),
-                consumer_clone.clone(),
-                [s2_clone.clone()],
-            );
+            let config1 = RedisConsumerConfig::new(group_clone.clone(), [s1_clone.clone()]);
+            let config2 = RedisConsumerConfig::new(group_clone.clone(), [s2_clone.clone()]);
 
             for wrapper in r.read(&config1) {
                 c.stream1_events.push(wrapper.event().clone());

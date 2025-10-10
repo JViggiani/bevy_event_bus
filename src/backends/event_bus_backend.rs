@@ -1,5 +1,5 @@
-use crate::resources::ConsumerMetrics;
-use crate::resources::IncomingMessage;
+use crate::config::{kafka::KafkaTopologyConfig, redis::RedisTopologyConfig};
+use crate::resources::{ConsumerMetrics, IncomingMessage};
 use async_trait::async_trait;
 use bevy::prelude::{App, World};
 use bevy_event_bus::BusEvent;
@@ -44,13 +44,14 @@ pub trait LagReportingHandle: Send + Sync {
     fn descriptor(&self) -> LagReportingDescriptor;
 }
 
-/// Data returned by a backend when the plugin is setting up runtime resources.
 #[derive(Default)]
 pub struct BackendPluginSetup {
     pub ready_topics: Vec<String>,
     pub message_stream: Option<Receiver<IncomingMessage>>,
     pub manual_commit: Option<Box<dyn ManualCommitHandle>>,
     pub lag_reporting: Option<Box<dyn LagReportingHandle>>,
+    pub kafka_topology: Option<KafkaTopologyConfig>,
+    pub redis_topology: Option<RedisTopologyConfig>,
 }
 
 /// Error returned when a backend configuration cannot be applied.
