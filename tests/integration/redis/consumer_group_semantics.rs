@@ -20,6 +20,12 @@ struct EventCollector(Vec<TestEvent>);
 #[derive(Resource, Default)]
 struct ErrorCollector(Vec<EventBusError<TestEvent>>);
 
+#[derive(Resource, Default)]
+struct ValidGroupCollector(Vec<TestEvent>);
+
+#[derive(Resource, Default)]
+struct InvalidGroupCollector(Vec<TestEvent>);
+
 /// Readers in the same consumer group should share work without duplicates.
 #[test]
 fn same_consumer_group_distributes_messages_round_robin() {
@@ -525,4 +531,126 @@ fn reader_does_not_work_without_consumer_group() {
     assert_eq!(first_error.error_type, EventBusErrorType::InvalidReadConfig);
     assert_eq!(first_error.topic, stream);
     assert_eq!(first_error.backend.as_deref(), Some("redis"));
+}
+
+/// Invalid reader configurations must not interfere with valid consumer groups.
+#[test]
+fn invalid_consumer_group_does_not_steal_events_from_valid_group() {
+    let stream = unique_topic("invalid-group-isolation");
+    let valid_membership = unique_consumer_group_membership("valid-group");
+    let valid_group = valid_membership.group.clone();
+    let valid_consumer = valid_membership.member.clone();
+
+    let stream_for_setup = stream.clone();
+    let valid_group_for_setup = valid_group.clone();
+    let valid_consumer_for_setup = valid_consumer.clone();
+    let (backend, _context) = redis_setup::prepare_backend(move |builder| {
+        builder
+            .add_stream(RedisStreamSpec::new(stream_for_setup.clone()))
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream_for_setup.clone()],
+                valid_group_for_setup.clone(),
+                valid_consumer_for_setup.clone(),
+            ))
+            .add_event_single::<TestEvent>(stream_for_setup.clone());
+    })
+    .expect("Redis backend setup successful");
+
+    let mut app = App::new();
+    app.add_plugins(EventBusPlugins(backend));
+    app.insert_resource(ValidGroupCollector::default());
+    app.insert_resource(InvalidGroupCollector::default());
+    app.insert_resource(ErrorCollector::default());
+
+    app.add_systems(
+        Update,
+        |mut errors: EventReader<EventBusError<TestEvent>>,
+         mut collector: ResMut<ErrorCollector>| {
+            for error in errors.read() {
+                collector.0.push(error.clone());
+            }
+        },
+    );
+
+    let invalid_stream = stream.clone();
+    let invalid_group = unique_consumer_group("invalid-group-reader");
+    app.add_systems(
+        Update,
+        move |mut reader: RedisEventReader<TestEvent>,
+              mut invalid: ResMut<InvalidGroupCollector>| {
+            let config = RedisConsumerConfig::new(invalid_group.clone(), [invalid_stream.clone()]);
+            for wrapper in reader.read(&config) {
+                invalid.0.push(wrapper.event().clone());
+            }
+        },
+    );
+
+    let valid_stream_runtime = stream.clone();
+    let valid_group_runtime = valid_group.clone();
+    app.add_systems(
+        Update,
+        move |mut reader: RedisEventReader<TestEvent>, mut valid: ResMut<ValidGroupCollector>| {
+            let config = RedisConsumerConfig::new(
+                valid_group_runtime.clone(),
+                [valid_stream_runtime.clone()],
+            );
+            for wrapper in reader.read(&config) {
+                valid.0.push(wrapper.event().clone());
+            }
+        },
+    );
+
+    let stream_for_writer = stream.clone();
+    app.add_systems(
+        Update,
+        move |mut writer: RedisEventWriter, mut sent: Local<usize>| {
+            if *sent < 3 {
+                let config = RedisProducerConfig::new(stream_for_writer.clone());
+                writer.write(
+                    &config,
+                    TestEvent {
+                        message: format!("valid_group_message_{}", *sent),
+                        value: *sent as i32,
+                    },
+                );
+                *sent += 1;
+            }
+        },
+    );
+
+    // Warm up the app so the backend connects before sending events.
+    run_app_updates(&mut app, 5);
+
+    let (valid_received, _) = update_until(&mut app, 10_000, |app| {
+        let collected = app.world().resource::<ValidGroupCollector>();
+        collected.0.len() >= 3
+    });
+
+    assert!(
+        valid_received,
+        "Valid consumer group should receive all dispatched events"
+    );
+
+    let valid = app.world().resource::<ValidGroupCollector>();
+    assert_eq!(
+        valid.0.len(),
+        3,
+        "Valid consumer group should observe every dispatched event"
+    );
+
+    let invalid = app.world().resource::<InvalidGroupCollector>();
+    assert!(
+        invalid.0.is_empty(),
+        "Invalid consumer group must not receive any events"
+    );
+
+    let errors = app.world().resource::<ErrorCollector>();
+    assert!(
+        errors.0.iter().any(|error| {
+            error.error_type == EventBusErrorType::InvalidReadConfig
+                && error.backend.as_deref() == Some("redis")
+                && error.topic == stream
+        }),
+        "Invalid consumer group should emit an InvalidReadConfig error"
+    );
 }

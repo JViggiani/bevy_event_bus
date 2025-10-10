@@ -20,6 +20,12 @@ struct EventCollector(Vec<TestEvent>);
 #[derive(Resource, Default)]
 struct ErrorCollector(Vec<EventBusError<TestEvent>>);
 
+#[derive(Resource, Default)]
+struct ValidKafkaCollector(Vec<TestEvent>);
+
+#[derive(Resource, Default)]
+struct InvalidKafkaCollector(Vec<TestEvent>);
+
 /// Readers in the same consumer group should share work without duplicates.
 #[test]
 fn same_consumer_group_distributes_messages_round_robin() {
@@ -544,4 +550,125 @@ fn reader_does_not_work_without_consumer_group() {
     assert_eq!(first_error.error_type, EventBusErrorType::InvalidReadConfig);
     assert_eq!(first_error.topic, topic);
     assert_eq!(first_error.backend.as_deref(), Some("kafka"));
+}
+
+/// Invalid reader configurations must not prevent valid consumer groups from receiving messages.
+#[test]
+fn invalid_consumer_group_does_not_steal_events_from_valid_group() {
+    let topic = unique_topic("kafka-invalid-group-isolation");
+    let valid_group = unique_consumer_group("kafka-valid-group");
+
+    let topic_for_setup = topic.clone();
+    let valid_group_for_setup = valid_group.clone();
+    let (backend, _bootstrap) =
+        kafka_setup::prepare_backend(kafka_setup::earliest(move |builder| {
+            builder.add_topic(
+                KafkaTopicSpec::new(topic_for_setup.clone())
+                    .partitions(1)
+                    .replication(1),
+            );
+            builder.add_consumer_group(
+                valid_group_for_setup.clone(),
+                KafkaConsumerGroupSpec::new([topic_for_setup.clone()])
+                    .initial_offset(KafkaInitialOffset::Earliest),
+            );
+            builder.add_event_single::<TestEvent>(topic_for_setup.clone());
+        }));
+
+    let mut app = App::new();
+    app.add_plugins(EventBusPlugins(backend));
+    app.insert_resource(ValidKafkaCollector::default());
+    app.insert_resource(InvalidKafkaCollector::default());
+    app.insert_resource(ErrorCollector::default());
+
+    app.add_systems(
+        Update,
+        |mut errors: EventReader<EventBusError<TestEvent>>,
+         mut collector: ResMut<ErrorCollector>| {
+            for error in errors.read() {
+                collector.0.push(error.clone());
+            }
+        },
+    );
+
+    let invalid_topic = topic.clone();
+    let invalid_group = unique_consumer_group("kafka-invalid-reader");
+    app.add_systems(
+        Update,
+        move |mut reader: KafkaEventReader<TestEvent>,
+              mut invalid: ResMut<InvalidKafkaCollector>| {
+            let config = KafkaConsumerConfig::new(invalid_group.clone(), [invalid_topic.clone()]);
+            for wrapper in reader.read(&config) {
+                invalid.0.push(wrapper.event().clone());
+            }
+        },
+    );
+
+    let valid_topic_runtime = topic.clone();
+    let valid_group_runtime = valid_group.clone();
+    app.add_systems(
+        Update,
+        move |mut reader: KafkaEventReader<TestEvent>, mut valid: ResMut<ValidKafkaCollector>| {
+            let config = KafkaConsumerConfig::new(
+                valid_group_runtime.clone(),
+                [valid_topic_runtime.clone()],
+            );
+            for wrapper in reader.read(&config) {
+                valid.0.push(wrapper.event().clone());
+            }
+        },
+    );
+
+    let topic_for_writer = topic.clone();
+    app.add_systems(
+        Update,
+        move |mut writer: KafkaEventWriter, mut sent: Local<usize>| {
+            if *sent < 3 {
+                let config = KafkaProducerConfig::new([topic_for_writer.clone()]);
+                writer.write(
+                    &config,
+                    TestEvent {
+                        message: format!("kafka_valid_group_message_{}", *sent),
+                        value: *sent as i32,
+                    },
+                );
+                *sent += 1;
+            }
+        },
+    );
+
+    run_app_updates(&mut app, 5);
+
+    let (valid_received, _) = update_until(&mut app, 10_000, |app| {
+        let collected = app.world().resource::<ValidKafkaCollector>();
+        collected.0.len() >= 3
+    });
+
+    assert!(
+        valid_received,
+        "Valid Kafka consumer group should receive all dispatched events"
+    );
+
+    let valid = app.world().resource::<ValidKafkaCollector>();
+    assert_eq!(
+        valid.0.len(),
+        3,
+        "Valid Kafka consumer group should observe every dispatched event"
+    );
+
+    let invalid = app.world().resource::<InvalidKafkaCollector>();
+    assert!(
+        invalid.0.is_empty(),
+        "Invalid Kafka consumer group must not receive any events"
+    );
+
+    let errors = app.world().resource::<ErrorCollector>();
+    assert!(
+        errors.0.iter().any(|error| {
+            error.error_type == EventBusErrorType::InvalidReadConfig
+                && error.backend.as_deref() == Some("kafka")
+                && error.topic == topic
+        }),
+        "Invalid Kafka reader should emit an InvalidReadConfig error"
+    );
 }
