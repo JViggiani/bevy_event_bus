@@ -1,416 +1,293 @@
 #![cfg(feature = "redis")]
 
-use bevy::prelude::*;
+use std::time::Duration;
+
+use bevy_event_bus::backends::event_bus_backend::{ReceiveOptions, SendOptions};
 use bevy_event_bus::config::redis::{
-    RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
+    RedisConsumerGroupSpec, RedisStreamSpec, RedisTopologyBuilder,
 };
-use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
-use integration_tests::utils::TestEvent;
+use bevy_event_bus::{EventBusBackend, RedisEventBusBackend};
+use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{
-    unique_consumer_group_membership, unique_topic, update_until,
+    unique_consumer_group_membership, unique_topic, wait_for_messages_in_group,
 };
-use integration_tests::utils::redis_setup;
+use integration_tests::utils::redis_setup::{self, SetupOptions};
+use serde_json::to_vec;
+use tokio::task;
 
-/// Test creating consumer groups programmatically
-#[test]
-fn test_create_consumer_group() {
-    let stream = unique_topic("test_create_cg");
-    let membership = unique_consumer_group_membership("test_cg");
+async fn init_backend<F>(configure: F) -> RedisEventBusBackend
+where
+    F: FnOnce(&mut RedisTopologyBuilder) + Send + 'static,
+{
+    task::spawn_blocking(move || {
+        let request = redis_setup::build_request(
+            SetupOptions::new().read_block_timeout(Duration::from_millis(25)),
+            configure,
+        );
+        let (backend, _context) =
+            redis_setup::setup(request).expect("Redis backend setup successful");
+        backend
+    })
+    .await
+    .expect("Redis backend setup task panicked")
+}
+
+#[tokio::test]
+async fn test_consumer_group_ready_after_connect() {
+    let stream = unique_topic("redis_consumer_ready");
+    let membership = unique_consumer_group_membership("redis_group_ready");
     let consumer_group = membership.group.clone();
     let consumer_name = membership.member.clone();
 
-    let stream_for_setup = stream.clone();
-    let consumer_group_for_setup = consumer_group.clone();
-    let consumer_for_setup = consumer_name.clone();
-    let (backend, _context) = redis_setup::prepare_backend(move |builder| {
+    let stream_for_config = stream.clone();
+    let group_for_config = consumer_group.clone();
+    let consumer_for_config = consumer_name.clone();
+
+    let mut backend = init_backend(move |builder| {
         builder
-            .add_stream(RedisStreamSpec::new(stream_for_setup.clone()))
+            .add_stream(RedisStreamSpec::new(stream_for_config.clone()))
             .add_consumer_group(RedisConsumerGroupSpec::new(
-                [stream_for_setup.clone()],
-                consumer_group_for_setup.clone(),
-                consumer_for_setup.clone(),
+                [stream_for_config.clone()],
+                group_for_config.clone(),
+                consumer_for_config.clone(),
+            ));
+    })
+    .await;
+
+    assert!(
+        backend.connect().await,
+        "Failed to connect Redis backend with configured topology"
+    );
+
+    let received = backend
+        .receive_serialized(
+            &stream,
+            ReceiveOptions::new().consumer_group(&consumer_group),
+        )
+        .await;
+    assert!(
+        received.is_empty(),
+        "Fresh consumer group should not yield messages without producers"
+    );
+
+    assert!(
+        backend.disconnect().await,
+        "Redis backend disconnect should succeed"
+    );
+}
+
+#[tokio::test]
+async fn test_receive_serialized_with_group() {
+    let stream = unique_topic("redis_receive_group");
+    let membership = unique_consumer_group_membership("redis_receive_group");
+    let consumer_group = membership.group.clone();
+    let consumer_name = membership.member.clone();
+
+    let stream_for_config = stream.clone();
+    let group_for_config = consumer_group.clone();
+    let consumer_for_config = consumer_name.clone();
+
+    let mut backend = init_backend(move |builder| {
+        builder
+            .add_stream(RedisStreamSpec::new(stream_for_config.clone()))
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream_for_config.clone()],
+                group_for_config.clone(),
+                consumer_for_config.clone(),
+            ));
+    })
+    .await;
+
+    assert!(backend.connect().await, "Failed to connect Redis backend");
+
+    let test_event = TestEvent {
+        message: "Test message for group consumption".to_string(),
+        value: 123,
+    };
+
+    let serialized = to_vec(&test_event).expect("Serialization should succeed");
+    assert!(
+        backend.try_send_serialized(&serialized, &stream, SendOptions::default()),
+        "Failed to send serialized message",
+    );
+    backend
+        .flush()
+        .await
+        .expect("Flush should succeed after sending message");
+
+    let received = wait_for_messages_in_group(&backend, &stream, &consumer_group, 1, 5_000).await;
+    assert!(
+        !received.is_empty(),
+        "Consumer group should receive at least one message",
+    );
+
+    let found_test_message = received.iter().any(|message| {
+        String::from_utf8_lossy(message).contains("Test message for group consumption")
+    });
+    assert!(
+        found_test_message,
+        "Consumer group should receive the test message",
+    );
+
+    assert!(
+        backend.disconnect().await,
+        "Redis backend disconnect should succeed"
+    );
+}
+
+#[tokio::test]
+async fn test_multiple_consumer_groups_independence() {
+    let stream = unique_topic("redis_multi_groups");
+    let membership1 = unique_consumer_group_membership("redis_group_1");
+    let membership2 = unique_consumer_group_membership("redis_group_2");
+
+    let stream_for_config = stream.clone();
+    let group1_for_config = membership1.group.clone();
+    let consumer1_for_config = membership1.member.clone();
+    let group2_for_config = membership2.group.clone();
+    let consumer2_for_config = membership2.member.clone();
+
+    let mut backend = init_backend(move |builder| {
+        builder
+            .add_stream(RedisStreamSpec::new(stream_for_config.clone()))
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream_for_config.clone()],
+                group1_for_config.clone(),
+                consumer1_for_config.clone(),
             ))
-            .add_event_single::<TestEvent>(stream_for_setup.clone());
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream_for_config.clone()],
+                group2_for_config.clone(),
+                consumer2_for_config.clone(),
+            ));
     })
-    .expect("Redis backend setup successful");
+    .await;
 
-    let mut app = App::new();
-    app.add_plugins(EventBusPlugins(backend));
+    assert!(backend.connect().await, "Failed to connect Redis backend");
 
-    // The consumer group should be created automatically during setup
-    // Just verify the app can use it without error
-    let stream_clone = stream.clone();
-    let group_clone = consumer_group.clone();
-    app.add_systems(Update, move |mut r: RedisEventReader<TestEvent>| {
-        let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()]);
-        let _ = r.read(&config).len(); // Should not panic
+    let test_event = TestEvent {
+        message: "Test message for multiple groups".to_string(),
+        value: 789,
+    };
+
+    let serialized = to_vec(&test_event).expect("Serialization should succeed");
+    assert!(
+        backend.try_send_serialized(&serialized, &stream, SendOptions::default()),
+        "Failed to send test message",
+    );
+    backend
+        .flush()
+        .await
+        .expect("Flush should succeed for multi-group test");
+
+    let received_group1 =
+        wait_for_messages_in_group(&backend, &stream, &membership1.group, 1, 5_000).await;
+    let received_group2 =
+        wait_for_messages_in_group(&backend, &stream, &membership2.group, 1, 5_000).await;
+
+    assert!(
+        !received_group1.is_empty(),
+        "Group 1 should receive messages",
+    );
+    assert!(
+        !received_group2.is_empty(),
+        "Group 2 should receive messages",
+    );
+
+    let found_in_group1 = received_group1.iter().any(|message| {
+        String::from_utf8_lossy(message).contains("Test message for multiple groups")
+    });
+    let found_in_group2 = received_group2.iter().any(|message| {
+        String::from_utf8_lossy(message).contains("Test message for multiple groups")
     });
 
-    app.update(); // Should complete without error
+    assert!(found_in_group1, "Group 1 should receive the test message");
+    assert!(found_in_group2, "Group 2 should receive the test message");
+
+    assert!(
+        backend.disconnect().await,
+        "Redis backend disconnect should succeed"
+    );
 }
 
-/// Test receiving events with consumer group
-#[test]
-fn test_receive_with_group() {
-    let stream = unique_topic("test_receive_with_group");
-    let membership = unique_consumer_group_membership("test_group_receive");
+#[tokio::test]
+async fn test_consumer_group_with_multiple_streams() {
+    let stream1 = unique_topic("redis_multi_stream_1");
+    let stream2 = unique_topic("redis_multi_stream_2");
+    let membership = unique_consumer_group_membership("redis_group_multi_streams");
     let consumer_group = membership.group.clone();
     let consumer_name = membership.member.clone();
 
-    let writer_db =
-        redis_setup::allocate_database().expect("Writer Redis backend setup successful");
-    let reader_db =
-        redis_setup::allocate_database().expect("Reader Redis backend setup successful");
+    let stream1_for_config = stream1.clone();
+    let stream2_for_config = stream2.clone();
+    let group_for_config = consumer_group.clone();
+    let consumer_for_config = consumer_name.clone();
 
-    let writer_stream = stream.clone();
-    let (writer_backend, _context1) = redis_setup::with_database(writer_db, || {
-        redis_setup::prepare_backend(move |builder| {
-            builder
-                .add_stream(RedisStreamSpec::new(writer_stream.clone()))
-                .add_event_single::<TestEvent>(writer_stream.clone());
-        })
+    let mut backend = init_backend(move |builder| {
+        builder
+            .add_stream(RedisStreamSpec::new(stream1_for_config.clone()))
+            .add_stream(RedisStreamSpec::new(stream2_for_config.clone()))
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream1_for_config.clone(), stream2_for_config.clone()],
+                group_for_config.clone(),
+                consumer_for_config.clone(),
+            ));
     })
-    .expect("Writer Redis backend setup successful");
+    .await;
 
-    let reader_stream = stream.clone();
-    let reader_group = consumer_group.clone();
-    let reader_consumer = consumer_name.clone();
-    let (reader_backend, _context2) = redis_setup::with_database(reader_db, || {
-        redis_setup::prepare_backend(move |builder| {
-            builder
-                .add_stream(RedisStreamSpec::new(reader_stream.clone()))
-                .add_consumer_group(RedisConsumerGroupSpec::new(
-                    [reader_stream.clone()],
-                    reader_group.clone(),
-                    reader_consumer.clone(),
-                ))
-                .add_event_single::<TestEvent>(reader_stream.clone());
-        })
-    })
-    .expect("Reader Redis backend setup successful");
+    assert!(backend.connect().await, "Failed to connect Redis backend");
 
-    // Writer app with separate backend
-    let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(writer_backend));
+    let event_stream1 = TestEvent {
+        message: "Message to stream 1".to_string(),
+        value: 111,
+    };
+    let event_stream2 = TestEvent {
+        message: "Message to stream 2".to_string(),
+        value: 222,
+    };
 
-    // Reader app with separate backend
-    let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(reader_backend));
+    let serialized1 = to_vec(&event_stream1).expect("Serialization should succeed for stream1");
+    let serialized2 = to_vec(&event_stream2).expect("Serialization should succeed for stream2");
 
-    #[derive(Resource, Default)]
-    struct Collected(Vec<TestEvent>);
-    reader.insert_resource(Collected::default());
-
-    // Send event
-    let stream_clone = stream.clone();
-    writer.add_systems(Update, move |mut w: RedisEventWriter| {
-        let config = RedisProducerConfig::new(stream_clone.clone());
-        w.write(
-            &config,
-            TestEvent {
-                message: "group_test".to_string(),
-                value: 42,
-            },
-        );
-    });
-
-    // Receive with consumer group
-    let stream_clone = stream.clone();
-    let group_clone = consumer_group.clone();
-    reader.add_systems(
-        Update,
-        move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<Collected>| {
-            let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()]);
-            for wrapper in r.read(&config) {
-                c.0.push(wrapper.event().clone());
-            }
-        },
-    );
-
-    writer.update();
-
-    let (received, _) = update_until(&mut reader, 5000, |app| {
-        !app.world().resource::<Collected>().0.is_empty()
-    });
-
-    // With separate backends, reader won't receive events from writer
-    assert!(!received, "Should not receive events from separate backend");
-    let collected = reader.world().resource::<Collected>();
-    assert_eq!(
-        collected.0.len(),
-        0,
-        "No events should be received with separate backends"
-    );
-}
-
-/// Test multiple consumer groups independence
-#[test]
-fn test_multiple_consumer_groups_independence() {
-    let stream = unique_topic("test_multi_groups");
-    let membership1 = unique_consumer_group_membership("test_group_1");
-    let membership2 = unique_consumer_group_membership("test_group_2");
-    let group1 = membership1.group.clone();
-    let group2 = membership2.group.clone();
-
-    let reader1_db = redis_setup::allocate_database().expect("Redis backend1 setup successful");
-    let reader2_db = redis_setup::allocate_database().expect("Redis backend2 setup successful");
-    let writer_db =
-        redis_setup::allocate_database().expect("Writer Redis backend setup successful");
-
-    let reader1_stream = stream.clone();
-    let reader1_group = group1.clone();
-    let reader1_consumer = membership1.member.clone();
-    let (backend1, _context1) = redis_setup::with_database(reader1_db, || {
-        redis_setup::prepare_backend(move |builder| {
-            builder
-                .add_stream(RedisStreamSpec::new(reader1_stream.clone()))
-                .add_consumer_group(RedisConsumerGroupSpec::new(
-                    [reader1_stream.clone()],
-                    reader1_group.clone(),
-                    reader1_consumer.clone(),
-                ))
-                .add_event_single::<TestEvent>(reader1_stream.clone());
-        })
-    })
-    .expect("Redis backend1 setup successful");
-
-    let reader2_stream = stream.clone();
-    let reader2_group = group2.clone();
-    let reader2_consumer = membership2.member.clone();
-    let (backend2, _context2) = redis_setup::with_database(reader2_db, || {
-        redis_setup::prepare_backend(move |builder| {
-            builder
-                .add_stream(RedisStreamSpec::new(reader2_stream.clone()))
-                .add_consumer_group(RedisConsumerGroupSpec::new(
-                    [reader2_stream.clone()],
-                    reader2_group.clone(),
-                    reader2_consumer.clone(),
-                ))
-                .add_event_single::<TestEvent>(reader2_stream.clone());
-        })
-    })
-    .expect("Redis backend2 setup successful");
-
-    let writer_stream = stream.clone();
-    let (writer_backend, _context_writer) = redis_setup::with_database(writer_db, || {
-        redis_setup::prepare_backend(move |builder| {
-            builder
-                .add_stream(RedisStreamSpec::new(writer_stream.clone()))
-                .add_event_single::<TestEvent>(writer_stream.clone());
-        })
-    })
-    .expect("Writer Redis backend setup successful");
-
-    let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(writer_backend));
-
-    let mut reader1 = App::new();
-    reader1.add_plugins(EventBusPlugins(backend1));
-
-    let mut reader2 = App::new();
-    reader2.add_plugins(EventBusPlugins(backend2));
-
-    #[derive(Resource, Default)]
-    struct Collected(Vec<TestEvent>);
-    reader1.insert_resource(Collected::default());
-    reader2.insert_resource(Collected::default());
-
-    // Send one event
-    let stream_clone = stream.clone();
-    writer.add_systems(Update, move |mut w: RedisEventWriter| {
-        let config = RedisProducerConfig::new(stream_clone.clone());
-        w.write(
-            &config,
-            TestEvent {
-                message: "shared_event".to_string(),
-                value: 999,
-            },
-        );
-    });
-
-    // Reader1 with group1
-    let s1 = stream.clone();
-    let g1 = group1.clone();
-    reader1.add_systems(
-        Update,
-        move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<Collected>| {
-            let config = RedisConsumerConfig::new(g1.clone(), [s1.clone()]);
-            for wrapper in r.read(&config) {
-                c.0.push(wrapper.event().clone());
-            }
-        },
-    );
-
-    // Reader2 with group2
-    let s2 = stream.clone();
-    let g2 = group2.clone();
-    reader2.add_systems(
-        Update,
-        move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<Collected>| {
-            let config = RedisConsumerConfig::new(g2.clone(), [s2.clone()]);
-            for wrapper in r.read(&config) {
-                c.0.push(wrapper.event().clone());
-            }
-        },
-    );
-
-    writer.update();
-
-    // Both groups should receive the same event independently
-    let (received1, _) = update_until(&mut reader1, 5000, |app| {
-        !app.world().resource::<Collected>().0.is_empty()
-    });
-
-    let (received2, _) = update_until(&mut reader2, 5000, |app| {
-        !app.world().resource::<Collected>().0.is_empty()
-    });
-
-    // With separate backends, readers won't receive events from writer
     assert!(
-        !received1,
-        "Group1 should not receive events from separate backend"
+        backend.try_send_serialized(&serialized1, &stream1, SendOptions::default()),
+        "Failed to send message to stream 1",
     );
     assert!(
-        !received2,
-        "Group2 should not receive events from separate backend"
+        backend.try_send_serialized(&serialized2, &stream2, SendOptions::default()),
+        "Failed to send message to stream 2",
+    );
+    backend
+        .flush()
+        .await
+        .expect("Flush should succeed for multi-stream test");
+
+    let received_stream1 =
+        wait_for_messages_in_group(&backend, &stream1, &consumer_group, 1, 10_000).await;
+    let received_stream2 =
+        wait_for_messages_in_group(&backend, &stream2, &consumer_group, 1, 10_000).await;
+
+    assert!(
+        !received_stream1.is_empty(),
+        "Consumer group should receive messages from stream 1",
+    );
+    assert!(
+        !received_stream2.is_empty(),
+        "Consumer group should receive messages from stream 2",
     );
 
-    let collected1 = reader1.world().resource::<Collected>();
-    let collected2 = reader2.world().resource::<Collected>();
+    let found_stream1_message = received_stream1
+        .iter()
+        .any(|message| String::from_utf8_lossy(message).contains("Message to stream 1"));
+    let found_stream2_message = received_stream2
+        .iter()
+        .any(|message| String::from_utf8_lossy(message).contains("Message to stream 2"));
 
-    // Both should have no events due to independent operation
-    assert_eq!(
-        collected1.0.len(),
-        0,
-        "No events should be received with separate backends"
-    );
-    assert_eq!(
-        collected2.0.len(),
-        0,
-        "No events should be received with separate backends"
-    );
-}
+    assert!(found_stream1_message, "Stream 1 message should be received");
+    assert!(found_stream2_message, "Stream 2 message should be received");
 
-/// Test consumer group with multiple streams
-#[test]
-fn test_consumer_group_with_multiple_streams() {
-    let stream1 = unique_topic("test_multi_stream_1");
-    let stream2 = unique_topic("test_multi_stream_2");
-    let membership = unique_consumer_group_membership("test_group_multi_streams");
-    let consumer_group = membership.group.clone();
-    let consumer_name = membership.member.clone();
-
-    let reader_db =
-        redis_setup::allocate_database().expect("Reader Redis backend setup successful");
-    let writer_db =
-        redis_setup::allocate_database().expect("Writer Redis backend setup successful");
-
-    let reader_stream1 = stream1.clone();
-    let reader_stream2 = stream2.clone();
-    let reader_group = consumer_group.clone();
-    let reader_consumer = consumer_name.clone();
-    let (reader_backend, _context1) = redis_setup::with_database(reader_db, || {
-        redis_setup::prepare_backend(move |builder| {
-            builder
-                .add_stream(RedisStreamSpec::new(reader_stream1.clone()))
-                .add_stream(RedisStreamSpec::new(reader_stream2.clone()))
-                .add_consumer_group(RedisConsumerGroupSpec::new(
-                    [reader_stream1.clone(), reader_stream2.clone()],
-                    reader_group.clone(),
-                    reader_consumer.clone(),
-                ))
-                .add_event_single::<TestEvent>(reader_stream1.clone())
-                .add_event_single::<TestEvent>(reader_stream2.clone());
-        })
-    })
-    .expect("Reader Redis backend setup successful");
-
-    let writer_stream1 = stream1.clone();
-    let writer_stream2 = stream2.clone();
-    let (writer_backend, _context2) = redis_setup::with_database(writer_db, || {
-        redis_setup::prepare_backend(move |builder| {
-            builder
-                .add_stream(RedisStreamSpec::new(writer_stream1.clone()))
-                .add_stream(RedisStreamSpec::new(writer_stream2.clone()))
-                .add_event_single::<TestEvent>(writer_stream1.clone())
-                .add_event_single::<TestEvent>(writer_stream2.clone());
-        })
-    })
-    .expect("Writer Redis backend setup successful");
-
-    let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(writer_backend));
-
-    let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(reader_backend));
-
-    #[derive(Resource, Default)]
-    struct Collected {
-        stream1_events: Vec<TestEvent>,
-        stream2_events: Vec<TestEvent>,
-    }
-    reader.insert_resource(Collected::default());
-
-    // Send events to both streams
-    let s1 = stream1.clone();
-    let s2 = stream2.clone();
-    writer.add_systems(Update, move |mut w: RedisEventWriter| {
-        let config1 = RedisProducerConfig::new(s1.clone());
-        let config2 = RedisProducerConfig::new(s2.clone());
-        w.write(
-            &config1,
-            TestEvent {
-                message: "from_stream1".to_string(),
-                value: 1,
-            },
-        );
-        w.write(
-            &config2,
-            TestEvent {
-                message: "from_stream2".to_string(),
-                value: 2,
-            },
-        );
-    });
-
-    // Read from both streams with same consumer group
-    let s1_clone = stream1.clone();
-    let s2_clone = stream2.clone();
-    let group_clone = consumer_group.clone();
-    reader.add_systems(
-        Update,
-        move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<Collected>| {
-            let config1 = RedisConsumerConfig::new(group_clone.clone(), [s1_clone.clone()]);
-            let config2 = RedisConsumerConfig::new(group_clone.clone(), [s2_clone.clone()]);
-
-            for wrapper in r.read(&config1) {
-                c.stream1_events.push(wrapper.event().clone());
-            }
-
-            for wrapper in r.read(&config2) {
-                c.stream2_events.push(wrapper.event().clone());
-            }
-        },
-    );
-
-    writer.update();
-
-    let (received, _) = update_until(&mut reader, 5000, |app| {
-        let c = app.world().resource::<Collected>();
-        c.stream1_events.len() >= 1 && c.stream2_events.len() >= 1
-    });
-
-    // With separate backends, reader won't receive events from writer
-    assert!(!received, "Should not receive events from separate backend");
-    let collected = reader.world().resource::<Collected>();
-    assert_eq!(
-        collected.stream1_events.len(),
-        0,
-        "No events should be received from stream1 with separate backends"
-    );
-    assert_eq!(
-        collected.stream2_events.len(),
-        0,
-        "No events should be received from stream2 with separate backends"
+    assert!(
+        backend.disconnect().await,
+        "Redis backend disconnect should succeed"
     );
 }

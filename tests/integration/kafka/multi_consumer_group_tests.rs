@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use bevy_event_bus::config::kafka::{
     KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec, KafkaTopologyBuilder,
 };
@@ -66,6 +64,19 @@ async fn test_consumer_group_ready_after_connect() {
         consumer_ready,
         "Preconfigured consumer group should become ready without dynamic creation"
     );
+
+    let received = backend
+        .receive_serialized(&topic, ReceiveOptions::new().consumer_group(&group_id))
+        .await;
+    assert!(
+        received.is_empty(),
+        "Fresh consumer group should not yield messages without producers"
+    );
+
+    assert!(
+        backend.disconnect().await,
+        "Kafka backend disconnect should succeed"
+    );
 }
 
 #[tokio::test]
@@ -107,6 +118,10 @@ async fn test_receive_serialized_with_group() {
         "Failed to send message",
     );
 
+    <KafkaEventBusBackend as EventBusBackend>::flush(&backend)
+        .await
+        .expect("Flush should succeed after sending message");
+
     let received = wait_for_messages_in_group(&backend, &topic, &group_id, 1, 5_000).await;
     assert!(
         !received.is_empty(),
@@ -119,6 +134,11 @@ async fn test_receive_serialized_with_group() {
     assert!(
         found_test_message,
         "Should have received the test message we sent",
+    );
+
+    assert!(
+        backend.disconnect().await,
+        "Kafka backend disconnect should succeed"
     );
 }
 
@@ -310,6 +330,10 @@ async fn test_multiple_consumer_groups_independence() {
         "Failed to send test message",
     );
 
+    <KafkaEventBusBackend as EventBusBackend>::flush(&backend)
+        .await
+        .expect("Flush should succeed for multi-group test");
+
     let received1 = wait_for_messages_in_group(&backend, &topic, &group_id1, 1, 5_000).await;
     let received2 = wait_for_messages_in_group(&backend, &topic, &group_id2, 1, 5_000).await;
 
@@ -336,6 +360,11 @@ async fn test_multiple_consumer_groups_independence() {
     assert!(
         found_in_group2,
         "Group 2 should have received the test message",
+    );
+
+    assert!(
+        backend.disconnect().await,
+        "Kafka backend disconnect should succeed"
     );
 }
 
@@ -402,9 +431,9 @@ async fn test_consumer_group_with_multiple_topics() {
         backend.try_send_serialized(serialized2.as_bytes(), &topic2, SendOptions::default(),),
         "Failed to send to topic2",
     );
-    backend
-        .flush(Duration::from_secs(5))
-        .expect("Failed to flush after sending multi-topic messages");
+    <KafkaEventBusBackend as EventBusBackend>::flush(&backend)
+        .await
+        .expect("Flush should succeed after sending multi-topic messages");
 
     let received_topic1 = wait_for_messages_in_group(&backend, &topic1, &group_id, 1, 10_000).await;
     let received_topic2 = wait_for_messages_in_group(&backend, &topic2, &group_id, 1, 10_000).await;
@@ -432,5 +461,10 @@ async fn test_consumer_group_with_multiple_topics() {
     assert!(
         found_topic2_message,
         "Should have received message from topic 2",
+    );
+
+    assert!(
+        backend.disconnect().await,
+        "Kafka backend disconnect should succeed"
     );
 }
