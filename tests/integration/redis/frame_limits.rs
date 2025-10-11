@@ -4,33 +4,23 @@ use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
-use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
+use bevy_event_bus::{EventBusConsumerConfig, EventBusPlugins, RedisEventReader, RedisEventWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
-    run_app_updates, unique_consumer_group_membership, unique_topic,
+    unique_consumer_group_membership, unique_topic, update_until,
 };
 use integration_tests::utils::redis_setup;
-
-#[derive(Resource, Default)]
-struct FrameTracker {
-    events_per_frame: Vec<usize>,
-    total_events: usize,
-}
 
 #[test]
 fn frame_limit_spreads_drain() {
     let stream = unique_topic("frame_limits");
     let membership = unique_consumer_group_membership("frame_limit_group");
-    let consumer_group = membership.group.clone();
-    let consumer_name = membership.member.clone();
 
-    let writer_db =
-        redis_setup::allocate_database().expect("Writer Redis backend setup successful");
-    let reader_db =
-        redis_setup::allocate_database().expect("Reader Redis backend setup successful");
+    let database =
+        redis_setup::allocate_database().expect("Redis database allocation for frame limit test");
 
     let writer_stream = stream.clone();
-    let (backend_writer, _context1) = redis_setup::with_database(writer_db, || {
+    let (backend_writer, _context_writer) = redis_setup::with_database(database, || {
         redis_setup::prepare_backend(move |builder| {
             builder
                 .add_stream(RedisStreamSpec::new(writer_stream.clone()))
@@ -40,129 +30,110 @@ fn frame_limit_spreads_drain() {
     .expect("Writer Redis backend setup successful");
 
     let reader_stream = stream.clone();
-    let reader_group = consumer_group.clone();
-    let reader_consumer = consumer_name.clone();
-    let (backend_reader, _context2) = redis_setup::with_database(reader_db, || {
+    let reader_group = membership.group.clone();
+    let reader_consumer = membership.member.clone();
+    let (backend_reader, _context_reader) = redis_setup::with_database(database, || {
         redis_setup::prepare_backend(move |builder| {
             builder
                 .add_stream(RedisStreamSpec::new(reader_stream.clone()))
-                .add_consumer_group(RedisConsumerGroupSpec::new(
-                    [reader_stream.clone()],
-                    reader_group.clone(),
-                    reader_consumer.clone(),
-                ))
+                .add_consumer_group(
+                    RedisConsumerGroupSpec::new(
+                        [reader_stream.clone()],
+                        reader_group.clone(),
+                        reader_consumer.clone(),
+                    )
+                    .manual_ack(true),
+                )
                 .add_event_single::<TestEvent>(reader_stream.clone());
         })
     })
     .expect("Reader Redis backend setup successful");
 
-    // Reader app with frame limit (start first to ensure it's ready)
-    let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(backend_reader));
-    reader.insert_resource(FrameTracker::default());
-
-    // Configure frame limiting
-    reader.insert_resource(bevy_event_bus::EventBusConsumerConfig {
-        max_events_per_frame: Some(5),
-        max_drain_millis: None,
-    });
-
-    #[derive(Resource, Clone)]
-    struct StreamInfo(String);
-
-    #[derive(Resource, Clone)]
-    struct ConsumerGroupInfo {
-        group: String,
-    }
-
-    reader.insert_resource(StreamInfo(stream.clone()));
-    reader.insert_resource(ConsumerGroupInfo {
-        group: consumer_group.clone(),
-    });
-
-    fn reader_system(
-        mut r: RedisEventReader<TestEvent>,
-        mut tracker: ResMut<FrameTracker>,
-        stream: Res<StreamInfo>,
-        group: Res<ConsumerGroupInfo>,
-    ) {
-        let config = RedisConsumerConfig::new(group.group.clone(), [stream.0.clone()]);
-
-        let events = r.read(&config);
-        let frame_events = events.len();
-        if frame_events > 0 {
-            println!(
-                "Read {} events in this frame (total so far: {})",
-                frame_events,
-                tracker.total_events + frame_events
-            );
-        }
-        tracker.events_per_frame.push(frame_events);
-        tracker.total_events += frame_events;
-    }
-    reader.add_systems(Update, reader_system);
-
-    // Writer app - sends many events at once
     let mut writer = App::new();
     writer.add_plugins(EventBusPlugins(backend_writer));
 
     #[derive(Resource, Clone)]
-    struct WriterData {
-        stream: String,
-        sent: bool,
-    }
-    writer.insert_resource(WriterData {
-        stream: stream.clone(),
-        sent: false,
-    });
+    struct Payload(Vec<TestEvent>, String);
 
-    fn writer_system(mut w: RedisEventWriter, mut data: ResMut<WriterData>) {
-        if !data.sent {
-            data.sent = true;
-            let config = RedisProducerConfig::new(data.stream.clone());
-            println!("Writing 20 events to stream: {}", data.stream);
-            // Send 20 events in one frame
-            for i in 0..20 {
-                w.write(
-                    &config,
-                    TestEvent {
-                        message: format!("bulk_event_{}", i),
-                        value: i,
-                    },
-                );
-            }
-            println!("Finished writing 20 events");
+    let events_to_send: Vec<TestEvent> = (0..15)
+        .map(|i| TestEvent {
+            message: format!("v{i}"),
+            value: i,
+        })
+        .collect();
+
+    writer.insert_resource(Payload(events_to_send.clone(), stream.clone()));
+
+    fn writer_system(mut writer: RedisEventWriter, payload: Res<Payload>, mut sent: Local<bool>) {
+        if *sent {
+            return;
+        }
+        *sent = true;
+        let config = RedisProducerConfig::new(payload.1.clone());
+        for event in &payload.0 {
+            writer.write(&config, event.clone());
         }
     }
+
     writer.add_systems(Update, writer_system);
-    // Send events
     writer.update();
 
-    // Process events across multiple frames due to frame limit
-    println!("Running 10 reader frames...");
-    run_app_updates(&mut reader, 10);
+    let mut reader = App::new();
+    reader.add_plugins(EventBusPlugins(backend_reader));
+    reader.insert_resource(EventBusConsumerConfig {
+        max_events_per_frame: Some(5),
+        max_drain_millis: None,
+    });
 
-    let tracker = reader.world().resource::<FrameTracker>();
-    println!(
-        "Final results: total_events={}, frames_with_events={}",
-        tracker.total_events,
-        tracker.events_per_frame.iter().filter(|&&c| c > 0).count()
-    );
+    #[derive(Resource, Default)]
+    struct Collected(Vec<TestEvent>);
 
-    // With separate backends, reader won't receive events from writer
-    assert_eq!(
-        tracker.total_events, 0,
-        "Should not receive events from separate backend"
-    );
+    reader.insert_resource(Collected::default());
 
-    // Verify frame limiting configuration is applied (no events to process)
-    let frames_with_events = tracker
-        .events_per_frame
-        .iter()
-        .filter(|&&count| count > 0)
-        .count();
-    assert_eq!(
-        frames_with_events, 0,
-        "No frames should have events with separate backends"
-    );
+    #[derive(Resource, Clone)]
+    struct Stream(String);
+    #[derive(Resource, Clone)]
+    struct Group(String);
+
+    reader.insert_resource(Stream(stream));
+    reader.insert_resource(Group(membership.group));
+
+    fn reader_system(
+        mut reader: RedisEventReader<TestEvent>,
+        stream: Res<Stream>,
+        group: Res<Group>,
+        mut collected: ResMut<Collected>,
+    ) {
+        let config = RedisConsumerConfig::new(group.0.clone(), [stream.0.clone()]);
+        for wrapper in reader.read(&config) {
+            reader
+                .acknowledge(&wrapper)
+                .expect("Redis acknowledge should succeed under frame limit test");
+            collected.0.push(wrapper.event().clone());
+        }
+    }
+
+    reader.add_systems(Update, reader_system);
+
+    let (ok, _frames) = update_until(&mut reader, 5_000, |app| {
+        let collected = app.world().resource::<Collected>();
+        collected.0.len() >= 15
+    });
+
+    assert!(ok, "Timed out waiting for all events under frame limit");
+    let collected = reader.world().resource::<Collected>();
+    assert_eq!(collected.0.len(), 15);
+
+    for expected in &events_to_send {
+        let count = collected
+            .0
+            .iter()
+            .filter(|event| event.message == expected.message && event.value == expected.value)
+            .count();
+        assert_eq!(
+            count, 1,
+            "Event {:?} appeared {} times, expected exactly 1",
+            expected, count
+        );
+    }
 }
