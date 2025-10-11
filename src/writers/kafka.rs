@@ -7,6 +7,7 @@ use bevy_event_bus::backends::{
     event_bus_backend::{BackendSpecificSendOptions, SendOptions},
 };
 use bevy_event_bus::config::{EventBusConfig, kafka::KafkaProducerConfig};
+use bevy_event_bus::resources::ProvisionedTopology;
 use bevy_event_bus::{BusEvent, EventBusError, EventBusErrorType, runtime};
 
 use super::{BusEventWriter, EventBusErrorQueue};
@@ -44,6 +45,7 @@ impl std::error::Error for KafkaWriterError {}
 pub struct KafkaEventWriter<'w> {
     backend: Option<Res<'w, EventBusBackendResource>>,
     error_queue: Res<'w, EventBusErrorQueue>,
+    topology: Option<Res<'w, ProvisionedTopology>>,
 }
 
 impl<'w> KafkaEventWriter<'w> {
@@ -64,6 +66,46 @@ impl<'w> KafkaEventWriter<'w> {
             kafka.flush(timeout).map_err(KafkaWriterError::backend)
         } else {
             runtime::block_on(backend.flush()).map_err(KafkaWriterError::backend)
+        }
+    }
+
+    fn invalid_topics(&self, config: &KafkaProducerConfig) -> Option<Vec<String>> {
+        let topology = self
+            .topology
+            .as_ref()
+            .and_then(|registry| registry.kafka())?;
+        let provisioned = topology.topic_names();
+
+        let invalid: Vec<String> = config
+            .topics()
+            .iter()
+            .filter(|topic| !provisioned.contains(*topic))
+            .cloned()
+            .collect();
+
+        if invalid.is_empty() {
+            None
+        } else {
+            Some(invalid)
+        }
+    }
+
+    fn report_invalid_topics<T: BusEvent + Event>(&self, topics: &[String], event: &T) {
+        for topic in topics {
+            let reason = format!("Topic '{}' is not provisioned in the Kafka topology", topic);
+            let error_event = EventBusError::immediate(
+                topic.clone(),
+                EventBusErrorType::InvalidWriteConfig,
+                reason.clone(),
+                event.clone(),
+            );
+            self.error_queue.add_error(error_event);
+            tracing::warn!(
+                backend = "kafka",
+                topic = %topic,
+                reason = %reason,
+                "Kafka writer configuration invalid"
+            );
         }
     }
 
@@ -97,6 +139,13 @@ where
     where
         C: EventBusConfig + Any,
     {
+        if let Some(kafka_config) = (config as &dyn Any).downcast_ref::<KafkaProducerConfig>() {
+            if let Some(invalid_topics) = self.invalid_topics(kafka_config) {
+                self.report_invalid_topics(&invalid_topics, &event);
+                return;
+            }
+        }
+
         let options = Self::resolve_send_options(config);
 
         if let Some(backend_res) = &self.backend {
@@ -145,6 +194,15 @@ where
         C: EventBusConfig + Any,
         I: IntoIterator<Item = T>,
     {
+        if let Some(kafka_config) = (config as &dyn Any).downcast_ref::<KafkaProducerConfig>() {
+            if let Some(invalid_topics) = self.invalid_topics(kafka_config) {
+                for event in events.into_iter() {
+                    self.report_invalid_topics(&invalid_topics, &event);
+                }
+                return;
+            }
+        }
+
         let options = Self::resolve_send_options(config);
 
         if let Some(backend_res) = &self.backend {
@@ -190,5 +248,67 @@ where
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::ecs::event::EventReader;
+    use bevy::ecs::system::SystemState;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize, Event)]
+    struct TestEvent {
+        value: u32,
+    }
+
+    #[test]
+    fn invalid_topic_enqueues_error() {
+        let mut world = World::default();
+        world.insert_resource(EventBusErrorQueue::default());
+        world.insert_resource(Events::<EventBusError<TestEvent>>::default());
+
+        let mut topology = ProvisionedTopology::default();
+        let mut builder = bevy_event_bus::config::kafka::KafkaTopologyConfig::builder();
+        builder.add_topic(bevy_event_bus::config::kafka::KafkaTopicSpec::new("known"));
+        topology.record_kafka(builder.build());
+        world.insert_resource(topology);
+
+        let mut state = SystemState::<KafkaEventWriter>::new(&mut world);
+        {
+            let mut writer = state.get_mut(&mut world);
+            let config = KafkaProducerConfig::new(["unknown"]);
+            let event = TestEvent { value: 42 };
+            writer.write(&config, event);
+        }
+        state.apply(&mut world);
+
+        let pending = {
+            let queue = world.resource::<EventBusErrorQueue>();
+            queue.drain_pending()
+        };
+        assert_eq!(pending.len(), 1);
+        for job in pending {
+            job(&mut world);
+        }
+
+        {
+            if let Some(mut events) = world.get_resource_mut::<Events<EventBusError<TestEvent>>>() {
+                events.update();
+            }
+        }
+
+        let mut reader_state =
+            SystemState::<EventReader<EventBusError<TestEvent>>>::new(&mut world);
+        let mut event_reader = reader_state.get_mut(&mut world);
+        let collected: Vec<_> = event_reader.read().cloned().collect();
+        reader_state.apply(&mut world);
+
+        assert_eq!(collected.len(), 1);
+        let error = &collected[0];
+        assert_eq!(error.topic, "unknown");
+        assert_eq!(error.error_type, EventBusErrorType::InvalidWriteConfig);
+        assert!(error.error_message.contains("not provisioned"));
     }
 }
