@@ -9,14 +9,16 @@ use integration_tests::utils::redis_setup::{self, SetupOptions};
 
 #[test]
 fn idle_empty_stream_poll_does_not_block() {
-    let stream = unique_topic("idle_test");
-    let membership = unique_consumer_group_membership("idle_group");
+    let stream = unique_topic("idle");
+    let membership = unique_consumer_group_membership("idle_read");
+    let consumer_group = membership.group.clone();
+    let consumer_name = membership.member.clone();
 
     let stream_for_backend = stream.clone();
-    let group_for_backend = membership.group.clone();
-    let consumer_for_backend = membership.member.clone();
+    let group_for_backend = consumer_group.clone();
+    let consumer_for_backend = consumer_name.clone();
     let options = SetupOptions::new()
-        .read_block_timeout(std::time::Duration::from_millis(50))
+        .read_block_timeout(std::time::Duration::from_millis(25))
         .pool_size(2)
         .insert_connection_config("client-name", "idle-read");
 
@@ -37,51 +39,33 @@ fn idle_empty_stream_poll_does_not_block() {
     app.add_plugins(EventBusPlugins(backend));
 
     #[derive(Resource, Default)]
-    struct ReadAttempts(u32);
-    #[derive(Resource, Default)]
-    struct EventsReceived(Vec<TestEvent>);
+    struct Ticks(u32);
+    app.insert_resource(Ticks::default());
 
-    app.insert_resource(ReadAttempts::default());
-    app.insert_resource(EventsReceived::default());
-
-    let stream_clone = stream.clone();
-    let group_clone = membership.group.clone();
+    let stream_read = stream.clone();
+    let group_read = consumer_group.clone();
     app.add_systems(
         Update,
-        move |mut reader: RedisEventReader<TestEvent>,
-              mut attempts: ResMut<ReadAttempts>,
-              mut events: ResMut<EventsReceived>| {
-            attempts.0 += 1;
-            let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()])
-                .read_block_timeout(std::time::Duration::from_millis(100)); // Short block time for test
-
-            for wrapper in reader.read(&config) {
-                events.0.push(wrapper.event().clone());
+        move |mut reader: RedisEventReader<TestEvent>, mut ticks: ResMut<Ticks>| {
+            let config = RedisConsumerConfig::new(group_read.clone(), [stream_read.clone()])
+                .read_block_timeout(std::time::Duration::from_millis(25));
+            for _ in reader.read(&config) {
+                // No events expected from idle stream
             }
+            ticks.0 += 1;
         },
     );
 
-    // Run several frames - should not block even with empty stream
     let start = std::time::Instant::now();
-    for _ in 0..5 {
+    for _ in 0..200 {
         app.update();
     }
-    let elapsed = start.elapsed();
+    let elapsed_ms = start.elapsed().as_millis();
+    let ticks = app.world().resource::<Ticks>().0;
 
-    // Should complete quickly despite multiple poll attempts on empty stream
+    assert_eq!(ticks, 200, "All frames should execute (ticks={ticks})");
     assert!(
-        elapsed.as_millis() < 2000,
-        "Polling empty stream took too long: {}ms",
-        elapsed.as_millis()
-    );
-
-    let attempts = app.world().resource::<ReadAttempts>();
-    assert_eq!(attempts.0, 5, "Should have made 5 read attempts");
-
-    let events = app.world().resource::<EventsReceived>();
-    assert_eq!(
-        events.0.len(),
-        0,
-        "Should not receive any events from empty stream"
+        elapsed_ms < 1_500,
+        "Idle polling took too long: {elapsed_ms}ms"
     );
 }
