@@ -1,5 +1,6 @@
 pub mod background_queue_tests;
 pub mod basic;
+pub mod complex_topology;
 pub mod configuration_tests;
 pub mod consumer_group_semantics;
 pub mod dual_writer_bridge;

@@ -1,6 +1,7 @@
 pub mod background_queue_tests;
 pub mod basic;
 pub mod broadcast_separate_backends;
+pub mod complex_topology;
 pub mod configuration_tests;
 pub mod consumer_group_semantics;
 pub mod consumer_lag_tests;
