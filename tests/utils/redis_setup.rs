@@ -26,7 +26,6 @@ const WAIT_RETRIES: usize = 50;
 const WAIT_BASE_DELAY_MS: u64 = 25;
 const WAIT_MAX_DELAY_MS: u64 = 400;
 const MAX_SHARED_DATABASES: usize = 512;
-
 #[derive(Clone, Debug)]
 struct ContainerInfo {
     id: Option<String>,

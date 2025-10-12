@@ -1,6 +1,4 @@
-use bevy_event_bus::config::kafka::{
-    KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec, KafkaTopologyBuilder,
-};
+use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
 use bevy_event_bus::{
     EventBusBackend, KafkaEventBusBackend,
     backends::event_bus_backend::{
@@ -11,26 +9,8 @@ use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{
     unique_consumer_group, unique_topic, wait_for_consumer_group_ready, wait_for_messages_in_group,
 };
-use integration_tests::utils::kafka_setup;
-
-async fn init_backend<F>(offset: &str, configure: F) -> (KafkaEventBusBackend, String)
-where
-    F: FnOnce(&mut KafkaTopologyBuilder) + Send + 'static,
-{
-    let offset_owned = offset.to_string();
-    let options = match offset_owned.as_str() {
-        "earliest" => kafka_setup::SetupOptions::earliest(),
-        "latest" => kafka_setup::SetupOptions::latest(),
-        other => kafka_setup::SetupOptions::new().auto_offset_reset(other.to_string()),
-    };
-
-    tokio::task::spawn_blocking(move || {
-        let request = kafka_setup::build_request(options, configure);
-        kafka_setup::prepare_backend(request)
-    })
-    .await
-    .expect("setup panicked")
-}
+use integration_tests::utils::kafka_setup::{self, SetupOptions};
+use tokio::task;
 #[tokio::test]
 async fn test_consumer_group_ready_after_connect() {
     let topic = unique_topic("test_create_consumer_group");
@@ -39,7 +19,7 @@ async fn test_consumer_group_ready_after_connect() {
     let topic_for_config = topic.clone();
     let group_for_config = group_id.clone();
 
-    let (mut backend, _bootstrap) = init_backend("earliest", move |builder| {
+    let request = kafka_setup::build_request(SetupOptions::earliest(), move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic_for_config.clone())
@@ -51,8 +31,11 @@ async fn test_consumer_group_ready_after_connect() {
                 KafkaConsumerGroupSpec::new([topic_for_config.clone()])
                     .initial_offset(KafkaInitialOffset::Earliest),
             );
-    })
-    .await;
+    });
+    let (mut backend, _bootstrap) =
+        task::spawn_blocking(move || kafka_setup::prepare_backend(request))
+            .await
+            .expect("Kafka backend setup task panicked");
 
     assert!(
         backend.connect().await,
@@ -87,7 +70,7 @@ async fn test_receive_serialized_with_group() {
     let topic_for_config = topic.clone();
     let group_for_config = group_id.clone();
 
-    let (mut backend, _bootstrap) = init_backend("earliest", move |builder| {
+    let request = kafka_setup::build_request(SetupOptions::earliest(), move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic_for_config.clone())
@@ -99,8 +82,11 @@ async fn test_receive_serialized_with_group() {
                 KafkaConsumerGroupSpec::new([topic_for_config.clone()])
                     .initial_offset(KafkaInitialOffset::Earliest),
             );
-    })
-    .await;
+    });
+    let (mut backend, _bootstrap) =
+        task::spawn_blocking(move || kafka_setup::prepare_backend(request))
+            .await
+            .expect("Kafka backend setup task panicked");
 
     assert!(backend.connect().await, "Failed to connect backend");
 
@@ -150,7 +136,7 @@ async fn test_enable_manual_commits_and_commit_offset() {
     let topic_for_config = topic.clone();
     let group_for_config = group_id.clone();
 
-    let (mut backend, _bootstrap) = init_backend("earliest", move |builder| {
+    let request = kafka_setup::build_request(SetupOptions::earliest(), move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic_for_config.clone())
@@ -163,8 +149,11 @@ async fn test_enable_manual_commits_and_commit_offset() {
                     .initial_offset(KafkaInitialOffset::Earliest)
                     .manual_commits(true),
             );
-    })
-    .await;
+    });
+    let (mut backend, _bootstrap) =
+        task::spawn_blocking(move || kafka_setup::prepare_backend(request))
+            .await
+            .expect("Kafka backend setup task panicked");
 
     assert!(backend.connect().await, "Failed to connect backend");
 
@@ -214,7 +203,7 @@ async fn test_get_consumer_lag() {
     let topic_for_config = topic.clone();
     let group_for_config = group_id.clone();
 
-    let (mut backend, _bootstrap) = init_backend("earliest", move |builder| {
+    let request = kafka_setup::build_request(SetupOptions::earliest(), move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic_for_config.clone())
@@ -226,8 +215,11 @@ async fn test_get_consumer_lag() {
                 KafkaConsumerGroupSpec::new([topic_for_config.clone()])
                     .initial_offset(KafkaInitialOffset::Earliest),
             );
-    })
-    .await;
+    });
+    let (mut backend, _bootstrap) =
+        task::spawn_blocking(move || kafka_setup::prepare_backend(request))
+            .await
+            .expect("Kafka backend setup task panicked");
 
     assert!(backend.connect().await, "Failed to connect backend");
 
@@ -292,7 +284,7 @@ async fn test_multiple_consumer_groups_independence() {
     let group1_for_config = group_id1.clone();
     let group2_for_config = group_id2.clone();
 
-    let (mut backend, _bootstrap) = init_backend("earliest", move |builder| {
+    let request = kafka_setup::build_request(SetupOptions::earliest(), move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic_for_config.clone())
@@ -309,8 +301,11 @@ async fn test_multiple_consumer_groups_independence() {
                 KafkaConsumerGroupSpec::new([topic_for_config.clone()])
                     .initial_offset(KafkaInitialOffset::Earliest),
             );
-    })
-    .await;
+    });
+    let (mut backend, _bootstrap) =
+        task::spawn_blocking(move || kafka_setup::prepare_backend(request))
+            .await
+            .expect("Kafka backend setup task panicked");
 
     assert!(backend.connect().await, "Failed to connect backend");
 
@@ -378,7 +373,7 @@ async fn test_consumer_group_with_multiple_topics() {
     let topic2_for_config = topic2.clone();
     let group_for_config = group_id.clone();
 
-    let (mut backend, _bootstrap) = init_backend("earliest", move |builder| {
+    let request = kafka_setup::build_request(SetupOptions::earliest(), move |builder| {
         builder
             .add_topic(
                 KafkaTopicSpec::new(topic1_for_config.clone())
@@ -395,8 +390,11 @@ async fn test_consumer_group_with_multiple_topics() {
                 KafkaConsumerGroupSpec::new([topic1_for_config.clone(), topic2_for_config.clone()])
                     .initial_offset(KafkaInitialOffset::Earliest),
             );
-    })
-    .await;
+    });
+    let (mut backend, _bootstrap) =
+        task::spawn_blocking(move || kafka_setup::prepare_backend(request))
+            .await
+            .expect("Kafka backend setup task panicked");
 
     assert!(backend.connect().await, "Failed to connect backend");
 

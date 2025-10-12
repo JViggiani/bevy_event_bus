@@ -2,11 +2,9 @@
 
 use std::time::Duration;
 
+use bevy_event_bus::EventBusBackend;
 use bevy_event_bus::backends::event_bus_backend::{ReceiveOptions, SendOptions};
-use bevy_event_bus::config::redis::{
-    RedisConsumerGroupSpec, RedisStreamSpec, RedisTopologyBuilder,
-};
-use bevy_event_bus::{EventBusBackend, RedisEventBusBackend};
+use bevy_event_bus::config::redis::{RedisConsumerGroupSpec, RedisStreamSpec};
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{
     unique_consumer_group_membership, unique_topic, wait_for_messages_in_group,
@@ -15,21 +13,8 @@ use integration_tests::utils::redis_setup::{self, SetupOptions};
 use serde_json::to_vec;
 use tokio::task;
 
-async fn init_backend<F>(configure: F) -> RedisEventBusBackend
-where
-    F: FnOnce(&mut RedisTopologyBuilder) + Send + 'static,
-{
-    task::spawn_blocking(move || {
-        let request = redis_setup::build_request(
-            SetupOptions::new().read_block_timeout(Duration::from_millis(25)),
-            configure,
-        );
-        let (backend, _context) =
-            redis_setup::setup(request).expect("Redis backend setup successful");
-        backend
-    })
-    .await
-    .expect("Redis backend setup task panicked")
+fn fast_timeout_options() -> SetupOptions {
+    SetupOptions::new().read_block_timeout(Duration::from_millis(25))
 }
 
 #[tokio::test]
@@ -43,7 +28,7 @@ async fn test_consumer_group_ready_after_connect() {
     let group_for_config = consumer_group.clone();
     let consumer_for_config = consumer_name.clone();
 
-    let mut backend = init_backend(move |builder| {
+    let request = redis_setup::build_request(fast_timeout_options(), move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_config.clone()))
             .add_consumer_group(RedisConsumerGroupSpec::new(
@@ -51,8 +36,11 @@ async fn test_consumer_group_ready_after_connect() {
                 group_for_config.clone(),
                 consumer_for_config.clone(),
             ));
-    })
-    .await;
+    });
+    let (mut backend, _context) = task::spawn_blocking(move || redis_setup::setup(request))
+        .await
+        .expect("Redis backend setup task panicked")
+        .expect("Redis backend setup successful");
 
     assert!(
         backend.connect().await,
@@ -87,7 +75,7 @@ async fn test_receive_serialized_with_group() {
     let group_for_config = consumer_group.clone();
     let consumer_for_config = consumer_name.clone();
 
-    let mut backend = init_backend(move |builder| {
+    let request = redis_setup::build_request(fast_timeout_options(), move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_config.clone()))
             .add_consumer_group(RedisConsumerGroupSpec::new(
@@ -95,8 +83,11 @@ async fn test_receive_serialized_with_group() {
                 group_for_config.clone(),
                 consumer_for_config.clone(),
             ));
-    })
-    .await;
+    });
+    let (mut backend, _context) = task::spawn_blocking(move || redis_setup::setup(request))
+        .await
+        .expect("Redis backend setup task panicked")
+        .expect("Redis backend setup successful");
 
     assert!(backend.connect().await, "Failed to connect Redis backend");
 
@@ -147,7 +138,7 @@ async fn test_multiple_consumer_groups_independence() {
     let group2_for_config = membership2.group.clone();
     let consumer2_for_config = membership2.member.clone();
 
-    let mut backend = init_backend(move |builder| {
+    let request = redis_setup::build_request(fast_timeout_options(), move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_config.clone()))
             .add_consumer_group(RedisConsumerGroupSpec::new(
@@ -160,8 +151,11 @@ async fn test_multiple_consumer_groups_independence() {
                 group2_for_config.clone(),
                 consumer2_for_config.clone(),
             ));
-    })
-    .await;
+    });
+    let (mut backend, _context) = task::spawn_blocking(move || redis_setup::setup(request))
+        .await
+        .expect("Redis backend setup task panicked")
+        .expect("Redis backend setup successful");
 
     assert!(backend.connect().await, "Failed to connect Redis backend");
 
@@ -223,7 +217,7 @@ async fn test_consumer_group_with_multiple_streams() {
     let group_for_config = consumer_group.clone();
     let consumer_for_config = consumer_name.clone();
 
-    let mut backend = init_backend(move |builder| {
+    let request = redis_setup::build_request(fast_timeout_options(), move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream1_for_config.clone()))
             .add_stream(RedisStreamSpec::new(stream2_for_config.clone()))
@@ -232,8 +226,11 @@ async fn test_consumer_group_with_multiple_streams() {
                 group_for_config.clone(),
                 consumer_for_config.clone(),
             ));
-    })
-    .await;
+    });
+    let (mut backend, _context) = task::spawn_blocking(move || redis_setup::setup(request))
+        .await
+        .expect("Redis backend setup task panicked")
+        .expect("Redis backend setup successful");
 
     assert!(backend.connect().await, "Failed to connect Redis backend");
 
