@@ -5,306 +5,260 @@ use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
 use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
-use integration_tests::utils::helpers::{unique_consumer_group_membership, unique_topic};
+use integration_tests::utils::helpers::{
+    unique_consumer_group_membership, unique_topic, update_until,
+};
 use integration_tests::utils::redis_setup;
 use integration_tests::utils::{TestEvent, UserLoginEvent};
 
-/// Test handling multiple event types on same stream
-/// PATTERN ISSUE IDENTIFIED: Using closure systems instead of proper system functions
-/// ANTI-PATTERN FIXED: Using same consumer group for multiple readers  
 #[test]
-fn multiple_event_types_same_stream() {
-    let stream = unique_topic("multi_types");
-    let membership = unique_consumer_group_membership("multi_types_group");
+fn single_topic_multiple_types_same_frame() {
+    let stream = unique_topic("multi_type_same_frame");
+    let membership = unique_consumer_group_membership("multi_type_same_frame");
     let consumer_group = membership.group.clone();
     let consumer_name = membership.member.clone();
 
-    let writer_db =
-        redis_setup::allocate_database().expect("Writer Redis backend setup successful");
-    let reader_db =
-        redis_setup::allocate_database().expect("Reader Redis backend setup successful");
-
-    let writer_stream = stream.clone();
-    let (backend_writer, _context1) = redis_setup::with_database(writer_db, || {
-        redis_setup::prepare_backend(move |builder| {
-            builder
-                .add_stream(RedisStreamSpec::new(writer_stream.clone()))
-                .add_event_single::<TestEvent>(writer_stream.clone())
-                .add_event_single::<UserLoginEvent>(writer_stream.clone());
-        })
+    let stream_for_writer = stream.clone();
+    let (backend_writer, _ctx_writer) = redis_setup::prepare_backend(move |builder| {
+        builder
+            .add_stream(RedisStreamSpec::new(stream_for_writer.clone()))
+            .add_event_single::<TestEvent>(stream_for_writer.clone())
+            .add_event_single::<UserLoginEvent>(stream_for_writer.clone());
     })
-    .expect("Writer Redis backend setup successful");
+    .expect("Redis writer backend setup successful");
 
-    let reader_stream = stream.clone();
-    let reader_group = consumer_group.clone();
-    let reader_consumer = consumer_name.clone();
-    let (backend_reader, _context2) = redis_setup::with_database(reader_db, || {
-        redis_setup::prepare_backend(move |builder| {
-            builder
-                .add_stream(RedisStreamSpec::new(reader_stream.clone()))
-                .add_consumer_group(RedisConsumerGroupSpec::new(
-                    [reader_stream.clone()],
-                    reader_group.clone(),
-                    reader_consumer.clone(),
-                ))
-                .add_event_single::<TestEvent>(reader_stream.clone())
-                .add_event_single::<UserLoginEvent>(reader_stream.clone());
-        })
+    let stream_for_reader = stream.clone();
+    let group_for_reader = consumer_group.clone();
+    let consumer_for_reader = consumer_name.clone();
+    let (backend_reader, _ctx_reader) = redis_setup::prepare_backend(move |builder| {
+        builder
+            .add_stream(RedisStreamSpec::new(stream_for_reader.clone()))
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream_for_reader.clone()],
+                group_for_reader.clone(),
+                consumer_for_reader.clone(),
+            ))
+            .add_event_single::<TestEvent>(stream_for_reader.clone())
+            .add_event_single::<UserLoginEvent>(stream_for_reader.clone());
     })
-    .expect("Reader Redis backend setup successful");
+    .expect("Redis reader backend setup successful");
 
-    // Reader app using proper system pattern
+    let mut writer = App::new();
+    writer.add_plugins(EventBusPlugins(backend_writer));
+
+    let mut reader = App::new();
+    reader.add_plugins(EventBusPlugins(backend_reader));
+
     #[derive(Resource, Default)]
-    struct Collected {
-        test_events: Vec<TestEvent>,
-        login_events: Vec<UserLoginEvent>,
-    }
+    struct CollectedTests(Vec<TestEvent>);
 
-    #[derive(Resource, Clone)]
-    struct Stream(String);
+    #[derive(Resource, Default)]
+    struct CollectedLogins(Vec<UserLoginEvent>);
 
-    #[derive(Resource, Clone)]
-    struct ConsumerMembership {
-        group: String,
-    }
+    reader.insert_resource(CollectedTests::default());
+    reader.insert_resource(CollectedLogins::default());
 
-    let mut reader_app = App::new();
-    reader_app.add_plugins(EventBusPlugins(backend_reader));
-    reader_app.insert_resource(Collected::default());
-    reader_app.insert_resource(Stream(stream.clone()));
-    reader_app.insert_resource(ConsumerMembership {
-        group: consumer_group.clone(),
-    });
+    let stream_for_tests = stream.clone();
+    let group_for_tests = consumer_group.clone();
+    reader.add_systems(
+        Update,
+        move |mut reader: RedisEventReader<TestEvent>, mut collected: ResMut<CollectedTests>| {
+            let config =
+                RedisConsumerConfig::new(group_for_tests.clone(), [stream_for_tests.clone()]);
+            for wrapper in reader.read(&config) {
+                collected.0.push(wrapper.event().clone());
+            }
+        },
+    );
 
-    // System functions instead of closures
-    fn test_reader_system(
-        mut reader: RedisEventReader<TestEvent>,
-        stream: Res<Stream>,
-        membership: Res<ConsumerMembership>,
-        mut collected: ResMut<Collected>,
-    ) {
-        let config = RedisConsumerConfig::new(membership.group.clone(), [stream.0.clone()]);
-        for wrapper in reader.read(&config) {
-            collected.test_events.push(wrapper.event().clone());
-        }
-    }
+    let stream_for_logins = stream.clone();
+    let group_for_logins = consumer_group.clone();
+    reader.add_systems(
+        Update,
+        move |mut reader: RedisEventReader<UserLoginEvent>,
+              mut collected: ResMut<CollectedLogins>| {
+            let config =
+                RedisConsumerConfig::new(group_for_logins.clone(), [stream_for_logins.clone()]);
+            for wrapper in reader.read(&config) {
+                collected.0.push(wrapper.event().clone());
+            }
+        },
+    );
 
-    fn login_reader_system(
-        mut reader: RedisEventReader<UserLoginEvent>,
-        stream: Res<Stream>,
-        membership: Res<ConsumerMembership>,
-        mut collected: ResMut<Collected>,
-    ) {
-        let config = RedisConsumerConfig::new(membership.group.clone(), [stream.0.clone()]);
-        for wrapper in reader.read(&config) {
-            collected.login_events.push(wrapper.event().clone());
-        }
-    }
+    let stream_for_writer = stream.clone();
+    writer.add_systems(
+        Update,
+        move |mut writer: RedisEventWriter, mut started: Local<bool>| {
+            if !*started {
+                *started = true;
+                return;
+            }
 
-    reader_app.add_systems(Update, (test_reader_system, login_reader_system));
-
-    // Writer app
-    let mut writer_app = App::new();
-    writer_app.add_plugins(EventBusPlugins(backend_writer));
-
-    #[derive(Resource, Clone)]
-    struct WriterData {
-        stream: String,
-        sent: bool,
-    }
-
-    writer_app.insert_resource(WriterData {
-        stream: stream.clone(),
-        sent: false,
-    });
-
-    fn writer_system(mut writer: RedisEventWriter, mut data: ResMut<WriterData>) {
-        if !data.sent {
-            data.sent = true;
-            let config = RedisProducerConfig::new(data.stream.clone());
+            let config = RedisProducerConfig::new(stream_for_writer.clone());
             writer.write(
                 &config,
                 TestEvent {
-                    message: "test message".to_string(),
+                    message: "hello".to_string(),
                     value: 42,
                 },
             );
             writer.write(
                 &config,
                 UserLoginEvent {
-                    user_id: "user1".to_string(),
-                    timestamp: 100,
+                    user_id: "u1".to_string(),
+                    timestamp: 1,
                 },
             );
-        }
-    }
-    writer_app.add_systems(Update, writer_system);
+        },
+    );
 
-    // Send events
-    writer_app.update();
+    writer.update();
+    writer.update();
 
-    // With separate backends, no events will be received
-    reader_app.update();
-    reader_app.update();
+    let (ok, _frames) = update_until(&mut reader, 5_000, |app| {
+        let tests = app.world().resource::<CollectedTests>();
+        let logins = app.world().resource::<CollectedLogins>();
+        !tests.0.is_empty() && !logins.0.is_empty()
+    });
 
-    let collected = reader_app.world().resource::<Collected>();
+    assert!(ok, "Timed out waiting for both event types within timeout");
 
-    // With separate backends, no events should be received
+    let tests = reader.world().resource::<CollectedTests>();
+    let logins = reader.world().resource::<CollectedLogins>();
     assert_eq!(
-        collected.test_events.len(),
-        0,
-        "Should not receive TestEvents from separate backend"
+        tests.0.len(),
+        1,
+        "Expected 1 TestEvent, got {}",
+        tests.0.len()
     );
     assert_eq!(
-        collected.login_events.len(),
-        0,
-        "Should not receive UserLoginEvents from separate backend"
+        logins.0.len(),
+        1,
+        "Expected 1 UserLoginEvent, got {}",
+        logins.0.len()
     );
 }
 
-/// Test interleaved multi-type event frames
 #[test]
-fn interleaved_multi_type_frames() {
-    let stream = unique_topic("interleaved");
-    let membership = unique_consumer_group_membership("interleaved_group");
+fn single_topic_multiple_types_interleaved_frames() {
+    let stream = unique_topic("multi_type_interleaved");
+    let membership = unique_consumer_group_membership("multi_type_interleaved");
     let consumer_group = membership.group.clone();
     let consumer_name = membership.member.clone();
 
-    let writer_db =
-        redis_setup::allocate_database().expect("Writer Redis backend setup successful");
-    let reader_db =
-        redis_setup::allocate_database().expect("Reader Redis backend setup successful");
-
-    let writer_stream = stream.clone();
-    let (writer_backend, _context1) = redis_setup::with_database(writer_db, || {
-        redis_setup::prepare_backend(move |builder| {
-            builder
-                .add_stream(RedisStreamSpec::new(writer_stream.clone()))
-                .add_event_single::<TestEvent>(writer_stream.clone())
-                .add_event_single::<UserLoginEvent>(writer_stream.clone());
-        })
+    let stream_for_writer = stream.clone();
+    let (backend_writer, _ctx_writer) = redis_setup::prepare_backend(move |builder| {
+        builder
+            .add_stream(RedisStreamSpec::new(stream_for_writer.clone()))
+            .add_event_single::<TestEvent>(stream_for_writer.clone())
+            .add_event_single::<UserLoginEvent>(stream_for_writer.clone());
     })
-    .expect("Writer Redis backend setup successful");
+    .expect("Redis writer backend setup successful");
 
-    let reader_stream = stream.clone();
-    let reader_group = consumer_group.clone();
-    let reader_consumer = consumer_name.clone();
-    let (reader_backend, _context2) = redis_setup::with_database(reader_db, || {
-        redis_setup::prepare_backend(move |builder| {
-            builder
-                .add_stream(RedisStreamSpec::new(reader_stream.clone()))
-                .add_consumer_group(RedisConsumerGroupSpec::new(
-                    [reader_stream.clone()],
-                    reader_group.clone(),
-                    reader_consumer.clone(),
-                ))
-                .add_event_single::<TestEvent>(reader_stream.clone())
-                .add_event_single::<UserLoginEvent>(reader_stream.clone());
-        })
+    let stream_for_reader = stream.clone();
+    let group_for_reader = consumer_group.clone();
+    let consumer_for_reader = consumer_name.clone();
+    let (backend_reader, _ctx_reader) = redis_setup::prepare_backend(move |builder| {
+        builder
+            .add_stream(RedisStreamSpec::new(stream_for_reader.clone()))
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream_for_reader.clone()],
+                group_for_reader.clone(),
+                consumer_for_reader.clone(),
+            ))
+            .add_event_single::<TestEvent>(stream_for_reader.clone())
+            .add_event_single::<UserLoginEvent>(stream_for_reader.clone());
     })
-    .expect("Reader Redis backend setup successful");
+    .expect("Redis reader backend setup successful");
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(writer_backend));
+    writer.add_plugins(EventBusPlugins(backend_writer));
 
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(reader_backend));
+    reader.add_plugins(EventBusPlugins(backend_reader));
 
     #[derive(Resource, Default)]
-    struct Results {
-        test_events: Vec<TestEvent>,
-        login_events: Vec<UserLoginEvent>,
-    }
-    reader.insert_resource(Results::default());
+    struct CollectedTests(Vec<TestEvent>);
 
-    // Interleave sending different event types
-    let stream_clone = stream.clone();
+    #[derive(Resource, Default)]
+    struct CollectedLogins(Vec<UserLoginEvent>);
+
+    reader.insert_resource(CollectedTests::default());
+    reader.insert_resource(CollectedLogins::default());
+
+    let stream_for_tests = stream.clone();
+    let group_for_tests = consumer_group.clone();
+    reader.add_systems(
+        Update,
+        move |mut reader: RedisEventReader<TestEvent>, mut collected: ResMut<CollectedTests>| {
+            let config =
+                RedisConsumerConfig::new(group_for_tests.clone(), [stream_for_tests.clone()]);
+            for wrapper in reader.read(&config) {
+                collected.0.push(wrapper.event().clone());
+            }
+        },
+    );
+
+    let stream_for_logins = stream.clone();
+    let group_for_logins = consumer_group.clone();
+    reader.add_systems(
+        Update,
+        move |mut reader: RedisEventReader<UserLoginEvent>,
+              mut collected: ResMut<CollectedLogins>| {
+            let config =
+                RedisConsumerConfig::new(group_for_logins.clone(), [stream_for_logins.clone()]);
+            for wrapper in reader.read(&config) {
+                collected.0.push(wrapper.event().clone());
+            }
+        },
+    );
+
+    let stream_for_writer = stream.clone();
     writer.add_systems(
         Update,
-        move |mut w: RedisEventWriter, mut counter: Local<usize>| {
-            if *counter < 4 {
-                *counter += 1;
-                let config = RedisProducerConfig::new(stream_clone.clone());
-
-                match *counter {
-                    1 => w.write(
+        move |mut writer: RedisEventWriter, mut counter: Local<u32>| {
+            let config = RedisProducerConfig::new(stream_for_writer.clone());
+            match *counter % 2 {
+                0 => {
+                    let _ = writer.write(
                         &config,
                         TestEvent {
-                            message: format!("test-{}", *counter),
+                            message: format!("m{}", *counter),
                             value: *counter as i32,
                         },
-                    ),
-                    2 => w.write(
+                    );
+                }
+                _ => {
+                    let _ = writer.write(
                         &config,
                         UserLoginEvent {
-                            user_id: format!("user-{}", *counter),
-                            timestamp: *counter as u64 * 100,
+                            user_id: format!("u{}", *counter),
+                            timestamp: *counter as u64,
                         },
-                    ),
-                    3 => w.write(
-                        &config,
-                        TestEvent {
-                            message: format!("test-{}", *counter),
-                            value: *counter as i32,
-                        },
-                    ),
-                    4 => w.write(
-                        &config,
-                        UserLoginEvent {
-                            user_id: format!("user-{}", *counter),
-                            timestamp: *counter as u64 * 100,
-                        },
-                    ),
-                    _ => {} // Stop after 4 frames
+                    );
                 }
             }
+            *counter += 1;
         },
     );
 
-    let s1 = stream.clone();
-    let g1 = consumer_group.clone();
-    reader.add_systems(
-        Update,
-        move |mut r1: RedisEventReader<TestEvent>, mut results: ResMut<Results>| {
-            let config = RedisConsumerConfig::new(g1.clone(), [s1.clone()]);
-            for wrapper in r1.read(&config) {
-                results.test_events.push(wrapper.event().clone());
-            }
-        },
-    );
-
-    let s2 = stream.clone();
-    let g2 = consumer_group.clone();
-    reader.add_systems(
-        Update,
-        move |mut r2: RedisEventReader<UserLoginEvent>, mut results: ResMut<Results>| {
-            let config = RedisConsumerConfig::new(g2.clone(), [s2.clone()]);
-            for wrapper in r2.read(&config) {
-                results.login_events.push(wrapper.event().clone());
-            }
-        },
-    );
-
-    // Run writer for several frames to interleave types
-    for _ in 0..5 {
+    for _ in 0..6 {
         writer.update();
     }
 
-    // With separate backends, no events will be received
-    reader.update();
-    reader.update();
+    let (ok, _frames) = update_until(&mut reader, 12_000, |app| {
+        let tests = app.world().resource::<CollectedTests>();
+        let logins = app.world().resource::<CollectedLogins>();
+        tests.0.len() >= 3 && logins.0.len() >= 3
+    });
 
-    let results = reader.world().resource::<Results>();
+    assert!(
+        ok,
+        "Timed out waiting for interleaved events within timeout"
+    );
 
-    // With separate backends, no events should be received
-    assert_eq!(
-        results.test_events.len(),
-        0,
-        "Should not receive TestEvents from separate backend"
-    );
-    assert_eq!(
-        results.login_events.len(),
-        0,
-        "Should not receive UserLoginEvents from separate backend"
-    );
+    let tests = reader.world().resource::<CollectedTests>();
+    let logins = reader.world().resource::<CollectedLogins>();
+    assert!(tests.0.len() >= 3);
+    assert!(logins.0.len() >= 3);
 }

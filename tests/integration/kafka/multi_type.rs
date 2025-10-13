@@ -49,30 +49,31 @@ fn single_topic_multiple_types_same_frame() {
     reader.add_plugins(EventBusPlugins(backend_r));
 
     #[derive(Resource, Default)]
-    struct CollectedA(Vec<TestEvent>);
+    struct CollectedTests(Vec<TestEvent>);
     #[derive(Resource, Default)]
-    struct CollectedB(Vec<UserLoginEvent>);
-    reader.insert_resource(CollectedA::default());
-    reader.insert_resource(CollectedB::default());
+    struct CollectedLogins(Vec<UserLoginEvent>);
+    reader.insert_resource(CollectedTests::default());
+    reader.insert_resource(CollectedLogins::default());
     let tr_a = topic.clone();
     let consumer_group_for_test = consumer_group.clone();
     let consumer_group_for_login = consumer_group.clone();
     reader.add_systems(
         Update,
-        move |mut r1: KafkaEventReader<TestEvent>, mut a: ResMut<CollectedA>| {
+        move |mut reader: KafkaEventReader<TestEvent>, mut collected: ResMut<CollectedTests>| {
             let config = KafkaConsumerConfig::new(consumer_group_for_test.as_str(), [&tr_a]);
-            for wrapper in r1.read(&config) {
-                a.0.push(wrapper.event().clone());
+            for wrapper in reader.read(&config) {
+                collected.0.push(wrapper.event().clone());
             }
         },
     );
     let tr_b = topic.clone();
     reader.add_systems(
         Update,
-        move |mut r2: KafkaEventReader<UserLoginEvent>, mut b: ResMut<CollectedB>| {
+        move |mut reader: KafkaEventReader<UserLoginEvent>,
+              mut collected: ResMut<CollectedLogins>| {
             let config = KafkaConsumerConfig::new(consumer_group_for_login.as_str(), [&tr_b]);
-            for wrapper in r2.read(&config) {
-                b.0.push(wrapper.event().clone());
+            for wrapper in reader.read(&config) {
+                collected.0.push(wrapper.event().clone());
             }
         },
     );
@@ -81,20 +82,20 @@ fn single_topic_multiple_types_same_frame() {
     let tclone = topic.clone();
     writer.add_systems(
         Update,
-        move |mut w1: KafkaEventWriter, mut w2: KafkaEventWriter, mut started: Local<bool>| {
+        move |mut writer: KafkaEventWriter, mut started: Local<bool>| {
             if !*started {
                 *started = true;
                 return;
             }
             let config = KafkaProducerConfig::new([tclone.clone()]);
-            let _ = w1.write(
+            let _ = writer.write(
                 &config,
                 TestEvent {
                     message: "hello".into(),
                     value: 42,
                 },
             );
-            let _ = w2.write(
+            let _ = writer.write(
                 &config,
                 UserLoginEvent {
                     user_id: "u1".into(),
@@ -107,15 +108,15 @@ fn single_topic_multiple_types_same_frame() {
     writer.update(); // send
 
     let (ok, _frames) = update_until(&mut reader, 5000, |app| {
-        let a = app.world().resource::<CollectedA>();
-        let b = app.world().resource::<CollectedB>();
+        let a = app.world().resource::<CollectedTests>();
+        let b = app.world().resource::<CollectedLogins>();
         !a.0.is_empty() && !b.0.is_empty()
     });
 
     assert!(ok, "Timed out waiting for both event types within timeout");
 
-    let a = reader.world().resource::<CollectedA>();
-    let b = reader.world().resource::<CollectedB>();
+    let a = reader.world().resource::<CollectedTests>();
+    let b = reader.world().resource::<CollectedLogins>();
     assert_eq!(a.0.len(), 1, "Expected 1 TestEvent, got {}", a.0.len());
     assert_eq!(b.0.len(), 1, "Expected 1 UserLoginEvent, got {}", b.0.len());
 }
@@ -161,61 +162,62 @@ fn single_topic_multiple_types_interleaved_frames() {
     reader.add_plugins(EventBusPlugins(backend_r));
 
     #[derive(Resource, Default)]
-    struct CollectedA(Vec<TestEvent>);
+    struct CollectedTests(Vec<TestEvent>);
     #[derive(Resource, Default)]
-    struct CollectedB(Vec<UserLoginEvent>);
-    reader.insert_resource(CollectedA::default());
-    reader.insert_resource(CollectedB::default());
+    struct CollectedLogins(Vec<UserLoginEvent>);
+    reader.insert_resource(CollectedTests::default());
+    reader.insert_resource(CollectedLogins::default());
     let tr_a2 = topic.clone();
     let consumer_group2_for_test = consumer_group2.clone();
     let consumer_group2_for_login = consumer_group2.clone();
     reader.add_systems(
         Update,
-        move |mut r1: KafkaEventReader<TestEvent>, mut a: ResMut<CollectedA>| {
+        move |mut reader: KafkaEventReader<TestEvent>, mut collected: ResMut<CollectedTests>| {
             let config = KafkaConsumerConfig::new(consumer_group2_for_test.as_str(), [&tr_a2]);
-            for wrapper in r1.read(&config) {
-                a.0.push(wrapper.event().clone());
+            for wrapper in reader.read(&config) {
+                collected.0.push(wrapper.event().clone());
             }
         },
     );
     let tr_b2 = topic.clone();
     reader.add_systems(
         Update,
-        move |mut r2: KafkaEventReader<UserLoginEvent>, mut b: ResMut<CollectedB>| {
+        move |mut reader: KafkaEventReader<UserLoginEvent>,
+              mut collected: ResMut<CollectedLogins>| {
             let config = KafkaConsumerConfig::new(consumer_group2_for_login.as_str(), [&tr_b2]);
-            for wrapper in r2.read(&config) {
-                b.0.push(wrapper.event().clone());
+            for wrapper in reader.read(&config) {
+                collected.0.push(wrapper.event().clone());
             }
         },
     );
 
     // Now set up and run the writer
-    #[derive(Resource)]
-    struct Counter(u32);
-    writer.insert_resource(Counter(0));
     let tclone = topic.clone();
     writer.add_systems(
         Update,
-        move |mut w1: KafkaEventWriter, mut w2: KafkaEventWriter, mut c: ResMut<Counter>| {
+        move |mut writer: KafkaEventWriter, mut counter: Local<u32>| {
             let config = KafkaProducerConfig::new([tclone.clone()]);
-            if c.0 % 2 == 0 {
-                let _ = w1.write(
-                    &config,
-                    TestEvent {
-                        message: format!("m{}", c.0),
-                        value: c.0 as i32,
-                    },
-                );
-            } else {
-                let _ = w2.write(
-                    &config,
-                    UserLoginEvent {
-                        user_id: format!("u{}", c.0),
-                        timestamp: c.0 as u64,
-                    },
-                );
+            match *counter % 2 {
+                0 => {
+                    let _ = writer.write(
+                        &config,
+                        TestEvent {
+                            message: format!("m{}", *counter),
+                            value: *counter as i32,
+                        },
+                    );
+                }
+                _ => {
+                    let _ = writer.write(
+                        &config,
+                        UserLoginEvent {
+                            user_id: format!("u{}", *counter),
+                            timestamp: *counter as u64,
+                        },
+                    );
+                }
             }
-            c.0 += 1;
+            *counter += 1;
         },
     );
     for _ in 0..6 {
@@ -224,8 +226,8 @@ fn single_topic_multiple_types_interleaved_frames() {
 
     // Wait for background delivery using proper polling
     let (ok, _frames) = update_until(&mut reader, 12000, |app| {
-        let a = app.world().resource::<CollectedA>();
-        let b = app.world().resource::<CollectedB>();
+        let a = app.world().resource::<CollectedTests>();
+        let b = app.world().resource::<CollectedLogins>();
         a.0.len() >= 3 && b.0.len() >= 3
     });
 
@@ -233,8 +235,8 @@ fn single_topic_multiple_types_interleaved_frames() {
         ok,
         "Timed out waiting for interleaved events within timeout"
     );
-    let a = reader.world().resource::<CollectedA>();
-    let b = reader.world().resource::<CollectedB>();
+    let a = reader.world().resource::<CollectedTests>();
+    let b = reader.world().resource::<CollectedLogins>();
     assert!(a.0.len() >= 3);
     assert!(b.0.len() >= 3);
 }
