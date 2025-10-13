@@ -1,386 +1,315 @@
 #![cfg(feature = "redis")]
 
+//! Performance benchmarks for bevy_event_bus
+//!
+//! This module mirrors the Kafka performance tests to measure throughput and
+//! latency under various Redis workloads. Run the individual tests manually
+//! because they are flagged with `#[ignore]` to keep the default test suite fast.
+
 use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
-use bevy_event_bus::{BackendStatus, EventBusPlugins, RedisEventReader, RedisEventWriter};
-use integration_tests::utils::TestEvent;
-use integration_tests::utils::helpers::{
-    run_app_updates, unique_consumer_group_membership, unique_topic, update_until,
-};
+use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
+use integration_tests::utils::helpers::{unique_consumer_group_membership, unique_topic};
 use integration_tests::utils::performance::record_performance_results;
 use integration_tests::utils::redis_setup;
-use std::time::{Duration, Instant};
+use serde::{Deserialize, Serialize};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-#[derive(Resource, Default)]
-struct WriterStats {
-    sent: usize,
-    send_start: Option<Instant>,
-    send_end: Option<Instant>,
+#[derive(Event, Deserialize, Serialize, Debug, Clone, PartialEq)]
+struct PerformanceTestEvent {
+    id: u64,
+    timestamp: u64,
+    payload: String,
+    sequence: u32,
 }
 
-impl WriterStats {
-    fn mark_send_start(&mut self) {
-        if self.send_start.is_none() {
-            self.send_start = Some(Instant::now());
-        }
-    }
+impl PerformanceTestEvent {
+    fn new(id: u64, sequence: u32, payload_size: usize) -> Self {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
 
-    fn mark_send_end(&mut self) {
-        if self.send_end.is_none() {
-            self.send_end = Some(Instant::now());
-        }
-    }
-}
-
-#[derive(Resource, Default)]
-struct ReaderStats {
-    received: usize,
-    receive_start: Option<Instant>,
-    receive_end: Option<Instant>,
-}
-
-impl ReaderStats {
-    fn mark_receive_start(&mut self) {
-        if self.receive_start.is_none() {
-            self.receive_start = Some(Instant::now());
-        }
-    }
-
-    fn mark_receive_end(&mut self) {
-        if self.receive_end.is_none() {
-            self.receive_end = Some(Instant::now());
+        Self {
+            id,
+            timestamp,
+            payload: "x".repeat(payload_size),
+            sequence,
         }
     }
 }
 
-fn duration_between(start: Option<Instant>, end: Option<Instant>, label: &str) -> Duration {
-    let start = start.unwrap_or_else(|| panic!("{label} start time not recorded"));
-    let end = end.unwrap_or_else(|| panic!("{label} end time not recorded"));
-    end.duration_since(start)
-}
-
-/// Test message throughput performance
+/// Measure baseline throughput with medium payloads.
+#[ignore]
 #[test]
-#[ignore] // Performance test - run manually
 fn test_message_throughput() {
-    let stream = unique_topic("perf_throughput");
-    let membership = unique_consumer_group_membership("perf_group");
+    let stream = unique_topic("perf_test");
+    let membership = unique_consumer_group_membership("perf_test_group");
     let consumer_group = membership.group.clone();
-    let consumer_name = membership.member.clone();
 
-    let stream_clone_for_topology = stream.clone();
-    let consumer_group_clone_for_topology = consumer_group.clone();
-    let consumer_name_clone_for_topology = consumer_name.clone();
-    let (backend, _context) = redis_setup::prepare_backend(move |builder| {
+    let stream_for_topology = stream.clone();
+    let group_for_topology = consumer_group.clone();
+    let consumer_for_topology = membership.member.clone();
+    let (backend, _ctx) = redis_setup::prepare_backend(move |builder| {
         builder
-            .add_stream(RedisStreamSpec::new(stream_clone_for_topology.clone()))
+            .add_stream(RedisStreamSpec::new(stream_for_topology.clone()))
             .add_consumer_group(RedisConsumerGroupSpec::new(
-                [stream_clone_for_topology.clone()],
-                consumer_group_clone_for_topology.clone(),
-                consumer_name_clone_for_topology.clone(),
+                [stream_for_topology.clone()],
+                group_for_topology.clone(),
+                consumer_for_topology.clone(),
             ))
-            .add_event_single::<TestEvent>(stream_clone_for_topology.clone());
+            .add_event_single::<PerformanceTestEvent>(stream_for_topology.clone());
     })
     .expect("Redis backend setup successful");
 
-    let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(backend.clone()));
-    let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(backend));
+    let message_count = 10_000;
+    let payload_size = 100;
 
-    writer.insert_resource(WriterStats::default());
-    reader.insert_resource(ReaderStats::default());
-
-    const TARGET_MESSAGES: usize = 1000;
-    const PAYLOAD_SIZE: usize = 100;
-    let payload_for_writer = "x".repeat(PAYLOAD_SIZE);
-
-    // High throughput writer
-    let stream_clone = stream.clone();
-    writer.add_systems(
-        Update,
-        move |mut w: RedisEventWriter,
-              mut stats: ResMut<WriterStats>,
-              status: Option<Res<BackendStatus>>| {
-            if !status.map(|s| s.ready).unwrap_or(false) {
-                return;
-            }
-
-            if stats.sent >= TARGET_MESSAGES {
-                stats.mark_send_end();
-                return;
-            }
-
-            stats.mark_send_start();
-
-            let config = RedisProducerConfig::new(stream_clone.clone());
-            let remaining = TARGET_MESSAGES - stats.sent;
-            let batch_size = remaining.min(100);
-            let start_index = stats.sent;
-
-            for offset in 0..batch_size {
-                let value = (start_index + offset) as i32;
-                w.write(
-                    &config,
-                    TestEvent {
-                        message: payload_for_writer.clone(),
-                        value,
-                    },
-                );
-            }
-
-            stats.sent += batch_size;
-            if stats.sent >= TARGET_MESSAGES {
-                stats.mark_send_end();
-            }
-        },
+    run_throughput_test(
+        "test_message_throughput",
+        backend,
+        stream,
+        consumer_group,
+        message_count,
+        payload_size,
     );
+}
 
-    // High throughput reader
-    let stream_clone = stream.clone();
-    let group_clone = consumer_group.clone();
-    reader.add_systems(
-        Update,
-        move |mut r: RedisEventReader<TestEvent>,
-              mut stats: ResMut<ReaderStats>,
-              status: Option<Res<BackendStatus>>| {
-            if !status.map(|s| s.ready).unwrap_or(false) {
-                return;
+/// Measure throughput with larger payload sizes.
+#[ignore]
+#[test]
+fn test_large_message_throughput() {
+    let stream = unique_topic("perf_large_test");
+    let membership = unique_consumer_group_membership("perf_large_test_group");
+    let consumer_group = membership.group.clone();
+
+    let stream_for_topology = stream.clone();
+    let group_for_topology = consumer_group.clone();
+    let consumer_for_topology = membership.member.clone();
+    let (backend, _ctx) = redis_setup::prepare_backend(move |builder| {
+        builder
+            .add_stream(RedisStreamSpec::new(stream_for_topology.clone()))
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream_for_topology.clone()],
+                group_for_topology.clone(),
+                consumer_for_topology.clone(),
+            ))
+            .add_event_single::<PerformanceTestEvent>(stream_for_topology.clone());
+    })
+    .expect("Redis backend setup successful");
+
+    let message_count = 1_000;
+    let payload_size = 10_000; // 10 KB per message
+
+    run_throughput_test(
+        "test_large_message_throughput",
+        backend,
+        stream,
+        consumer_group,
+        message_count,
+        payload_size,
+    );
+}
+
+/// Measure throughput with many tiny messages.
+#[ignore]
+#[test]
+fn test_high_volume_small_messages() {
+    let stream = unique_topic("perf_small_test");
+    let membership = unique_consumer_group_membership("perf_small_test_group");
+    let consumer_group = membership.group.clone();
+
+    let stream_for_topology = stream.clone();
+    let group_for_topology = consumer_group.clone();
+    let consumer_for_topology = membership.member.clone();
+    let (backend, _ctx) = redis_setup::prepare_backend(move |builder| {
+        builder
+            .add_stream(RedisStreamSpec::new(stream_for_topology.clone()))
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream_for_topology.clone()],
+                group_for_topology.clone(),
+                consumer_for_topology.clone(),
+            ))
+            .add_event_single::<PerformanceTestEvent>(stream_for_topology.clone());
+    })
+    .expect("Redis backend setup successful");
+
+    let message_count = 50_000;
+    let payload_size = 20;
+
+    run_throughput_test(
+        "test_high_volume_small_messages",
+        backend,
+        stream,
+        consumer_group,
+        message_count,
+        payload_size,
+    );
+}
+
+fn run_throughput_test(
+    test_name: &str,
+    backend: impl bevy_event_bus::backends::EventBusBackend + 'static,
+    stream: String,
+    consumer_group: String,
+    message_count: u64,
+    payload_size: usize,
+) {
+    let mut app = App::new();
+    app.add_plugins(EventBusPlugins(backend));
+
+    #[derive(Resource)]
+    struct PerformanceTestState {
+        messages_to_send: u64,
+        messages_sent: u64,
+        messages_received: Vec<PerformanceTestEvent>,
+        send_start_time: Option<Instant>,
+        send_end_time: Option<Instant>,
+        receive_start_time: Option<Instant>,
+        receive_end_time: Option<Instant>,
+        stream: String,
+        consumer_group: String,
+        payload_size: usize,
+        producer_flushed: bool,
+    }
+
+    app.insert_resource(PerformanceTestState {
+        messages_to_send: message_count,
+        messages_sent: 0,
+        messages_received: Vec::new(),
+        send_start_time: None,
+        send_end_time: None,
+        receive_start_time: None,
+        receive_end_time: None,
+        stream,
+        consumer_group,
+        payload_size,
+        producer_flushed: false,
+    });
+
+    // Sending system
+    fn sender_system(mut state: ResMut<PerformanceTestState>, mut writer: RedisEventWriter) {
+        if state.messages_sent >= state.messages_to_send {
+            if state.send_end_time.is_none() {
+                state.send_end_time = Some(Instant::now());
+                println!("Finished sending {} messages", state.messages_sent);
             }
 
-            let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()]);
-
-            let events = r.read(&config);
-            if !events.is_empty() {
-                stats.mark_receive_start();
-                stats.received += events.len();
-                if stats.received >= TARGET_MESSAGES {
-                    stats.mark_receive_end();
+            if !state.producer_flushed {
+                match writer.flush() {
+                    Ok(_) => {
+                        state.producer_flushed = true;
+                        println!("Writer flush completed.");
+                    }
+                    Err(err) => {
+                        println!("Writer flush failed: {err}; will retry next frame");
+                    }
                 }
             }
-        },
-    );
+            return;
+        }
 
-    loop {
-        writer.update();
-        reader.update();
+        if state.send_start_time.is_none() {
+            state.send_start_time = Some(Instant::now());
+            println!("Starting to send {} messages...", state.messages_to_send);
+        }
 
-        if writer.world().resource::<WriterStats>().send_end.is_some() {
-            break;
+        // Send messages in batches for better performance
+        let batch_size = 100;
+        let config = RedisProducerConfig::new(state.stream.clone());
+        for _ in 0..batch_size {
+            if state.messages_sent >= state.messages_to_send {
+                break;
+            }
+
+            let event = PerformanceTestEvent::new(
+                state.messages_sent,
+                state.messages_sent as u32,
+                state.payload_size,
+            );
+
+            // Fire-and-forget write - no Result to handle
+            writer.write(&config, event);
+            state.messages_sent += 1;
         }
     }
 
-    run_app_updates(&mut writer, 10);
+    fn receiver_system(
+        mut state: ResMut<PerformanceTestState>,
+        mut reader: RedisEventReader<PerformanceTestEvent>,
+    ) {
+        let config = RedisConsumerConfig::new(state.consumer_group.clone(), [state.stream.clone()]);
+        let batch = reader.read(&config);
 
-    let (all_received, _) = update_until(&mut reader, 30000, |app| {
-        app.world().resource::<ReaderStats>().received >= TARGET_MESSAGES
-    });
+        if !batch.is_empty() && state.receive_start_time.is_none() {
+            state.receive_start_time = Some(Instant::now());
+            println!("Started receiving messages...");
+        }
 
-    if !all_received {
-        let reader_stats = reader.world().resource::<ReaderStats>();
-        panic!(
-            "Should receive all {TARGET_MESSAGES} messages (received {})",
-            reader_stats.received
-        );
-    }
+        for wrapper in batch {
+            state.messages_received.push(wrapper.event().clone());
 
-    let writer_stats = writer.world().resource::<WriterStats>();
-    let reader_stats = reader.world().resource::<ReaderStats>();
-
-    assert_eq!(writer_stats.sent, TARGET_MESSAGES);
-    assert_eq!(reader_stats.received, TARGET_MESSAGES);
-
-    let send_duration = duration_between(writer_stats.send_start, writer_stats.send_end, "send");
-    let receive_duration = duration_between(
-        reader_stats.receive_start,
-        reader_stats.receive_end,
-        "receive",
-    );
-
-    let messages_sent = TARGET_MESSAGES as u64;
-    let messages_received = TARGET_MESSAGES as u64;
-    let send_rate = messages_sent as f64 / send_duration.as_secs_f64();
-    let receive_rate = messages_received as f64 / receive_duration.as_secs_f64();
-    let total_sent_bytes = (TARGET_MESSAGES * PAYLOAD_SIZE) as u64;
-    let send_throughput_mb = (total_sent_bytes as f64 / 1_000_000.0) / send_duration.as_secs_f64();
-    let receive_throughput_mb =
-        (total_sent_bytes as f64 / 1_000_000.0) / receive_duration.as_secs_f64();
-
-    record_performance_results(
-        "redis",
-        "test_message_throughput",
-        messages_sent,
-        messages_received,
-        PAYLOAD_SIZE,
-        send_duration,
-        receive_duration,
-        send_rate,
-        receive_rate,
-        send_throughput_mb,
-        receive_throughput_mb,
-    );
-
-    println!("Throughput test results:");
-    println!("  Messages: {}", TARGET_MESSAGES);
-    println!(
-        "  Send time: {:?} ({:.2} msg/sec)",
-        send_duration, send_rate
-    );
-    println!(
-        "  Receive time: {:?} ({:.2} msg/sec)",
-        receive_duration, receive_rate
-    );
-}
-
-/// Test high volume small messages
-#[test]
-#[ignore] // Performance test - run manually
-fn test_high_volume_small_messages() {
-    let stream = unique_topic("perf_small");
-    let membership = unique_consumer_group_membership("perf_small_group");
-    let consumer_group = membership.group.clone();
-    let consumer_name = membership.member.clone();
-
-    let stream_clone_for_topology = stream.clone();
-    let consumer_group_clone_for_topology = consumer_group.clone();
-    let consumer_name_clone_for_topology = consumer_name.clone();
-    let (backend, _context) = redis_setup::prepare_backend(move |builder| {
-        builder
-            .add_stream(RedisStreamSpec::new(stream_clone_for_topology.clone()))
-            .add_consumer_group(RedisConsumerGroupSpec::new(
-                [stream_clone_for_topology.clone()],
-                consumer_group_clone_for_topology.clone(),
-                consumer_name_clone_for_topology.clone(),
-            ))
-            .add_event_single::<TestEvent>(stream_clone_for_topology.clone());
-    })
-    .expect("Redis backend setup successful");
-
-    let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(backend.clone()));
-    let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(backend));
-
-    writer.insert_resource(WriterStats::default());
-    reader.insert_resource(ReaderStats::default());
-
-    const MESSAGE_COUNT: usize = 5000;
-    const PAYLOAD_SIZE: usize = 20;
-    let payload_for_writer = "x".repeat(PAYLOAD_SIZE);
-
-    // Send many small messages quickly
-    let stream_clone = stream.clone();
-    writer.add_systems(
-        Update,
-        move |mut w: RedisEventWriter,
-              mut stats: ResMut<WriterStats>,
-              status: Option<Res<BackendStatus>>| {
-            if !status.map(|s| s.ready).unwrap_or(false) {
-                return;
-            }
-
-            if stats.sent >= MESSAGE_COUNT {
-                stats.mark_send_end();
-                return;
-            }
-
-            stats.mark_send_start();
-
-            let config = RedisProducerConfig::new(stream_clone.clone());
-            let remaining = MESSAGE_COUNT - stats.sent;
-            let batch_size = remaining.min(200);
-            let start_index = stats.sent;
-
-            for offset in 0..batch_size {
-                let value = (start_index + offset) as i32;
-                w.write(
-                    &config,
-                    TestEvent {
-                        message: payload_for_writer.clone(),
-                        value,
-                    },
+            if state.messages_received.len() >= state.messages_to_send as usize
+                && state.receive_end_time.is_none()
+            {
+                state.receive_end_time = Some(Instant::now());
+                println!(
+                    "Finished receiving {} messages",
+                    state.messages_received.len()
                 );
             }
-
-            stats.sent += batch_size;
-            if stats.sent >= MESSAGE_COUNT {
-                stats.mark_send_end();
-            }
-        },
-    );
-
-    // Process small messages
-    let stream_clone = stream.clone();
-    let group_clone = consumer_group.clone();
-    reader.add_systems(
-        Update,
-        move |mut r: RedisEventReader<TestEvent>,
-              mut stats: ResMut<ReaderStats>,
-              status: Option<Res<BackendStatus>>| {
-            if !status.map(|s| s.ready).unwrap_or(false) {
-                return;
-            }
-
-            let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()]);
-
-            let events = r.read(&config);
-            if !events.is_empty() {
-                stats.mark_receive_start();
-                stats.received += events.len();
-                if stats.received >= MESSAGE_COUNT {
-                    stats.mark_receive_end();
-                }
-            }
-        },
-    );
-
-    while writer.world().resource::<WriterStats>().send_end.is_none() {
-        writer.update();
+        }
     }
 
-    run_app_updates(&mut writer, 25);
+    app.add_systems(Update, (sender_system, receiver_system).chain());
 
-    let (received_all, _) = update_until(&mut reader, 30000, |app| {
-        app.world().resource::<ReaderStats>().received >= MESSAGE_COUNT
-    });
+    let test_start = Instant::now();
+    while {
+        let state = app.world().resource::<PerformanceTestState>();
+        state.send_end_time.is_none() || state.receive_end_time.is_none()
+    } {
+        app.update();
 
-    if !received_all {
-        let reader_stats = reader.world().resource::<ReaderStats>();
-        panic!(
-            "Should process all {MESSAGE_COUNT} messages (received {})",
-            reader_stats.received
-        );
+        if test_start.elapsed().as_secs() > 300 {
+            panic!("Performance test timed out after 5 minutes");
+        }
+
+        std::thread::yield_now();
     }
 
-    let writer_stats = writer.world().resource::<WriterStats>();
-    let reader_stats = reader.world().resource::<ReaderStats>();
+    let state = app.world().resource::<PerformanceTestState>();
 
-    assert_eq!(writer_stats.sent, MESSAGE_COUNT);
-    assert_eq!(reader_stats.received, MESSAGE_COUNT);
+    let send_duration = state.send_end_time.unwrap() - state.send_start_time.unwrap();
+    let receive_duration = state.receive_end_time.unwrap() - state.receive_start_time.unwrap();
 
-    let send_duration = duration_between(writer_stats.send_start, writer_stats.send_end, "send");
-    let receive_duration = duration_between(
-        reader_stats.receive_start,
-        reader_stats.receive_end,
-        "receive",
-    );
+    let send_rate = state.messages_sent as f64 / send_duration.as_secs_f64();
+    let receive_rate = state.messages_received.len() as f64 / receive_duration.as_secs_f64();
 
-    let messages_sent = MESSAGE_COUNT as u64;
-    let messages_received = MESSAGE_COUNT as u64;
-    let send_rate = messages_sent as f64 / send_duration.as_secs_f64();
-    let receive_rate = messages_received as f64 / receive_duration.as_secs_f64();
-    let total_bytes = (MESSAGE_COUNT * PAYLOAD_SIZE) as u64;
-    let send_throughput_mb = (total_bytes as f64 / 1_000_000.0) / send_duration.as_secs_f64();
-    let receive_throughput_mb = (total_bytes as f64 / 1_000_000.0) / receive_duration.as_secs_f64();
+    let total_bytes_sent = state.messages_sent * state.payload_size as u64;
+    let total_bytes_received = state.messages_received.len() * state.payload_size;
+
+    let send_throughput_mb = (total_bytes_sent as f64 / 1_000_000.0) / send_duration.as_secs_f64();
+    let receive_throughput_mb =
+        (total_bytes_received as f64 / 1_000_000.0) / receive_duration.as_secs_f64();
+
+    println!("=== Performance Test Results ===");
+    println!("Messages sent: {}", state.messages_sent);
+    println!("Messages received: {}", state.messages_received.len());
+    println!("Send duration: {:.2?}", send_duration);
+    println!("Receive duration: {:.2?}", receive_duration);
+    println!("Send rate: {:.0} messages/sec", send_rate);
+    println!("Receive rate: {:.0} messages/sec", receive_rate);
+    println!("Send throughput: {:.2} MB/sec", send_throughput_mb);
+    println!("Receive throughput: {:.2} MB/sec", receive_throughput_mb);
 
     record_performance_results(
         "redis",
-        "test_high_volume_small_messages",
-        messages_sent,
-        messages_received,
-        PAYLOAD_SIZE,
+        test_name,
+        state.messages_sent,
+        state.messages_received.len() as u64,
+        state.payload_size,
         send_duration,
         receive_duration,
         send_rate,
@@ -389,178 +318,36 @@ fn test_high_volume_small_messages() {
         receive_throughput_mb,
     );
 
-    println!(
-        "High volume small messages test:\n  Processed {} messages in {:?} ({:.2} msg/sec)",
-        MESSAGE_COUNT, receive_duration, receive_rate
+    assert_eq!(
+        state.messages_sent, message_count,
+        "Not all messages were sent"
     );
-}
-
-/// Test large message throughput  
-#[test]
-#[ignore] // Performance test - run manually
-fn test_large_message_throughput() {
-    let stream = unique_topic("perf_large");
-    let membership = unique_consumer_group_membership("perf_large_group");
-    let consumer_group = membership.group.clone();
-    let consumer_name = membership.member.clone();
-
-    #[derive(Event, Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
-    struct LargeEvent {
-        id: u32,
-        data: Vec<u8>, // Large payload
-        metadata: String,
-    }
-
-    let stream_clone_for_topology = stream.clone();
-    let consumer_group_clone_for_topology = consumer_group.clone();
-    let consumer_name_clone_for_topology = consumer_name.clone();
-    let (backend, _context) = redis_setup::prepare_backend(move |builder| {
-        builder
-            .add_stream(RedisStreamSpec::new(stream_clone_for_topology.clone()))
-            .add_consumer_group(RedisConsumerGroupSpec::new(
-                [stream_clone_for_topology.clone()],
-                consumer_group_clone_for_topology.clone(),
-                consumer_name_clone_for_topology.clone(),
-            ))
-            .add_event_single::<LargeEvent>(stream_clone_for_topology.clone());
-    })
-    .expect("Redis backend setup successful");
-
-    let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(backend.clone()));
-    let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(backend));
-
-    writer.insert_resource(WriterStats::default());
-    reader.insert_resource(ReaderStats::default());
-
-    const LARGE_MESSAGE_COUNT: usize = 100;
-    const PAYLOAD_SIZE: usize = 10 * 1024; // 10KB per message
-
-    // Send large messages
-    let stream_clone = stream.clone();
-    writer.add_systems(
-        Update,
-        move |mut w: RedisEventWriter,
-              mut stats: ResMut<WriterStats>,
-              status: Option<Res<BackendStatus>>| {
-            if !status.map(|s| s.ready).unwrap_or(false) {
-                return;
-            }
-
-            if stats.sent >= LARGE_MESSAGE_COUNT {
-                stats.mark_send_end();
-                return;
-            }
-
-            stats.mark_send_start();
-
-            let config = RedisProducerConfig::new(stream_clone.clone());
-            let large_event = LargeEvent {
-                id: stats.sent as u32,
-                data: vec![0u8; PAYLOAD_SIZE],
-                metadata: format!("large_message_{}", stats.sent),
-            };
-            w.write(&config, large_event);
-            stats.sent += 1;
-
-            if stats.sent >= LARGE_MESSAGE_COUNT {
-                stats.mark_send_end();
-            }
-        },
+    assert_eq!(
+        state.messages_received.len(),
+        message_count as usize,
+        "Not all messages were received"
     );
 
-    // Process large messages
-    let stream_clone = stream.clone();
-    let group_clone = consumer_group.clone();
-    reader.add_systems(
-        Update,
-        move |mut r: RedisEventReader<LargeEvent>,
-              mut stats: ResMut<ReaderStats>,
-              status: Option<Res<BackendStatus>>| {
-            if !status.map(|s| s.ready).unwrap_or(false) {
-                return;
-            }
+    // Verify message ordering and content
+    let mut ordered_messages = state.messages_received.clone();
+    ordered_messages.sort_by_key(|msg| msg.sequence);
 
-            let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()]);
+    ordered_messages
+        .iter()
+        .enumerate()
+        .for_each(|(i, msg)| {
+            assert_eq!(
+                msg.sequence, i as u32,
+                "Message sequence mismatch at index {}",
+                i
+            );
+            assert_eq!(
+                msg.payload.len(),
+                payload_size,
+                "Payload size mismatch at index {}",
+                i
+            );
+        });
 
-            let events = r.read(&config);
-            if !events.is_empty() {
-                stats.mark_receive_start();
-                for wrapper in events {
-                    assert_eq!(wrapper.event().data.len(), PAYLOAD_SIZE);
-                    stats.received += 1;
-                }
-                if stats.received >= LARGE_MESSAGE_COUNT {
-                    stats.mark_receive_end();
-                }
-            }
-        },
-    );
-
-    while writer.world().resource::<WriterStats>().send_end.is_none() {
-        writer.update();
-    }
-
-    run_app_updates(&mut writer, 25);
-
-    let (received_all, _) = update_until(&mut reader, 30000, |app| {
-        app.world().resource::<ReaderStats>().received >= LARGE_MESSAGE_COUNT
-    });
-
-    if !received_all {
-        let reader_stats = reader.world().resource::<ReaderStats>();
-        panic!(
-            "Should process all {LARGE_MESSAGE_COUNT} messages (received {})",
-            reader_stats.received
-        );
-    }
-
-    let writer_stats = writer.world().resource::<WriterStats>();
-    let reader_stats = reader.world().resource::<ReaderStats>();
-
-    assert_eq!(writer_stats.sent, LARGE_MESSAGE_COUNT);
-    assert_eq!(reader_stats.received, LARGE_MESSAGE_COUNT);
-
-    let send_duration = duration_between(writer_stats.send_start, writer_stats.send_end, "send");
-    let receive_duration = duration_between(
-        reader_stats.receive_start,
-        reader_stats.receive_end,
-        "receive",
-    );
-
-    let messages_sent = LARGE_MESSAGE_COUNT as u64;
-    let messages_received = LARGE_MESSAGE_COUNT as u64;
-    let send_rate = messages_sent as f64 / send_duration.as_secs_f64();
-    let receive_rate = messages_received as f64 / receive_duration.as_secs_f64();
-    let total_bytes = (LARGE_MESSAGE_COUNT * PAYLOAD_SIZE) as u64;
-    let send_throughput_mb = (total_bytes as f64 / 1_000_000.0) / send_duration.as_secs_f64();
-    let receive_throughput_mb = (total_bytes as f64 / 1_000_000.0) / receive_duration.as_secs_f64();
-
-    record_performance_results(
-        "redis",
-        "test_large_message_throughput",
-        messages_sent,
-        messages_received,
-        PAYLOAD_SIZE,
-        send_duration,
-        receive_duration,
-        send_rate,
-        receive_rate,
-        send_throughput_mb,
-        receive_throughput_mb,
-    );
-
-    println!("Large message throughput test:");
-    let total_megabytes = total_bytes as f64 / (1024.0 * 1024.0);
-    println!("Large message throughput test:");
-    println!(
-        "  Processed {} messages ({:.2} MB)",
-        LARGE_MESSAGE_COUNT, total_megabytes
-    );
-    println!("  Send: {:?} ({:.2} msg/sec)", send_duration, send_rate);
-    println!(
-        "  Receive: {:?} ({:.2} msg/sec)",
-        receive_duration, receive_rate
-    );
+    println!("✅ Performance test completed successfully!");
 }

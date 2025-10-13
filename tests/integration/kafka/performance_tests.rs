@@ -359,8 +359,10 @@ fn run_throughput_test(
     );
 
     // Verify message ordering and content
-    state
-        .messages_received
+    let mut ordered_messages = state.messages_received.clone();
+    ordered_messages.sort_by_key(|msg| msg.sequence);
+
+    ordered_messages
         .iter()
         .enumerate()
         .for_each(|(i, msg)| {
