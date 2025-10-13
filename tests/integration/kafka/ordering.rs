@@ -41,37 +41,16 @@ fn per_topic_order_preserved() {
             .add_event_single::<TestEvent>(topic_for_reader.clone());
     }));
 
-    bevy_event_bus::runtime();
     let mut writer = App::new();
-    let mut reader = App::new();
     writer.add_plugins(EventBusPlugins(backend_w));
+
+    let mut reader = App::new();
     reader.add_plugins(EventBusPlugins(backend_r));
-    let tclone = topic.clone();
-    writer.add_systems(
-        Update,
-        move |mut w: KafkaEventWriter, mut started: Local<bool>| {
-            if !*started {
-                *started = true;
-                return;
-            }
-            let config = KafkaProducerConfig::new([tclone.clone()]);
-            for i in 0..10 {
-                let _ = w.write(
-                    &config,
-                    TestEvent {
-                        message: format!("msg-{i}"),
-                        value: i,
-                    },
-                );
-            }
-        },
-    );
-    writer.update(); // warm frame triggers started=true
-    writer.update(); // send frame (user systems run then Last stage flushes)
 
     #[derive(Resource, Default)]
     struct Collected(Vec<TestEvent>);
     reader.insert_resource(Collected::default());
+
     let tr = topic.clone();
     reader.add_systems(
         Update,
@@ -82,6 +61,35 @@ fn per_topic_order_preserved() {
             }
         },
     );
+
+    let tclone = topic.clone();
+    writer.add_systems(
+        Update,
+        move |mut writer: KafkaEventWriter, mut started: Local<bool>, mut counter: Local<u32>| {
+            if !*started {
+                *started = true;
+                return;
+            }
+
+            if *counter >= 10 {
+                return;
+            }
+
+            let config = KafkaProducerConfig::new([tclone.clone()]);
+            let _ = writer.write(
+                &config,
+                TestEvent {
+                    message: format!("msg-{}", *counter),
+                    value: *counter as i32,
+                },
+            );
+            *counter += 1;
+        },
+    );
+
+    for _ in 0..12 {
+        writer.update();
+    }
 
     // Eventual consistency loop: allow background producer task to deliver.
     let _ = wait_for_events(&mut reader, &topic, 12_000, 10, |app| {
@@ -153,33 +161,39 @@ fn cross_topic_interleave_each_ordered() {
     // Single send frame like earlier test
     writer.add_systems(
         Update,
-        move |mut w: KafkaEventWriter, mut started: Local<bool>| {
+        move |mut writer: KafkaEventWriter, mut started: Local<bool>, mut counter: Local<u32>| {
             if !*started {
                 *started = true;
                 return;
             }
+
+            if *counter >= 5 {
+                return;
+            }
+
             let config_t1 = KafkaProducerConfig::new([t1c.clone()]);
             let config_t2 = KafkaProducerConfig::new([t2c.clone()]);
-            for i in 0..5 {
-                let _ = w.write(
-                    &config_t1,
-                    TestEvent {
-                        message: format!("A{i}"),
-                        value: i,
-                    },
-                );
-                let _ = w.write(
-                    &config_t2,
-                    TestEvent {
-                        message: format!("B{i}"),
-                        value: i,
-                    },
-                );
-            }
+            let _ = writer.write(
+                &config_t1,
+                TestEvent {
+                    message: format!("A{}", *counter),
+                    value: *counter as i32,
+                },
+            );
+            let _ = writer.write(
+                &config_t2,
+                TestEvent {
+                    message: format!("B{}", *counter),
+                    value: *counter as i32,
+                },
+            );
+            *counter += 1;
         },
     );
-    writer.update(); // warm
-    writer.update(); // send
+
+    for _ in 0..12 {
+        writer.update();
+    }
 
     #[derive(Resource, Default)]
     struct CollectedT1(Vec<TestEvent>);
