@@ -88,7 +88,7 @@ fn kafka_single_direction_writer_reader_flow() {
             return;
         }
         let config = KafkaProducerConfig::new([data.1.clone()]);
-        let _ = writer.write(&config, data.0.clone());
+        writer.write(&config, data.0.clone());
         *sent = true;
     }
     writer_app.add_systems(Update, writer_system);
@@ -180,7 +180,7 @@ fn kafka_bidirectional_apps_exchange_events() {
         }
         let config = KafkaProducerConfig::new([outgoing.topic.clone()]);
         for event in outgoing.events.clone() {
-            let _ = writer.write(&config, event);
+            writer.write(&config, event);
         }
         outgoing.sent = true;
     }
@@ -217,7 +217,7 @@ fn kafka_bidirectional_apps_exchange_events() {
     });
     app_b.add_systems(Update, (reader_system, writer_system));
 
-    let expected_events = vec![event_from_a.clone(), event_from_b.clone()];
+    let expected_events = [event_from_a.clone(), event_from_b.clone()];
 
     let (success, _) = update_two_apps_until(&mut app_a, &mut app_b, 10_000, |app_a, app_b| {
         let app_a_has_all = {

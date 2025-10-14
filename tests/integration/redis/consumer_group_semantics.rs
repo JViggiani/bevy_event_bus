@@ -149,7 +149,7 @@ fn same_consumer_group_distributes_messages_round_robin() {
             let collected1 = reader1_app.world().resource::<EventCollector>();
             let collected2 = reader2_app.world().resource::<EventCollector>();
             let total_events = collected1.0.len() + collected2.0.len();
-            total_events >= 6 && collected1.0.len() > 0 && collected2.0.len() > 0
+            total_events >= 6 && !collected1.0.is_empty() && !collected2.0.is_empty()
         },
     );
 
@@ -168,11 +168,11 @@ fn same_consumer_group_distributes_messages_round_robin() {
         "All dispatched events should be observed across the consumer group"
     );
     assert!(
-        collected1.0.len() > 0,
+        !collected1.0.is_empty(),
         "Reader1 should receive at least one event via shared consumer group"
     );
     assert!(
-        collected2.0.len() > 0,
+        !collected2.0.is_empty(),
         "Reader2 should receive at least one event via shared consumer group"
     );
 
@@ -505,7 +505,7 @@ fn reader_does_not_work_without_consumer_group() {
 
     let (received, _) = update_until(&mut reader, 5_000, |app| {
         let collected = app.world().resource::<EventCollector>();
-        collected.0.len() >= 1
+        !collected.0.is_empty()
     });
 
     assert!(

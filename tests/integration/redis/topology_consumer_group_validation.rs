@@ -129,7 +129,7 @@ fn test_topology_setup_principle() {
         "Setup should take a measurable amount of time"
     );
     assert!(
-        collected.0.len() > 0,
+        !collected.0.is_empty(),
         "Runtime operations should work efficiently"
     );
 

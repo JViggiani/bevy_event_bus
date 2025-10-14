@@ -15,7 +15,7 @@ use bevy_event_bus::{
 };
 use integration_tests::utils::helpers::{unique_consumer_group, unique_topic};
 use integration_tests::utils::kafka_setup;
-use integration_tests::utils::performance::record_performance_results;
+use integration_tests::utils::performance::{PerformanceMetrics, record_performance_results};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -477,7 +477,7 @@ fn run_throughput_test(
         loop {
             {
                 let state = app.world().resource::<PerformanceTestState>();
-                if measurement_complete(&state) {
+                if measurement_complete(state) {
                     break;
                 }
             }
@@ -727,19 +727,19 @@ fn run_throughput_test(
         receive_secs.len()
     );
 
-    record_performance_results(
-        "kafka",
+    record_performance_results(PerformanceMetrics {
+        backend: "kafka",
         test_name,
-        message_count,
-        message_count,
-        state.payload_size,
-        filtered_median_send_duration,
-        filtered_median_receive_duration,
-        filtered_median_send_rate,
-        filtered_median_receive_rate,
-        filtered_median_send_throughput_mb,
-        filtered_median_receive_throughput_mb,
-    );
+        messages_sent: message_count,
+        messages_received: message_count,
+        payload_size: state.payload_size,
+        send_duration: filtered_median_send_duration,
+        receive_duration: filtered_median_receive_duration,
+        send_rate: filtered_median_send_rate,
+        receive_rate: filtered_median_receive_rate,
+        send_throughput_mb: filtered_median_send_throughput_mb,
+        receive_throughput_mb: filtered_median_receive_throughput_mb,
+    });
 
     assert_eq!(
         state.messages_sent, message_count,

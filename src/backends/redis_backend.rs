@@ -1,5 +1,3 @@
-#![cfg(feature = "redis")]
-
 use async_trait::async_trait;
 use crossbeam_channel::{Receiver, SendTimeoutError, Sender, TryRecvError, TrySendError, bounded};
 use redis::aio::ConnectionManager;
@@ -815,7 +813,7 @@ impl RedisEventBusBackend {
                     if matches!(request.strategy, TrimStrategy::Approximate) {
                         cmd.arg("~");
                     }
-                    cmd.arg(request.maxlen as usize);
+                    cmd.arg(request.maxlen);
 
                     if let Err(err) = cmd.query_async::<_, RedisValue>(&mut manager).await {
                         warn!(
@@ -866,7 +864,7 @@ impl RedisEventBusBackend {
         for request in pending.drain(..) {
             grouped
                 .entry((request.stream, request.consumer_group))
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(request.entry_id);
         }
 
@@ -1078,23 +1076,26 @@ impl EventBusBackend for RedisEventBusBackend {
     fn configure_plugin(&self, _app: &mut App) {}
 
     fn setup_plugin(&self, _world: &mut World) -> BackendPluginSetup {
-        let mut setup = BackendPluginSetup::default();
-        setup.ready_topics = self
-            .state
-            .config
-            .topology
-            .stream_names()
-            .into_iter()
-            .collect();
-        setup.message_stream = self.state.take_receiver();
-        if let Some(sender) = self.state.ack_sender() {
-            setup.manual_commit = Some(Box::new(RedisManualAckHandle::new(
+        let manual_commit = self.state.ack_sender().map(|sender| {
+            Box::new(RedisManualAckHandle::new(
                 sender,
                 self.state.ack_counters.clone(),
-            )));
+            )) as Box<dyn ManualCommitHandle>
+        });
+
+        BackendPluginSetup {
+            ready_topics: self
+                .state
+                .config
+                .topology
+                .stream_names()
+                .into_iter()
+                .collect(),
+            message_stream: self.state.take_receiver(),
+            manual_commit,
+            redis_topology: Some(self.state.config.topology.clone()),
+            ..BackendPluginSetup::default()
         }
-        setup.redis_topology = Some(self.state.config.topology.clone());
-        setup
     }
 
     fn augment_metrics(&self, metrics: &mut ConsumerMetrics) {
@@ -1182,7 +1183,7 @@ impl EventBusBackend for RedisEventBusBackend {
                     if cfg.trim_strategy == TrimStrategy::Approximate {
                         cmd.arg("~");
                     }
-                    cmd.arg(maxlen as usize);
+                    cmd.arg(maxlen);
                 }
             }
             cmd.arg("*");

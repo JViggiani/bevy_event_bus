@@ -142,13 +142,11 @@ fn ensure_container() -> Option<String> {
     // Check existing running container
     let detect_start = Instant::now();
     let ps = Command::new("docker")
-        .args([
-            "ps",
-            "--filter",
-            &format!("name={}", CONTAINER_NAME),
-            "--format",
-            "{{.ID}}",
-        ])
+        .arg("ps")
+        .arg("--filter")
+        .arg(format!("name={}", CONTAINER_NAME))
+        .arg("--format")
+        .arg("{{.ID}}")
         .output()
         .ok();
     if let Some(out) = ps {
@@ -423,7 +421,6 @@ where
 
 /// Same as `setup` but allows providing a unique suffix for the consumer group id so that
 /// multiple backends in the same test process do not share a group (ensuring each receives all messages).
-
 /// Ensure a topic exists (idempotent) using Kafka Admin API. Best-effort; ignores 'topic already exists' errors.
 pub fn ensure_topic(bootstrap: &str, topic: &str, partitions: i32) {
     let mut cfg = rdkafka::config::ClientConfig::new();
@@ -472,18 +469,15 @@ pub fn ensure_topic_ready(
         producer_cfg.set("bootstrap.servers", bootstrap);
         producer_cfg.set(
             "client.id",
-            &format!("topic_readiness_producer_{}", attempts),
+            format!("topic_readiness_producer_{}", attempts),
         );
 
         let mut consumer_cfg = ClientConfig::new();
         consumer_cfg.set("bootstrap.servers", bootstrap);
-        consumer_cfg.set(
-            "group.id",
-            &format!("topic_readiness_consumer_{}", attempts),
-        );
+        consumer_cfg.set("group.id", format!("topic_readiness_consumer_{}", attempts));
         consumer_cfg.set(
             "client.id",
-            &format!("topic_readiness_consumer_{}", attempts),
+            format!("topic_readiness_consumer_{}", attempts),
         );
         consumer_cfg.set("auto.offset.reset", "earliest");
 

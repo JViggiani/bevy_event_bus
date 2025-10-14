@@ -106,7 +106,7 @@ fn configuration_with_readers_writers_works() {
         10000, // 10 second timeout
         |app| {
             let collected = app.world().get_resource::<Collected>().unwrap();
-            collected.0.len() >= 1
+            !collected.0.is_empty()
         },
     );
 

@@ -194,7 +194,7 @@ dependencies = [
 
 [[package]]
 name = "bevy_event_bus"
-version = "0.2.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-trait",

@@ -1,4 +1,6 @@
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
+use std::marker::PhantomData;
 
 use bevy_event_bus::backends::event_bus_backend::{LagReportingDescriptor, ManualCommitDescriptor};
 use bevy_event_bus::backends::{EventBusBackend, EventBusBackendResource};
@@ -6,7 +8,7 @@ use bevy_event_bus::decoder::DecoderRegistry;
 use bevy_event_bus::resources::{
     ConsumerMetrics, DecodedEventBuffer, DrainMetricsEvent, DrainedTopicMetadata,
     EventBusConsumerConfig, EventMetadata, IncomingMessage, MessageQueue, ProcessedMessage,
-    ProvisionedTopology, TopicDecodedEvents,
+    ProvisionedTopology,
 };
 use bevy_event_bus::runtime::{block_on, ensure_runtime};
 use bevy_event_bus::writers::EventBusErrorQueue;
@@ -73,6 +75,16 @@ impl BackendCapabilities {
             lag_reporting: None,
         }
     }
+}
+
+#[derive(SystemParam)]
+struct DrainSystemResources<'w, 's> {
+    metadata_buffers: ResMut<'w, DrainedTopicMetadata>,
+    decoded_buffer: ResMut<'w, DecodedEventBuffer>,
+    decoder_registry: ResMut<'w, DecoderRegistry>,
+    metrics: ResMut<'w, ConsumerMetrics>,
+    config: Res<'w, EventBusConsumerConfig>,
+    _marker: PhantomData<&'s ()>,
 }
 
 impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
@@ -166,14 +178,24 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
         // Drain system with multi-decoder pipeline
         fn drain_system(
             backend: Option<Res<EventBusBackendResource>>,
-            mut metadata_buffers: ResMut<DrainedTopicMetadata>,
-            mut decoded_buffer: ResMut<DecodedEventBuffer>,
-            mut decoder_registry: ResMut<DecoderRegistry>,
-            mut metrics: ResMut<ConsumerMetrics>,
-            config: Res<EventBusConsumerConfig>,
+            resources: DrainSystemResources,
             maybe_queue: Option<Res<MessageQueue>>,
             mut drain_events: EventWriter<DrainMetricsEvent>,
         ) {
+            let DrainSystemResources {
+                metadata_buffers,
+                decoded_buffer,
+                decoder_registry,
+                metrics,
+                config,
+                ..
+            } = resources;
+
+            let mut metadata_buffers = metadata_buffers;
+            let mut decoded_buffer = decoded_buffer;
+            let mut decoder_registry = decoder_registry;
+            let mut metrics = metrics;
+
             let frame_start = std::time::Instant::now();
             metrics.drained_last_frame = 0;
             // Default queue length metrics when no queue
@@ -227,10 +249,8 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                             let decoded_events = decoder_registry.decode_all(topic_str, &payload);
 
                             // Get or create topic buffer
-                            let topic_buffer = decoded_buffer
-                                .topics
-                                .entry(topic.clone())
-                                .or_insert_with(TopicDecodedEvents::new);
+                            let topic_buffer =
+                                decoded_buffer.topics.entry(topic.clone()).or_default();
                             topic_buffer.total_processed += 1;
 
                             if decoded_events.is_empty() {
@@ -277,7 +297,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                                     topic_buffer
                                         .events_by_type
                                         .entry(decoded_event.type_id)
-                                        .or_insert_with(Vec::new)
+                                        .or_default()
                                         .push(type_erased);
                                 }
 
@@ -291,7 +311,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                                 metadata_buffers
                                     .topics
                                     .entry(topic.clone())
-                                    .or_insert_with(Vec::new)
+                                    .or_default()
                                     .push(processed_msg);
                             }
 
@@ -309,7 +329,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
 
             if let Some(backend_res) = backend_ref {
                 let guard = backend_res.read();
-                guard.augment_metrics(&mut metrics);
+                guard.augment_metrics(metrics.as_mut());
             }
 
             // Count idle frame if nothing drained

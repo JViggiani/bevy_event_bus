@@ -165,7 +165,7 @@ fn offset_configuration_latest_ignores_historical_events() {
             // Send 3 historical events that the latest consumer should NOT see
             let config = KafkaProducerConfig::new([topic_clone.clone()]);
             for i in 0..3 {
-                let _ = w.write(
+                w.write(
                     &config,
                     TestEvent {
                         message: format!("historical_{}", i),
@@ -225,7 +225,7 @@ fn offset_configuration_latest_ignores_historical_events() {
     latest_app.add_systems(Update, move |mut w: KafkaEventWriter| {
         // Send new event after consumer is established
         let config = KafkaProducerConfig::new([topic_send.clone()]);
-        let _ = w.write(
+        w.write(
             &config,
             TestEvent {
                 message: "new_event".to_string(),
@@ -308,7 +308,7 @@ fn default_offset_configuration_is_latest() {
         let topic_clone = topic.clone();
         producer_app.add_systems(Update, move |mut w: KafkaEventWriter| {
             let config = KafkaProducerConfig::new([topic_clone.clone()]);
-            let _ = w.write(
+            w.write(
                 &config,
                 TestEvent {
                     message: "should_not_see_this".to_string(),

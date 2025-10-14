@@ -198,7 +198,7 @@ impl TopicDecodedEvents {
 
         self.events_by_type
             .entry(type_id)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(type_erased);
     }
 

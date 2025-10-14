@@ -121,7 +121,7 @@ fn kafka_metadata_end_to_end_validation() {
         if !data.sent {
             let config = KafkaProducerConfig::new([data.topic.clone()]);
             for test_event in &data.test_cases {
-                let _ = w.write(&config, test_event.clone());
+                w.write(&config, test_event.clone());
             }
             data.sent = true;
             info!("Sent {} test events", data.test_cases.len());
@@ -374,9 +374,9 @@ fn kafka_metadata_topic_isolation() {
             };
 
             let config_a = KafkaProducerConfig::new([data.topic_a.clone()]);
-            let _ = w.write(&config_a, event_a);
+            w.write(&config_a, event_a);
             let config_b = KafkaProducerConfig::new([data.topic_b.clone()]);
-            let _ = w.write(&config_b, event_b);
+            w.write(&config_b, event_b);
             data.sent = true;
 
             info!("Sent events to both topics");
@@ -541,7 +541,7 @@ fn kafka_metadata_consistency_under_load() {
                         message: format!("batch_{}_event_{}", batch, i),
                         value: (batch * BATCH_SIZE + i) as i32,
                     };
-                    let _ = w.write(&config, event);
+                    w.write(&config, event);
                 }
             }
             data.sent = true;
@@ -620,7 +620,7 @@ fn kafka_metadata_consistency_under_load() {
             partitions_seen.insert(kafka_meta.partition);
             offsets_by_partition
                 .entry(kafka_meta.partition)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(kafka_meta.offset);
         } else {
             panic!("Expected Kafka metadata for event {}", i);

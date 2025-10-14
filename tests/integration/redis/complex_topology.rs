@@ -227,7 +227,7 @@ fn complex_topology_no_cross_talk() {
                     expected_streams.iter().all(|stream| {
                         stream_map
                             .get(stream)
-                            .map(|entries| entries.len() >= 1)
+                            .map(|entries| !entries.is_empty())
                             .unwrap_or(false)
                     })
                 } else {
@@ -262,7 +262,7 @@ fn complex_topology_no_cross_talk() {
                 .expect("message catalog contains stream")
                 .message;
             assert!(
-                entries.len() >= 1,
+                !entries.is_empty(),
                 "Group {group} should receive at least one event from stream {stream}",
             );
             assert!(

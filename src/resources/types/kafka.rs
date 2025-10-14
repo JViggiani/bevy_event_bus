@@ -1,5 +1,3 @@
-#![cfg(feature = "kafka")]
-
 use crossbeam_channel::{Receiver, Sender};
 
 use crate::backends::kafka_backend::{KafkaCommitRequest, KafkaCommitResult, KafkaLagCache};

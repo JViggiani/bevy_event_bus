@@ -125,7 +125,7 @@ fn external_bus_events_flow_from_both_writers() {
     reader_app.add_plugins(EventBusPlugins(backend_reader));
     reader_app.insert_resource(ReaderState {
         topic: topic.clone(),
-        consumer_group: consumer_group,
+        consumer_group,
     });
     reader_app.insert_resource(CapturedEvents::default());
     reader_app.add_systems(Update, capture_wrapped_events);

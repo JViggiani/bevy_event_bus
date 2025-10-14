@@ -91,7 +91,7 @@ fn redis_single_direction_writer_reader_flow() {
             return;
         }
         let config = RedisProducerConfig::new(data.1.clone());
-        let _ = writer.write(&config, data.0.clone());
+        writer.write(&config, data.0.clone());
         *sent = true;
     }
     writer_app.add_systems(Update, writer_system);
@@ -326,7 +326,7 @@ fn redis_bidirectional_apps_exchange_events() {
         }
         let config = RedisProducerConfig::new(outgoing.stream.clone());
         for event in outgoing.events.clone() {
-            let _ = writer.write(&config, event);
+            writer.write(&config, event);
         }
         outgoing.sent = true;
     }
@@ -365,7 +365,7 @@ fn redis_bidirectional_apps_exchange_events() {
     });
     app_b.add_systems(Update, (reader_system, writer_system));
 
-    let expected_events = vec![event_from_a.clone(), event_from_b.clone()];
+    let expected_events = [event_from_a.clone(), event_from_b.clone()];
 
     let (success, _) = update_two_apps_until(&mut app_a, &mut app_b, 8_000, |app_a, app_b| {
         let app_a_has_all = {

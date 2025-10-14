@@ -73,7 +73,7 @@ fn no_event_duplication_exactly_once_delivery() {
     fn writer_system(mut w: KafkaEventWriter, data: Res<ToSend>) {
         let config = KafkaProducerConfig::new([data.1.clone()]);
         for event in &data.0 {
-            let _ = w.write(&config, event.clone());
+            w.write(&config, event.clone());
         }
     }
     writer.add_systems(Update, writer_system);

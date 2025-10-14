@@ -1,5 +1,3 @@
-#![cfg(feature = "redis")]
-
 use std::any::Any;
 
 use bevy::prelude::*;

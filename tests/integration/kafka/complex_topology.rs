@@ -247,7 +247,7 @@ fn complex_topology_routing() {
                         expected_topics.iter().all(|topic| {
                             topic_map
                                 .get(topic)
-                                .map(|entries| entries.len() >= 1)
+                                .map(|entries| !entries.is_empty())
                                 .unwrap_or(false)
                         }) && topic_map
                             .keys()
@@ -288,7 +288,7 @@ fn complex_topology_routing() {
                 .expect("message catalog contains topic")
                 .message;
             assert!(
-                entries.len() >= 1,
+                !entries.is_empty(),
                 "Group {group} should receive at least one event from topic {topic}"
             );
             assert!(

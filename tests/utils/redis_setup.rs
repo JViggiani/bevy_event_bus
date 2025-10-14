@@ -1,5 +1,3 @@
-#![cfg(feature = "redis")]
-
 use anyhow::{Context, Result, anyhow};
 use bevy::prelude::App;
 use bevy_event_bus::EventBusPlugins;
@@ -47,7 +45,7 @@ static NEXT_DATABASE_INDEX: Lazy<AtomicUsize> =
     Lazy::new(|| AtomicUsize::new(DEFAULT_DB_INDEX + 1));
 
 thread_local! {
-    static DATABASE_OVERRIDE: RefCell<Option<usize>> = RefCell::new(None);
+    static DATABASE_OVERRIDE: RefCell<Option<usize>> = const { RefCell::new(None) };
 }
 
 /// Runtime context returned alongside a configured Redis backend.

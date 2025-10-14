@@ -49,7 +49,7 @@ fn frame_limit_spreads_drain() {
     writer.add_systems(Update, move |mut w: KafkaEventWriter| {
         let config = KafkaProducerConfig::new([tclone.clone()]);
         for i in 0..15 {
-            let _ = w.write(
+            w.write(
                 &config,
                 TestEvent {
                     message: format!("v{i}"),

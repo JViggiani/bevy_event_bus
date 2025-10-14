@@ -222,7 +222,7 @@ impl RedisConsumerGroupSpec {
 }
 
 /// Aggregate configuration consumed by the Redis backend during construction.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct RedisTopologyConfig {
     streams: Vec<RedisStreamSpec>,
     consumer_groups: HashMap<String, RedisConsumerGroupSpec>,
@@ -260,16 +260,6 @@ impl RedisTopologyConfig {
 
     pub fn event_bindings(&self) -> &[RedisTopologyEventBinding] {
         &self.event_bindings
-    }
-}
-
-impl Default for RedisTopologyConfig {
-    fn default() -> Self {
-        Self {
-            streams: Vec::new(),
-            consumer_groups: HashMap::new(),
-            event_bindings: Vec::new(),
-        }
     }
 }
 

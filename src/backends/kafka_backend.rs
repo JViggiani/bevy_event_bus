@@ -664,17 +664,17 @@ impl EventBusBackend for KafkaEventBusBackend {
     }
 
     fn setup_plugin(&self, _world: &mut World) -> BackendPluginSetup {
-        let mut setup = BackendPluginSetup::default();
-        setup.ready_topics = self.configured_topics();
-        setup.message_stream = self.take_receiver();
-        setup.manual_commit = Some(Box::new(KafkaManualCommitHandle::new(
-            self.commit_sender(),
-            self.take_commit_results(),
-        )));
-        setup.lag_reporting = Some(Box::new(KafkaLagHandle::new(self.lag_cache())));
-        setup.kafka_topology = Some(self.state.config.topology.clone());
-
-        setup
+        BackendPluginSetup {
+            ready_topics: self.configured_topics(),
+            message_stream: self.take_receiver(),
+            manual_commit: Some(Box::new(KafkaManualCommitHandle::new(
+                self.commit_sender(),
+                self.take_commit_results(),
+            ))),
+            lag_reporting: Some(Box::new(KafkaLagHandle::new(self.lag_cache()))),
+            kafka_topology: Some(self.state.config.topology.clone()),
+            ..BackendPluginSetup::default()
+        }
     }
 
     fn augment_metrics(&self, metrics: &mut ConsumerMetrics) {
@@ -1120,7 +1120,7 @@ fn build_consumer(
         },
     );
     if let Some(client_id) = connection.client_id() {
-        cfg.set("client.id", &format!("{}_{}", client_id, group_id));
+        cfg.set("client.id", format!("{}_{}", client_id, group_id));
     }
 
     cfg.create()

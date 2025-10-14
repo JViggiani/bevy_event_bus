@@ -88,14 +88,14 @@ fn single_topic_multiple_types_same_frame() {
                 return;
             }
             let config = KafkaProducerConfig::new([tclone.clone()]);
-            let _ = writer.write(
+            writer.write(
                 &config,
                 TestEvent {
                     message: "hello".into(),
                     value: 42,
                 },
             );
-            let _ = writer.write(
+            writer.write(
                 &config,
                 UserLoginEvent {
                     user_id: "u1".into(),
@@ -199,7 +199,7 @@ fn single_topic_multiple_types_interleaved_frames() {
             let config = KafkaProducerConfig::new([tclone.clone()]);
             match *counter % 2 {
                 0 => {
-                    let _ = writer.write(
+                    writer.write(
                         &config,
                         TestEvent {
                             message: format!("m{}", *counter),
@@ -208,7 +208,7 @@ fn single_topic_multiple_types_interleaved_frames() {
                     );
                 }
                 _ => {
-                    let _ = writer.write(
+                    writer.write(
                         &config,
                         UserLoginEvent {
                             user_id: format!("u{}", *counter),

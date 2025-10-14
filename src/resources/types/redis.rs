@@ -1,5 +1,3 @@
-#![cfg(feature = "redis")]
-
 use bevy::prelude::*;
 use crossbeam_channel::Sender;
 

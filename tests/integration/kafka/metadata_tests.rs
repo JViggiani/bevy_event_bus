@@ -80,7 +80,7 @@ fn metadata_propagation_from_kafka_to_bevy() {
             if !*sent {
                 *sent = true;
                 let config = KafkaProducerConfig::new([topic_clone.clone()]);
-                let _ = w.write(&config, test_event.clone());
+                w.write(&config, test_event.clone());
             }
         },
     );
@@ -320,7 +320,7 @@ fn timestamp_accuracy_for_latency_measurement() {
                     value: 999,
                 };
                 let config = KafkaProducerConfig::new([topic_clone.clone()]);
-                let _ = w.write(&config, event);
+                w.write(&config, event);
             }
         },
     );
@@ -442,7 +442,7 @@ fn mixed_metadata_and_regular_reading() {
                         message: format!("mixed-{}", i),
                         value: i,
                     };
-                    let _ = w.write(&config, event);
+                    w.write(&config, event);
                 }
             }
         },

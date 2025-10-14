@@ -1,6 +1,6 @@
 [package]
 name = "bevy_event_bus"
-version = "0.2.0"
+version = "1.0.0"
 edition = "2024"
 description = "A Bevy plugin that connects Bevy's event system to external message brokers like Kafka"
 license-file = "LICENSE"

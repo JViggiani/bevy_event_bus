@@ -44,24 +44,41 @@ impl PerformanceCsvRecord {
     }
 }
 
+/// Snapshot of performance metrics produced by an integration benchmark.
+pub struct PerformanceMetrics<'a> {
+    pub backend: &'a str,
+    pub test_name: &'a str,
+    pub messages_sent: u64,
+    pub messages_received: u64,
+    pub payload_size: usize,
+    pub send_duration: Duration,
+    pub receive_duration: Duration,
+    pub send_rate: f64,
+    pub receive_rate: f64,
+    pub send_throughput_mb: f64,
+    pub receive_throughput_mb: f64,
+}
+
 /// Records a set of performance metrics into the shared CSV log.
 ///
 /// This function preserves the historical CSV schema, adding a new entry that
 /// includes the backend identifier together with message throughput metrics. If
 /// the CSV file does not yet exist, it will be created with the correct header.
-pub fn record_performance_results(
-    backend: &str,
-    test_name: &str,
-    messages_sent: u64,
-    messages_received: u64,
-    payload_size: usize,
-    send_duration: Duration,
-    receive_duration: Duration,
-    send_rate: f64,
-    receive_rate: f64,
-    send_throughput_mb: f64,
-    receive_throughput_mb: f64,
-) {
+pub fn record_performance_results(metrics: PerformanceMetrics<'_>) {
+    let PerformanceMetrics {
+        backend,
+        test_name,
+        messages_sent,
+        messages_received,
+        payload_size,
+        send_duration,
+        receive_duration,
+        send_rate,
+        receive_rate,
+        send_throughput_mb,
+        receive_throughput_mb,
+    } = metrics;
+
     let timestamp_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())

@@ -11,16 +11,19 @@ pub trait DecoderFn: Send + Sync + 'static {
     /// Returns Some(Box<dyn Any + Send + Sync>) if successful, None if this decoder cannot handle the data
     fn decode(&self, data: &[u8]) -> Option<Box<dyn Any + Send + Sync>>;
 
-    /// Get the TypeId of the event type this decoder produces
-    fn type_id(&self) -> TypeId;
+    /// Get the [`TypeId`] of the event type this decoder produces
+    fn event_type_id(&self) -> TypeId;
 
     /// Get a human-readable name for this decoder (for debugging/logging)
     fn name(&self) -> &'static str;
 }
 
-/// Concrete implementation of DecoderFn for a specific event type
+type DecoderClosure<T> = dyn Fn(&[u8]) -> Option<T> + Send + Sync + 'static;
+type BoxedDecoderClosure<T> = Box<DecoderClosure<T>>;
+
+/// Concrete implementation of [`DecoderFn`] for a specific event type
 pub struct TypedDecoder<T: BusEvent + Event> {
-    decoder_fn: Box<dyn Fn(&[u8]) -> Option<T> + Send + Sync + 'static>,
+    decoder_fn: BoxedDecoderClosure<T>,
     name: &'static str,
 }
 
@@ -49,7 +52,7 @@ impl<T: BusEvent + Event> DecoderFn for TypedDecoder<T> {
         (self.decoder_fn)(data).map(|event| Box::new(event) as Box<dyn Any + Send + Sync>)
     }
 
-    fn type_id(&self) -> TypeId {
+    fn event_type_id(&self) -> TypeId {
         TypeId::of::<T>()
     }
 
@@ -125,7 +128,7 @@ impl DecoderRegistry {
                         stats.successes += 1;
                         results.push(DecodedEvent {
                             event: event_any,
-                            type_id: decoder.type_id(),
+                            type_id: decoder.event_type_id(),
                             decoder_name,
                         });
                         tracing::trace!(

@@ -669,7 +669,7 @@ fn test_error_retry_mechanism() {
         .filter(|e| {
             e.original_event
                 .as_ref()
-                .map_or(false, |ev| !ev.message.contains("retry"))
+                .is_some_and(|ev| !ev.message.contains("retry"))
         })
         .collect();
     let retry_errors: Vec<_> = state
@@ -678,7 +678,7 @@ fn test_error_retry_mechanism() {
         .filter(|e| {
             e.original_event
                 .as_ref()
-                .map_or(false, |ev| ev.message.contains("retry"))
+                .is_some_and(|ev| ev.message.contains("retry"))
         })
         .collect();
 

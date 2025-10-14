@@ -20,8 +20,10 @@ pub use redis::{RedisEventWriter, RedisWriterError};
 /// Queue of errors emitted by writers so they can be flushed outside of the system parameter borrow.
 #[derive(Resource, Default)]
 pub struct EventBusErrorQueue {
-    pending_errors: Mutex<Vec<Box<dyn Fn(&mut World) + Send + Sync>>>,
+    pending_errors: Mutex<Vec<ErrorCallback>>,
 }
+
+type ErrorCallback = Box<dyn Fn(&mut World) + Send + Sync>;
 
 impl EventBusErrorQueue {
     pub fn add_error<T: BusEvent + Event>(&self, error: EventBusError<T>) {
@@ -32,7 +34,7 @@ impl EventBusErrorQueue {
         }
     }
 
-    pub fn drain_pending(&self) -> Vec<Box<dyn Fn(&mut World) + Send + Sync>> {
+    pub fn drain_pending(&self) -> Vec<ErrorCallback> {
         if let Ok(mut pending) = self.pending_errors.lock() {
             std::mem::take(&mut *pending)
         } else {

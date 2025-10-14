@@ -76,7 +76,7 @@ fn per_topic_order_preserved() {
             }
 
             let config = KafkaProducerConfig::new([tclone.clone()]);
-            let _ = writer.write(
+            writer.write(
                 &config,
                 TestEvent {
                     message: format!("msg-{}", *counter),
@@ -173,14 +173,14 @@ fn cross_topic_interleave_each_ordered() {
 
             let config_t1 = KafkaProducerConfig::new([t1c.clone()]);
             let config_t2 = KafkaProducerConfig::new([t2c.clone()]);
-            let _ = writer.write(
+            writer.write(
                 &config_t1,
                 TestEvent {
                     message: format!("A{}", *counter),
                     value: *counter as i32,
                 },
             );
-            let _ = writer.write(
+            writer.write(
                 &config_t2,
                 TestEvent {
                     message: format!("B{}", *counter),

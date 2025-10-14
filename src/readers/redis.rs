@@ -1,5 +1,3 @@
-#![cfg(feature = "redis")]
-
 use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
