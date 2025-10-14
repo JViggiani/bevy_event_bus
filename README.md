@@ -1,22 +1,22 @@
 # bevy_event_bus
 
-A Bevy plugin that bridges Bevy's event system with external message brokers such as Kafka. It keeps authoring ergonomics close to standard Bevy patterns while powering production-grade ingestion, decoding, and delivery pipelines.
+A Bevy plugin that bridges Bevy's event system with external message brokers such as Kafka and Redis. It keeps authoring ergonomics close to standard Bevy patterns while allowing for ingestion, decoding, and delivery of events to and from a bevy app.
 
 ## Features
 
-- Topology-driven registration – declare topics, consumer groups, and event bindings up front via `KafkaTopologyBuilder`; the backend applies them automatically during startup.
+- Topology-driven registration - declare topics, consumer groups, and event bindings up front via `KafkaTopologyBuilder`; the backend applies them automatically during startup.
 - Multi-decoder pipeline – register multiple decoders per topic and fan decoded payloads out to matching Bevy events in a single pass.
 - Type-safe configuration – reuse strongly typed consumer and producer configs across systems without exposing backend-specific traits in your signatures.
 - Rich observability – drain metrics, lag snapshots, and commit statistics surface as Bevy resources/events ready for diagnostics.
-- Extensible architecture – Kafka ships out of the box; other brokers can plug in by implementing the backend trait.
+- Extensible architecture – Kafka and Redis ship out of the box; additional brokers can plug in by implementing the backend trait.
 
 ## Installation
 
-Add the crate to your `Cargo.toml` and enable the Kafka feature when you need the Kafka backend:
+Add the crate to your `Cargo.toml` and enable the backend features you need:
 
 ```toml
 [dependencies]
-bevy_event_bus = { version = "0.2", features = ["kafka"] }
+bevy_event_bus = { version = "0.2", features = ["kafka", "redis"] }
 ```
 
 ## Quick start
@@ -55,7 +55,7 @@ fn main() {
             )
             .add_consumer_group(
                 "game-servers",
-                KafkaConsumerGroupSpec::new(["game-events.level-up"])\
+                KafkaConsumerGroupSpec::new(["game-events.level-up"])
                     .initial_offset(KafkaInitialOffset::Earliest),
             )
             .add_event_single::<PlayerLevelUp>("game-events.level-up");
@@ -81,7 +81,7 @@ struct LevelUpProducerConfig(KafkaProducerConfig);
 
 impl Default for LevelUpProducerConfig {
     fn default() -> Self {
-        Self(KafkaProducerConfig::new("localhost:9092", ["game-events.level-up"]).acks("all"))
+        Self(KafkaProducerConfig::new(["game-events.level-up"]).acks("all"))
     }
 }
 
@@ -90,11 +90,10 @@ struct LevelUpConsumerConfig(KafkaConsumerConfig);
 
 impl Default for LevelUpConsumerConfig {
     fn default() -> Self {
-        Self(KafkaConsumerConfig::new(
-            "localhost:9092",
-            "game-servers",
-            ["game-events.level-up"],
-        ))
+        Self(
+            KafkaConsumerConfig::new("game-servers", ["game-events.level-up"])
+                .auto_offset_reset("earliest"),
+        )
     }
 }
 
@@ -141,8 +140,4 @@ Hook these into your diagnostics UI or telemetry exporters to keep an eye on the
 ## Testing & performance
 
 - The integration suite under `tests/` can launch a temporary Redpanda container when Docker is available. Set `KAFKA_BOOTSTRAP_SERVERS` to target an existing broker if you prefer to manage infrastructure yourself.
-- Run `cargo test` for unit coverage and `./run_performance_tests.py` to capture throughput metrics. Compare new runs with `event_bus_perf_results.csv` to spot regressions; each row now includes the test name and a `send_rate_delta_per_sec` column so you can gauge improvement or drift at a glance.
-
-## Contributing
-
-Issues and pull requests are welcome. When adding features, prefer extending the topology/configuration surfaces over reintroducing ad-hoc registration helpers so the APIs stay cohesive.
+- Run `cargo test` for unit coverage and `./run_performance_tests.py` to capture throughput metrics. Compare new runs with `event_bus_perf_results.csv` to spot regressions; each row records the test name plus send/receive delta percentages so you can gauge improvement or drift at a glance.
