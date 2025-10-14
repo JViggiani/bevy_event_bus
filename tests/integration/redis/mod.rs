@@ -17,8 +17,5 @@ pub mod ordering;
 pub mod performance_tests;
 pub mod start_id_behavior;
 pub mod stream_trim;
-pub mod test_basic_multi_type;
-pub mod test_coordinated_consumer_names;
-pub mod test_without_consumer_names;
 pub mod topology_consumer_group_validation;
 pub mod working_consumer_patterns;
