@@ -6,15 +6,17 @@ use serde::{Deserialize, Serialize};
 /// Types of errors that can occur in the event bus
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EventBusErrorType {
-    Serialization,   // JSON serialization failed
-    Connection,      // Backend connection issues
-    NotConfigured,   // Backend not configured
-    Topic,           // Invalid topic name/format
-    Timeout,         // Network timeout
-    DeliveryFailure, // Async delivery failure from Kafka
-    Deserialization, // Failed to deserialize message from topic
-    ConsumerError,   // Background consumer error
-    Other,           // Catch-all
+    Serialization,      // JSON serialization failed
+    Connection,         // Backend connection issues
+    NotConfigured,      // Backend not configured
+    Topic,              // Invalid topic name/format
+    Timeout,            // Network timeout
+    DeliveryFailure,    // Async delivery failure from Kafka
+    Deserialization,    // Failed to deserialize message from topic
+    ConsumerError,      // Background consumer error
+    InvalidReadConfig,  // Reader configuration does not align with the provisioned topology
+    InvalidWriteConfig, // Writer configuration does not align with the provisioned topology
+    Other,              // Catch-all
 }
 
 /// Event fired when any operation on the event bus fails

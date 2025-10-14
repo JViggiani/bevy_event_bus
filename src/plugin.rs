@@ -1,14 +1,12 @@
 use bevy::prelude::*;
-use crossbeam_channel::TryRecvError;
-use std::collections::HashMap;
 
-use bevy_event_bus::backends::{EventBusBackend, EventBusBackendResource, KafkaEventBusBackend};
+use bevy_event_bus::backends::event_bus_backend::{LagReportingDescriptor, ManualCommitDescriptor};
+use bevy_event_bus::backends::{EventBusBackend, EventBusBackendResource};
 use bevy_event_bus::decoder::DecoderRegistry;
 use bevy_event_bus::resources::{
     ConsumerMetrics, DecodedEventBuffer, DrainMetricsEvent, DrainedTopicMetadata,
-    EventBusConsumerConfig, EventMetadata, IncomingMessage, KafkaCommitQueue,
-    KafkaCommitResultChannel, KafkaLagCacheResource, MessageQueue, ProcessedMessage,
-    TopicDecodedEvents,
+    EventBusConsumerConfig, EventMetadata, IncomingMessage, MessageQueue, ProcessedMessage,
+    ProvisionedTopology, TopicDecodedEvents,
 };
 use bevy_event_bus::runtime::{block_on, ensure_runtime};
 use bevy_event_bus::writers::EventBusErrorQueue;
@@ -41,32 +39,6 @@ pub struct BackendDownEvent {
     pub reason: String,
 }
 
-/// Emitted when an asynchronous Kafka manual commit completes.
-#[derive(Event, Debug, Clone)]
-pub struct KafkaCommitResultEvent {
-    pub backend: String,
-    pub consumer_group: String,
-    pub topic: String,
-    pub partition: i32,
-    pub offset: i64,
-    pub error: Option<String>,
-}
-
-/// Tracks aggregate statistics for Kafka commit outcomes so tests or diagnostics can inspect behaviour.
-#[derive(Resource, Debug, Clone, Default)]
-pub struct KafkaCommitResultStats {
-    pub totals: HashMap<(String, String, String), KafkaCommitOutcome>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct KafkaCommitOutcome {
-    pub partition: i32,
-    pub last_offset: i64,
-    pub successes: usize,
-    pub failures: usize,
-    pub last_error: Option<String>,
-}
-
 #[derive(Debug)]
 enum LifecycleMessage {
     Ready {
@@ -84,16 +56,37 @@ pub struct BackendStatus {
     pub ready: bool,
 }
 
+#[derive(Resource, Debug, Clone)]
+pub struct BackendCapabilities {
+    pub backend: String,
+    pub message_stream: bool,
+    pub manual_commit: Option<ManualCommitDescriptor>,
+    pub lag_reporting: Option<LagReportingDescriptor>,
+}
+
+impl BackendCapabilities {
+    fn new(backend: impl Into<String>) -> Self {
+        Self {
+            backend: backend.into(),
+            message_stream: false,
+            manual_commit: None,
+            lag_reporting: None,
+        }
+    }
+}
+
 impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
     fn build(&self, app: &mut App) {
         // Add the core plugin and ensure runtime exists
         app.add_plugins(EventBusPlugin);
         ensure_runtime(app);
 
+        self.0.configure_plugin(app);
         // Create and add the backend as a resource
         let boxed = self.0.clone_box();
         app.insert_resource(EventBusBackendResource::from_box(boxed));
         app.insert_resource(EventBusErrorQueue::default());
+        app.init_resource::<ProvisionedTopology>();
         self.0.apply_event_bindings(app);
         bevy_event_bus::writers::outbound_bridge::activate_registered_bridges(app);
         // Connect backend and capture runtime resources (message queue, commit channels, lag cache).
@@ -102,43 +95,62 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
             .get_resource::<EventBusBackendResource>()
             .cloned()
         {
-            let mut guard = backend_res.write();
-            let _ = block_on(guard.connect());
+            let (backend_name, mut backend_setup) = {
+                let mut guard = backend_res.write();
+                let _ = block_on(guard.connect());
+                let backend_name = guard.backend_name().to_string();
+                let setup = guard.setup_plugin(app.world_mut());
+                (backend_name, setup)
+            };
 
-            if let Some(kafka) = guard.as_any_mut().downcast_mut::<KafkaEventBusBackend>() {
-                if let Some(rx) = kafka.take_receiver() {
-                    app.world_mut()
-                        .insert_resource(MessageQueue { receiver: rx });
-                }
+            let mut capabilities = BackendCapabilities::new(backend_name.clone());
 
-                let commit_sender = kafka.commit_sender();
-                app.world_mut()
-                    .insert_resource(KafkaCommitQueue(commit_sender));
-
-                if let Some(commit_rx) = kafka.take_commit_results() {
-                    app.world_mut().insert_resource(KafkaCommitResultChannel {
-                        receiver: commit_rx,
-                    });
-                }
-
-                app.world_mut()
-                    .insert_resource(KafkaLagCacheResource(kafka.lag_cache()));
-
-                // Inject lifecycle sender into kafka backend by wrapping its background task via a helper channel
-                // (Since backend code owns spawning, we detect readiness here: receiver presence == ready)
-                let (tx, rx_life) = crossbeam_channel::unbounded::<LifecycleMessage>();
-                // Send Ready event now with current subscriptions
-                let subs = kafka.configured_topics();
-                let _ = tx.send(LifecycleMessage::Ready {
-                    backend: "kafka".into(),
-                    topics: subs,
-                });
-                app.world_mut()
-                    .insert_resource(BackendLifecycleChannel(rx_life));
-                app.world_mut()
-                    .insert_resource(BackendStatus { ready: false });
-                // We cannot directly hook errors here; leave placeholder (Down events emitted by future backend error hook TBD)
+            if let Some(topology) = backend_setup.kafka_topology.take() {
+                let mut registry = app.world_mut().resource_mut::<ProvisionedTopology>();
+                registry.record_kafka(topology);
             }
+
+            if let Some(topology) = backend_setup.redis_topology.take() {
+                let mut registry = app.world_mut().resource_mut::<ProvisionedTopology>();
+                registry.record_redis(topology);
+            }
+
+            if let Some(rx) = backend_setup.message_stream.take() {
+                app.world_mut()
+                    .insert_resource(MessageQueue { receiver: rx });
+                capabilities.message_stream = true;
+            }
+
+            if let Some(handle) = backend_setup.manual_commit.take() {
+                let descriptor = handle.descriptor();
+                {
+                    let world = app.world_mut();
+                    handle.register_resources(world);
+                }
+                capabilities.manual_commit = Some(descriptor);
+            }
+
+            if let Some(handle) = backend_setup.lag_reporting.take() {
+                let descriptor = handle.descriptor();
+                {
+                    let world = app.world_mut();
+                    handle.register_resources(world);
+                }
+                capabilities.lag_reporting = Some(descriptor);
+            }
+
+            let (tx, rx_life) = crossbeam_channel::unbounded::<LifecycleMessage>();
+            let ready_topics = backend_setup.ready_topics.clone();
+            let _ = tx.send(LifecycleMessage::Ready {
+                backend: backend_name.clone(),
+                topics: ready_topics.clone(),
+            });
+            app.world_mut()
+                .insert_resource(BackendLifecycleChannel(rx_life));
+            app.world_mut()
+                .insert_resource(BackendStatus { ready: false });
+            app.world_mut().insert_resource(capabilities);
+            // We cannot directly hook errors here; leave placeholder (Down events emitted by future backend error hook TBD)
         }
 
         // Initialize background consumer related resources if not present
@@ -149,13 +161,10 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
         app.init_resource::<EventBusConsumerConfig>();
         app.add_event::<DrainMetricsEvent>();
         app.add_event::<BackendReadyEvent>();
-        app.add_event::<KafkaCommitResultEvent>();
-        app.init_resource::<KafkaCommitResultStats>();
         // MessageQueue will be inserted lazily once backend spawns sender & channel
 
         // Drain system with multi-decoder pipeline
         fn drain_system(
-            mut commands: Commands,
             backend: Option<Res<EventBusBackendResource>>,
             mut metadata_buffers: ResMut<DrainedTopicMetadata>,
             mut decoded_buffer: ResMut<DecodedEventBuffer>,
@@ -170,6 +179,8 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
             // Default queue length metrics when no queue
             metrics.queue_len_start = 0;
             metrics.queue_len_end = 0;
+
+            let backend_ref = backend.as_ref();
 
             if let Some(queue) = maybe_queue {
                 metrics.queue_len_start = queue.receiver.len();
@@ -198,39 +209,19 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                     match queue.receiver.try_recv() {
                         Ok(msg) => {
                             let IncomingMessage {
-                                topic,
-                                partition,
-                                offset,
-                                key,
+                                source,
                                 payload,
+                                key,
                                 timestamp,
-                                headers,
-                                consumer_group,
-                                manual_commit,
+                                backend_metadata,
                             } = msg;
 
+                            let topic = source;
                             let topic_str = topic.as_str();
                             tracing::debug!(topic=%topic_str, "Processing message with multi-decoder pipeline");
 
-                            let key_string =
-                                key.as_ref().map(|k| String::from_utf8_lossy(k).to_string());
-
-                            let kafka_metadata =
-                                bevy_event_bus::resources::backend_metadata::KafkaMetadata {
-                                    topic: topic.clone(),
-                                    partition,
-                                    offset,
-                                    consumer_group,
-                                    manual_commit,
-                                };
-
-                            let metadata = EventMetadata::new(
-                                topic.clone(),
-                                timestamp,
-                                headers,
-                                key_string,
-                                Some(Box::new(kafka_metadata)),
-                            );
+                            let metadata =
+                                EventMetadata::new(topic.clone(), timestamp, key, backend_metadata);
 
                             // Attempt multi-decode using registered decoders
                             let decoded_events = decoder_registry.decode_all(topic_str, &payload);
@@ -277,7 +268,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
 
                                     // Store the decoded event in the type-erased buffer
                                     // The event Box contains the actual event, we need to store it properly
-                                    let type_erased = bevy_event_bus::resources::TypeErasedEvent {
+                                    let type_erased = crate::resources::TypeErasedEvent {
                                         event: decoded_event.event,
                                         metadata: metadata.clone(),
                                         decoder_name: decoded_event.decoder_name,
@@ -314,19 +305,11 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                 metrics.remaining_channel_after_drain = queue.receiver.len();
                 metrics.queue_len_end = metrics.remaining_channel_after_drain;
                 metrics.total_drained += metrics.drained_last_frame;
-            } else if let Some(backend_res) = backend {
-                let mut guard = backend_res.write();
-                if let Some(kafka) = guard
-                    .as_any_mut()
-                    .downcast_mut::<bevy_event_bus::backends::kafka_backend::KafkaEventBusBackend>(
-                ) {
-                    let dropped = kafka.dropped_count();
-                    metrics.dropped_messages = dropped;
-                    if let Some(rx) = kafka.take_receiver() {
-                        // Insert queue so next frame we can drain
-                        commands.insert_resource(MessageQueue { receiver: rx });
-                    }
-                }
+            }
+
+            if let Some(backend_res) = backend_ref {
+                let guard = backend_res.read();
+                guard.augment_metrics(&mut metrics);
             }
 
             // Count idle frame if nothing drained
@@ -445,67 +428,5 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                 decode_error_writer.write(decode_error);
             }
         }
-        fn kafka_commit_result_dispatch_system(
-            mut commands: Commands,
-            maybe_channel: Option<Res<KafkaCommitResultChannel>>,
-            mut events: EventWriter<KafkaCommitResultEvent>,
-        ) {
-            if let Some(channel) = maybe_channel {
-                loop {
-                    match channel.receiver.try_recv() {
-                        Ok(result) => {
-                            events.write(KafkaCommitResultEvent {
-                                backend: "kafka".into(),
-                                consumer_group: result.consumer_group,
-                                topic: result.topic,
-                                partition: result.partition,
-                                offset: result.offset,
-                                error: result.error,
-                            });
-                        }
-                        Err(TryRecvError::Empty) => break,
-                        Err(TryRecvError::Disconnected) => {
-                            commands.remove_resource::<KafkaCommitResultChannel>();
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        fn kafka_commit_result_stats_system(
-            mut stats: ResMut<KafkaCommitResultStats>,
-            mut events: EventReader<KafkaCommitResultEvent>,
-        ) {
-            for event in events.read() {
-                let key = (
-                    event.backend.clone(),
-                    event.consumer_group.clone(),
-                    event.topic.clone(),
-                );
-                let entry = stats.totals.entry(key).or_default();
-                entry.partition = event.partition;
-                entry.last_offset = event.offset;
-                match &event.error {
-                    Some(err) => {
-                        entry.failures += 1;
-                        entry.last_error = Some(err.clone());
-                    }
-                    None => {
-                        entry.successes += 1;
-                        entry.last_error = None;
-                    }
-                }
-            }
-        }
-
-        app.add_systems(
-            PreUpdate,
-            (
-                kafka_commit_result_dispatch_system,
-                kafka_commit_result_stats_system,
-            )
-                .chain(),
-        );
     }
 }

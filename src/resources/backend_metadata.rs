@@ -7,7 +7,6 @@ use std::time::Instant;
 pub struct EventMetadata {
     pub source: String, // topic/queue/stream name
     pub timestamp: Instant,
-    pub headers: HashMap<String, String>,
     pub key: Option<String>, // Generic message key
     pub backend_specific: Option<Box<dyn BackendMetadata>>,
 }
@@ -33,6 +32,7 @@ pub struct KafkaMetadata {
     pub offset: i64,
     pub consumer_group: Option<String>,
     pub manual_commit: bool,
+    pub headers: HashMap<String, String>,
 }
 
 impl BackendMetadata for KafkaMetadata {
@@ -44,20 +44,37 @@ impl BackendMetadata for KafkaMetadata {
     }
 }
 
+/// Redis-specific metadata
+#[derive(Debug, Clone)]
+pub struct RedisMetadata {
+    pub stream: String,
+    pub entry_id: String,
+    pub consumer_group: Option<String>,
+    pub manual_ack: bool,
+}
+
+impl BackendMetadata for RedisMetadata {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn clone_box(&self) -> Box<dyn BackendMetadata> {
+        Box::new(self.clone())
+    }
+}
+
 /// Extension methods for easy access to backend-specific metadata
 impl EventMetadata {
     /// Create new metadata with backend-specific data
     pub fn new(
         source: String,
         timestamp: Instant,
-        headers: HashMap<String, String>,
         key: Option<String>,
         backend_specific: Option<Box<dyn BackendMetadata>>,
     ) -> Self {
         Self {
             source,
             timestamp,
-            headers,
             key,
             backend_specific,
         }
@@ -69,5 +86,13 @@ impl EventMetadata {
             .as_ref()?
             .as_any()
             .downcast_ref::<KafkaMetadata>()
+    }
+
+    /// Get Redis-specific metadata if available
+    pub fn redis_metadata(&self) -> Option<&RedisMetadata> {
+        self.backend_specific
+            .as_ref()?
+            .as_any()
+            .downcast_ref::<RedisMetadata>()
     }
 }

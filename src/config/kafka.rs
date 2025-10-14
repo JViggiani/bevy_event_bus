@@ -1,6 +1,6 @@
 //! Kafka-specific configuration objects for type-safe backend inference
 
-use super::{EventBusConfig, Kafka, ProcessingLimits};
+use super::{EventBusConfig, Kafka, ProcessingLimits, TopologyMode};
 use crate::{
     BusEvent, EventBusError, backends::event_bus_backend::EventBusBackendConfig,
     decoder::DecoderRegistry,
@@ -9,6 +9,49 @@ use bevy::prelude::{App, Event};
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
+
+/// Channel capacity configuration for the Kafka backend's internal queues.
+#[derive(Clone, Debug)]
+pub struct KafkaChannelCapacities {
+    pub message: usize,
+    pub commit: usize,
+    pub result: usize,
+}
+
+impl KafkaChannelCapacities {
+    pub fn new(message: usize, commit: usize, result: usize) -> Self {
+        Self {
+            message,
+            commit,
+            result,
+        }
+    }
+
+    pub fn message_capacity(mut self, capacity: usize) -> Self {
+        self.message = capacity;
+        self
+    }
+
+    pub fn commit_capacity(mut self, capacity: usize) -> Self {
+        self.commit = capacity;
+        self
+    }
+
+    pub fn result_capacity(mut self, capacity: usize) -> Self {
+        self.result = capacity;
+        self
+    }
+}
+
+impl Default for KafkaChannelCapacities {
+    fn default() -> Self {
+        Self {
+            message: 10_000,
+            commit: 2_048,
+            result: 1_024,
+        }
+    }
+}
 
 /// Connection configuration for Kafka backend initialization
 #[derive(Clone, Debug)]
@@ -208,6 +251,7 @@ pub struct KafkaTopicSpec {
     pub name: String,
     pub partitions: Option<i32>,
     pub replication: Option<i16>,
+    pub mode: TopologyMode,
 }
 
 impl KafkaTopicSpec {
@@ -216,6 +260,7 @@ impl KafkaTopicSpec {
             name: name.into(),
             partitions: None,
             replication: None,
+            mode: TopologyMode::Provision,
         }
     }
 
@@ -226,6 +271,12 @@ impl KafkaTopicSpec {
 
     pub fn replication(mut self, replication: i16) -> Self {
         self.replication = Some(replication);
+        self
+    }
+
+    /// Override the topology mode used when preparing this topic.
+    pub fn mode(mut self, mode: TopologyMode) -> Self {
+        self.mode = mode;
         self
     }
 }
@@ -243,6 +294,7 @@ pub struct KafkaConsumerGroupSpec {
     pub topics: Vec<String>,
     pub manual_commits: bool,
     pub initial_offset: KafkaInitialOffset,
+    pub mode: TopologyMode,
 }
 
 impl KafkaConsumerGroupSpec {
@@ -251,6 +303,7 @@ impl KafkaConsumerGroupSpec {
             topics: topics.into_iter().map(Into::into).collect(),
             manual_commits: false,
             initial_offset: KafkaInitialOffset::Latest,
+            mode: TopologyMode::Provision,
         }
     }
 
@@ -263,6 +316,12 @@ impl KafkaConsumerGroupSpec {
         self.initial_offset = offset;
         self
     }
+
+    /// Override the topology mode used when preparing this consumer group.
+    pub fn mode(mut self, mode: TopologyMode) -> Self {
+        self.mode = mode;
+        self
+    }
 }
 
 /// Aggregate configuration consumed by the Kafka backend during construction.
@@ -271,6 +330,7 @@ pub struct KafkaBackendConfig {
     pub connection: KafkaConnectionConfig,
     pub topology: KafkaTopologyConfig,
     pub consumer_lag_poll_interval: Duration,
+    pub channel_capacities: KafkaChannelCapacities,
 }
 
 impl KafkaBackendConfig {
@@ -283,7 +343,17 @@ impl KafkaBackendConfig {
             connection,
             topology,
             consumer_lag_poll_interval,
+            channel_capacities: KafkaChannelCapacities::default(),
         }
+    }
+
+    pub fn channel_capacities(mut self, capacities: KafkaChannelCapacities) -> Self {
+        self.channel_capacities = capacities;
+        self
+    }
+
+    pub fn get_channel_capacities(&self) -> &KafkaChannelCapacities {
+        &self.channel_capacities
     }
 }
 
@@ -300,7 +370,7 @@ pub struct KafkaConsumerConfig {
     topics: Vec<String>,
     auto_offset_reset: String,
     enable_auto_commit: bool,
-    session_timeout_ms: u32,
+    session_timeout: Duration,
     max_poll_records: u32,
     processing_limits: ProcessingLimits,
     additional_config: HashMap<String, String>,
@@ -318,7 +388,7 @@ impl KafkaConsumerConfig {
             topics: topics.into_iter().map(Into::into).collect(),
             auto_offset_reset: "latest".to_string(),
             enable_auto_commit: true,
-            session_timeout_ms: 30000,
+            session_timeout: Duration::from_millis(30_000),
             max_poll_records: 500,
             processing_limits: ProcessingLimits::default(),
             additional_config: HashMap::new(),
@@ -353,9 +423,9 @@ impl KafkaConsumerConfig {
         self
     }
 
-    /// Set session timeout in milliseconds
-    pub fn session_timeout_ms(mut self, timeout: u32) -> Self {
-        self.session_timeout_ms = timeout;
+    /// Set the consumer session timeout.
+    pub fn session_timeout(mut self, timeout: Duration) -> Self {
+        self.session_timeout = timeout;
         self
     }
 
@@ -386,9 +456,9 @@ impl KafkaConsumerConfig {
         self.enable_auto_commit
     }
 
-    /// Get session timeout
-    pub fn get_session_timeout_ms(&self) -> u32 {
-        self.session_timeout_ms
+    /// Get the consumer session timeout.
+    pub fn get_session_timeout(&self) -> Duration {
+        self.session_timeout
     }
 
     /// Get max poll records
@@ -426,6 +496,10 @@ impl EventBusConfig for KafkaConsumerConfig {
 
     fn config_id(&self) -> String {
         format!("kafka_consumer_{}", self.consumer_group)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
@@ -620,6 +694,10 @@ impl EventBusConfig for KafkaProducerConfig {
 
     fn config_id(&self) -> String {
         "kafka_producer".to_string()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 

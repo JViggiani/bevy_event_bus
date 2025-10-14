@@ -1,18 +1,5 @@
-pub mod background_queue_tests;
-pub mod basic;
-pub mod configuration_tests;
-pub mod dual_writer_bridge;
-pub mod error_handling_tests;
-pub mod exactly_once_delivery;
-pub mod external_only_tests;
-pub mod frame_limits;
-pub mod idle_read;
-pub mod kafka_metadata_validation;
-pub mod metadata_tests;
-pub mod multi_consumer_group_tests;
-pub mod multi_decoder;
-pub mod multi_topic;
-pub mod multi_type;
-pub mod offset_configuration;
-pub mod ordering;
-pub mod performance_tests;
+pub mod common;
+
+pub mod kafka;
+
+pub mod redis;

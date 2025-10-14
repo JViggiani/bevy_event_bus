@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 
@@ -6,8 +6,9 @@ use bevy_event_bus::backends::KafkaCommitRequest;
 use bevy_event_bus::config::{EventBusConfig, kafka::KafkaConsumerConfig};
 use bevy_event_bus::resources::{
     DrainedTopicMetadata, EventWrapper, KafkaCommitQueue, KafkaLagCacheResource,
+    ProvisionedTopology,
 };
-use bevy_event_bus::{BusEvent, readers::BusEventReader};
+use bevy_event_bus::{BusEvent, EventBusError, EventBusErrorType, readers::BusEventReader};
 use crossbeam_channel::TrySendError;
 
 /// Errors that can occur when working with the Kafka-specific reader.
@@ -23,8 +24,8 @@ pub enum KafkaReaderError {
     CommitQueueUnavailable,
     /// Manual commit operations could not be queued because the queue is full.
     CommitQueueFull,
-    /// The event is missing consumer group metadata necessary for manual commits.
-    MissingConsumerGroup,
+    /// The reader configuration or associated metadata is invalid.
+    InvalidReadConfig(String),
     /// Lag information is not yet available for the requested group/topic.
     LagDataUnavailable,
     /// Backend responded with an error message.
@@ -49,8 +50,8 @@ impl std::fmt::Display for KafkaReaderError {
             KafkaReaderError::CommitQueueFull => {
                 write!(f, "commit queue is full; retry next frame")
             }
-            KafkaReaderError::MissingConsumerGroup => {
-                write!(f, "event is missing consumer group metadata")
+            KafkaReaderError::InvalidReadConfig(reason) => {
+                write!(f, "invalid Kafka reader configuration: {reason}")
             }
             KafkaReaderError::LagDataUnavailable => {
                 write!(f, "consumer lag data is not currently available")
@@ -71,14 +72,52 @@ pub struct KafkaEventReader<'w, 's, T: BusEvent + Event> {
     metadata_offsets: Local<'s, HashMap<String, usize>>,
     commit_queue: Option<Res<'w, KafkaCommitQueue>>,
     lag_cache: Option<Res<'w, KafkaLagCacheResource>>,
+    topology: Option<Res<'w, ProvisionedTopology>>,
+    invalid_config_reports: Local<'s, HashSet<String>>,
+    error_writer: EventWriter<'w, EventBusError<T>>,
 }
 
 impl<'w, 's, T: BusEvent + Event> KafkaEventReader<'w, 's, T> {
     /// Read all messages for the supplied Kafka configuration. When manual commit is requested
     /// (auto commit disabled) the reader ensures the backend has manual commit mode enabled
     /// for the consumer group before returning events.
-    pub fn read(&mut self, config: &KafkaConsumerConfig) -> Vec<EventWrapper<T>> {
-        self.read_internal(config)
+    pub fn read<C: EventBusConfig>(&mut self, config: &C) -> Vec<EventWrapper<T>> {
+        if let Some(kafka_config) = config.as_any().downcast_ref::<KafkaConsumerConfig>() {
+            if !self.validate_configuration(kafka_config) {
+                return Vec::new();
+            }
+        }
+
+        let mut all_events = Vec::new();
+        let topics = config.topics();
+
+        for topic in topics {
+            self.wrapped_events.clear();
+
+            if let Some(metadata_drained) = &mut self.metadata_drained {
+                if let Some(messages) = metadata_drained.topics.get(topic) {
+                    let start = *self.metadata_offsets.get(topic).unwrap_or(&0);
+                    if start < messages.len() {
+                        for processed_msg in messages.iter().skip(start) {
+                            match serde_json::from_slice::<T>(&processed_msg.payload) {
+                                Ok(event) => self
+                                    .wrapped_events
+                                    .push(EventWrapper::new(event, processed_msg.metadata.clone())),
+                                Err(_) => tracing::warn!(
+                                    "Failed to deserialize event from topic {}",
+                                    topic
+                                ),
+                            }
+                        }
+                        self.metadata_offsets.insert(topic.clone(), messages.len());
+                    }
+                }
+            }
+
+            all_events.append(&mut *self.wrapped_events);
+        }
+
+        all_events
     }
 
     /// Commit the supplied event using Kafka manual offsets. The configuration used to read the
@@ -97,10 +136,11 @@ impl<'w, 's, T: BusEvent + Event> KafkaEventReader<'w, 's, T> {
             .kafka_metadata()
             .ok_or(KafkaReaderError::MissingKafkaMetadata)?;
 
-        let consumer_group = metadata
-            .consumer_group
-            .clone()
-            .ok_or(KafkaReaderError::MissingConsumerGroup)?;
+        let consumer_group = metadata.consumer_group.clone().ok_or_else(|| {
+            KafkaReaderError::InvalidReadConfig(
+                "event is missing consumer group metadata".to_string(),
+            )
+        })?;
 
         let queue = self
             .commit_queue
@@ -148,46 +188,92 @@ impl<'w, 's, T: BusEvent + Event> KafkaEventReader<'w, 's, T> {
 
         Ok(per_topic)
     }
+}
 
-    /// Backend-agnostic read implementation shared between the trait impl and the
-    /// Kafka-specific helper. It drains decoded events from `DrainedTopicMetadata` and
-    /// converts them into typed wrappers.
-    fn read_internal<C: EventBusConfig>(&mut self, config: &C) -> Vec<EventWrapper<T>> {
-        let mut all_events = Vec::new();
-        let topics = config.topics();
+impl<'w, 's, T: BusEvent + Event> KafkaEventReader<'w, 's, T> {
+    fn validate_configuration(&mut self, config: &KafkaConsumerConfig) -> bool {
+        let Some(topology) = self.topology.as_ref().and_then(|topo| topo.kafka()) else {
+            return true;
+        };
 
-        for topic in topics {
-            self.wrapped_events.clear();
+        let group_id = config.get_consumer_group();
+        let topology_topics = topology.topic_names();
 
-            if let Some(metadata_drained) = &mut self.metadata_drained {
-                if let Some(messages) = metadata_drained.topics.get(topic) {
-                    let start = *self.metadata_offsets.get(topic).unwrap_or(&0);
-                    if start < messages.len() {
-                        for processed_msg in messages.iter().skip(start) {
-                            match serde_json::from_slice::<T>(&processed_msg.payload) {
-                                Ok(event) => self
-                                    .wrapped_events
-                                    .push(EventWrapper::new(event, processed_msg.metadata.clone())),
-                                Err(_) => tracing::warn!(
-                                    "Failed to deserialize event from topic {}",
-                                    topic
-                                ),
-                            }
-                        }
-                        self.metadata_offsets.insert(topic.clone(), messages.len());
-                    }
-                }
+        if let Some(spec) = topology.consumer_groups().get(group_id) {
+            let spec_topics: HashSet<_> = spec.topics.iter().collect();
+
+            if let Some(topic) = config
+                .topics()
+                .iter()
+                .find(|topic| !topology_topics.contains(*topic))
+            {
+                let reason = format!("Topic '{}' is not provisioned in the Kafka topology", topic);
+                self.record_invalid_config(config, topic.clone(), group_id, reason);
+                return false;
             }
 
-            all_events.append(&mut *self.wrapped_events);
+            if let Some(topic) = config
+                .topics()
+                .iter()
+                .find(|topic| !spec_topics.contains(topic))
+            {
+                let reason = format!(
+                    "Topic '{}' is not assigned to consumer group '{}' in the topology",
+                    topic, group_id
+                );
+                self.record_invalid_config(config, topic.clone(), group_id, reason);
+                return false;
+            }
+        } else {
+            let topic = topology
+                .consumer_groups()
+                .get(group_id)
+                .and_then(|spec| spec.topics.first().cloned())
+                .or_else(|| config.topics().first().cloned())
+                .unwrap_or_else(|| "unknown".to_string());
+            let reason = format!(
+                "Consumer group '{}' is not provisioned in the Kafka topology",
+                group_id
+            );
+            self.record_invalid_config(config, topic, group_id, reason);
+            return false;
         }
 
-        all_events
+        true
+    }
+
+    fn record_invalid_config(
+        &mut self,
+        config: &KafkaConsumerConfig,
+        topic: String,
+        group: &str,
+        reason: String,
+    ) {
+        let key = format!("{}:{reason}", config.config_id());
+        if self.invalid_config_reports.insert(key) {
+            let error = EventBusError {
+                topic: topic.clone(),
+                error_type: EventBusErrorType::InvalidReadConfig,
+                error_message: reason.clone(),
+                timestamp: std::time::SystemTime::now(),
+                original_event: None,
+                backend: Some(String::from("kafka")),
+                metadata: None,
+            };
+            self.error_writer.write(error);
+            tracing::warn!(
+                backend = "kafka",
+                consumer_group = %group,
+                topic = %topic,
+                reason = %reason,
+                "Kafka reader configuration invalid"
+            );
+        }
     }
 }
 
 impl<'w, 's, T: BusEvent + Event> BusEventReader<T> for KafkaEventReader<'w, 's, T> {
     fn read<C: EventBusConfig>(&mut self, config: &C) -> Vec<EventWrapper<T>> {
-        self.read_internal(config)
+        KafkaEventReader::read(self, config)
     }
 }
