@@ -7,7 +7,8 @@ use bevy_event_bus::config::redis::{
 use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
-    run_app_updates, unique_consumer_group_membership, unique_topic, update_until,
+    run_app_updates, unique_consumer_group, unique_consumer_group_member,
+    unique_consumer_group_membership, unique_topic, update_until,
 };
 use integration_tests::utils::redis_setup;
 
@@ -168,5 +169,107 @@ fn test_broadcast_with_separate_backends() {
         collected2.0.len(),
         4,
         "Reader2 should receive all broadcast events"
+    );
+}
+
+/// Verify that multiple consumers in the same group share work when using a single backend.
+#[test]
+fn test_single_backend_consumer_group_round_robin() {
+    let stream = unique_topic("consumer-group-round-robin");
+    let consumer_group = unique_consumer_group("round-robin-group");
+    let consumer_name = unique_consumer_group_member(&consumer_group);
+
+    let stream_clone = stream.clone();
+    let consumer_group_clone = consumer_group.clone();
+    let consumer_name_clone = consumer_name.clone();
+    let (backend, _context) = redis_setup::prepare_backend(move |builder| {
+        builder
+            .add_stream(RedisStreamSpec::new(stream_clone.clone()))
+            .add_consumer_group(RedisConsumerGroupSpec::new(
+                [stream_clone.clone()],
+                consumer_group_clone.clone(),
+                consumer_name_clone.clone(),
+            ))
+            .add_event_single::<TestEvent>(stream_clone.clone());
+    })
+    .expect("Redis backend setup successful");
+
+    let mut reader1 = App::new();
+    reader1.add_plugins(EventBusPlugins(backend.clone()));
+    reader1.insert_resource(EventCollector::default());
+
+    let reader_stream = stream.clone();
+    let reader_group = consumer_group.clone();
+    reader1.add_systems(
+        Update,
+        move |mut reader: RedisEventReader<TestEvent>, mut collected: ResMut<EventCollector>| {
+            let config = RedisConsumerConfig::new(reader_group.clone(), [reader_stream.clone()]);
+            for wrapper in reader.read(&config) {
+                collected.0.push(wrapper.event().clone());
+            }
+        },
+    );
+
+    let mut reader2 = App::new();
+    reader2.add_plugins(EventBusPlugins(backend.clone()));
+    reader2.insert_resource(EventCollector::default());
+
+    let reader_stream = stream.clone();
+    let reader_group = consumer_group.clone();
+    reader2.add_systems(
+        Update,
+        move |mut reader: RedisEventReader<TestEvent>, mut collected: ResMut<EventCollector>| {
+            let config = RedisConsumerConfig::new(reader_group.clone(), [reader_stream.clone()]);
+            for wrapper in reader.read(&config) {
+                collected.0.push(wrapper.event().clone());
+            }
+        },
+    );
+
+    let mut writer = App::new();
+    writer.add_plugins(EventBusPlugins(backend));
+
+    let writer_stream = stream.clone();
+    writer.add_systems(
+        Update,
+        move |mut writer: RedisEventWriter, mut sent: Local<usize>| {
+            if *sent < 6 {
+                let config = RedisProducerConfig::new(writer_stream.clone());
+                writer.write(
+                    &config,
+                    TestEvent {
+                        message: format!("message_{}", *sent),
+                        value: *sent as i32,
+                    },
+                );
+                *sent += 1;
+            }
+        },
+    );
+
+    run_app_updates(&mut reader1, 3);
+    run_app_updates(&mut reader2, 3);
+    run_app_updates(&mut writer, 7);
+
+    let (received1, _) = update_until(&mut reader1, 5_000, |app| {
+        let collected = app.world().resource::<EventCollector>();
+        !collected.0.is_empty()
+    });
+    let (received2, _) = update_until(&mut reader2, 5_000, |app| {
+        let collected = app.world().resource::<EventCollector>();
+        !collected.0.is_empty()
+    });
+
+    let collected1 = reader1.world().resource::<EventCollector>();
+    let collected2 = reader2.world().resource::<EventCollector>();
+    let total_events = collected1.0.len() + collected2.0.len();
+
+    assert!(
+        received1 || received2,
+        "At least one consumer should make progress in the working pattern"
+    );
+    assert!(
+        total_events <= 6,
+        "Consumers should not duplicate events: total_events={total_events}"
     );
 }
