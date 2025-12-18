@@ -22,12 +22,12 @@ type DecoderClosure<T> = dyn Fn(&[u8]) -> Option<T> + Send + Sync + 'static;
 type BoxedDecoderClosure<T> = Box<DecoderClosure<T>>;
 
 /// Concrete implementation of [`DecoderFn`] for a specific event type
-pub struct TypedDecoder<T: BusEvent + Event> {
+pub struct TypedDecoder<T: BusEvent + Message> {
     decoder_fn: BoxedDecoderClosure<T>,
     name: &'static str,
 }
 
-impl<T: BusEvent + Event> TypedDecoder<T> {
+impl<T: BusEvent + Message> TypedDecoder<T> {
     pub fn new<F>(decoder_fn: F, name: &'static str) -> Self
     where
         F: Fn(&[u8]) -> Option<T> + Send + Sync + 'static,
@@ -47,7 +47,7 @@ impl<T: BusEvent + Event> TypedDecoder<T> {
     }
 }
 
-impl<T: BusEvent + Event> DecoderFn for TypedDecoder<T> {
+impl<T: BusEvent + Message> DecoderFn for TypedDecoder<T> {
     fn decode(&self, data: &[u8]) -> Option<Box<dyn Any + Send + Sync>> {
         (self.decoder_fn)(data).map(|event| Box::new(event) as Box<dyn Any + Send + Sync>)
     }
@@ -87,7 +87,11 @@ impl DecoderRegistry {
     }
 
     /// Register a decoder for a specific topic
-    pub fn register_decoder<T: BusEvent + Event>(&mut self, topic: &str, decoder: TypedDecoder<T>) {
+    pub fn register_decoder<T: BusEvent + Message>(
+        &mut self,
+        topic: &str,
+        decoder: TypedDecoder<T>,
+    ) {
         let decoder_name = decoder.name();
         let decoders = self.topic_decoders.entry(topic.to_string()).or_default();
         decoders.push(Box::new(decoder));
@@ -100,7 +104,7 @@ impl DecoderRegistry {
     }
 
     /// Register a default JSON decoder for a BusEvent type on a topic
-    pub fn register_json_decoder<T: BusEvent + Event>(&mut self, topic: &str) {
+    pub fn register_json_decoder<T: BusEvent + Message>(&mut self, topic: &str) {
         self.register_decoder(topic, TypedDecoder::<T>::json_decoder());
     }
 
@@ -206,13 +210,13 @@ mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
 
-    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Event)]
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Message)]
     struct PlayerMove {
         x: f32,
         y: f32,
     }
 
-    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Event)]
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Message)]
     struct PlayerAttack {
         target: String,
         damage: u32,

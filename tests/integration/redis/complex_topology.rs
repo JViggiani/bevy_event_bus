@@ -7,7 +7,7 @@ use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
-use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
+use bevy_event_bus::{EventBusPlugins, RedisMessageReader, RedisMessageWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
     run_app_updates, unique_consumer_group_membership, unique_topic, update_two_apps_until,
@@ -134,7 +134,7 @@ fn complex_topology_no_cross_talk() {
     let writer_messages = message_catalog.clone();
     writer_app.add_systems(
         Update,
-        move |mut writer: RedisEventWriter, mut state: Local<WriterDispatchState>| {
+        move |mut writer: RedisMessageWriter, mut state: Local<WriterDispatchState>| {
             if state.dispatched {
                 return;
             }
@@ -146,7 +146,7 @@ fn complex_topology_no_cross_talk() {
 
             for (stream, event) in &writer_messages {
                 let config = RedisProducerConfig::new(stream.clone());
-                writer.write(&config, event.clone());
+                writer.write(&config, event.clone(), None);
             }
 
             state.dispatched = true;
@@ -173,7 +173,7 @@ fn complex_topology_no_cross_talk() {
         let streams = streams.clone();
         reader_app.add_systems(
             Update,
-            move |mut reader: RedisEventReader<TestEvent>, mut collected: ResMut<Collected>| {
+            move |mut reader: RedisMessageReader<TestEvent>, mut collected: ResMut<Collected>| {
                 let config = RedisConsumerConfig::new(group_id.clone(), streams.clone());
                 for wrapper in reader.read(&config) {
                     let metadata = wrapper

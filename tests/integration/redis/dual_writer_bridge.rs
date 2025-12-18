@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
-use bevy_event_bus::{EventBusPlugins, EventWrapper, RedisEventReader, RedisEventWriter};
+use bevy_event_bus::{EventBusPlugins, MessageWrapper, RedisMessageReader, RedisMessageWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
     run_app_updates, unique_consumer_group_membership, unique_topic, update_until, wait_for_events,
@@ -35,11 +35,11 @@ struct ReaderState {
 }
 
 #[derive(Resource, Default)]
-struct CapturedEvents(Vec<EventWrapper<TestEvent>>);
+struct CapturedEvents(Vec<MessageWrapper<TestEvent>>);
 
 fn dual_writer_bridge_emitter(
-    mut standard_writer: EventWriter<TestEvent>,
-    mut bus_writer: RedisEventWriter,
+    mut standard_messages: ResMut<Messages<TestEvent>>,
+    mut bus_writer: RedisMessageWriter,
     mut state: ResMut<BridgeWriterState>,
 ) {
     if state.dispatched {
@@ -51,15 +51,18 @@ fn dual_writer_bridge_emitter(
         return;
     }
 
-    standard_writer.write(state.standard_payload.clone());
+    standard_messages.write(state.standard_payload.clone());
 
     let config = RedisProducerConfig::new(state.stream.clone());
-    bus_writer.write(&config, state.bus_payload.clone());
+    bus_writer.write(&config, state.bus_payload.clone(), None);
 
     state.dispatched = true;
 }
 
-fn dispatch_single_backend_writer(mut writer: RedisEventWriter, mut state: ResMut<WriterDispatch>) {
+fn dispatch_single_backend_writer(
+    mut writer: RedisMessageWriter,
+    mut state: ResMut<WriterDispatch>,
+) {
     if state.dispatched {
         return;
     }
@@ -70,12 +73,12 @@ fn dispatch_single_backend_writer(mut writer: RedisEventWriter, mut state: ResMu
     }
 
     let config = RedisProducerConfig::new(state.stream.clone());
-    writer.write(&config, state.payload.clone());
+    writer.write(&config, state.payload.clone(), None);
     state.dispatched = true;
 }
 
 fn capture_wrapped_events(
-    mut reader: RedisEventReader<TestEvent>,
+    mut reader: RedisMessageReader<TestEvent>,
     state: Res<ReaderState>,
     mut captured: ResMut<CapturedEvents>,
 ) {

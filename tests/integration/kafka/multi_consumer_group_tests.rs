@@ -100,7 +100,7 @@ async fn test_receive_serialized_with_group() {
 
     let serialized = serde_json::to_string(&test_event).unwrap();
     assert!(
-        backend.try_send_serialized(serialized.as_bytes(), &topic, SendOptions::default()),
+        backend.try_send_serialized(serialized.as_bytes(), &topic, SendOptions::default(), None,),
         "Failed to send message",
     );
 
@@ -177,7 +177,7 @@ async fn test_enable_manual_commits_and_commit_offset() {
 
     let serialized = serde_json::to_string(&test_event).unwrap();
     assert!(
-        backend.try_send_serialized(serialized.as_bytes(), &topic, SendOptions::default()),
+        backend.try_send_serialized(serialized.as_bytes(), &topic, SendOptions::default(), None,),
         "Failed to send test message",
     );
 
@@ -234,7 +234,12 @@ async fn test_get_consumer_lag() {
 
         let serialized = serde_json::to_string(&test_event).unwrap();
         assert!(
-            backend.try_send_serialized(serialized.as_bytes(), &topic, SendOptions::default()),
+            backend.try_send_serialized(
+                serialized.as_bytes(),
+                &topic,
+                SendOptions::default(),
+                None,
+            ),
             "Failed to send test message",
         );
     }
@@ -321,7 +326,7 @@ async fn test_multiple_consumer_groups_independence() {
 
     let serialized = serde_json::to_string(&test_event).unwrap();
     assert!(
-        backend.try_send_serialized(serialized.as_bytes(), &topic, SendOptions::default()),
+        backend.try_send_serialized(serialized.as_bytes(), &topic, SendOptions::default(), None,),
         "Failed to send test message",
     );
 
@@ -422,11 +427,21 @@ async fn test_consumer_group_with_multiple_topics() {
     let serialized2 = serde_json::to_string(&test_event2).unwrap();
 
     assert!(
-        backend.try_send_serialized(serialized1.as_bytes(), &topic1, SendOptions::default(),),
+        backend.try_send_serialized(
+            serialized1.as_bytes(),
+            &topic1,
+            SendOptions::default(),
+            None,
+        ),
         "Failed to send to topic1",
     );
     assert!(
-        backend.try_send_serialized(serialized2.as_bytes(), &topic2, SendOptions::default(),),
+        backend.try_send_serialized(
+            serialized2.as_bytes(),
+            &topic2,
+            SendOptions::default(),
+            None,
+        ),
         "Failed to send to topic2",
     );
     <KafkaEventBusBackend as EventBusBackend>::flush(&backend)

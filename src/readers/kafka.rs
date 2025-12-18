@@ -5,10 +5,10 @@ use bevy::prelude::*;
 use bevy_event_bus::backends::KafkaCommitRequest;
 use bevy_event_bus::config::{EventBusConfig, kafka::KafkaConsumerConfig};
 use bevy_event_bus::resources::{
-    DrainedTopicMetadata, EventWrapper, KafkaCommitQueue, KafkaLagCacheResource,
+    DrainedTopicMetadata, KafkaCommitQueue, KafkaLagCacheResource, MessageWrapper,
     ProvisionedTopology,
 };
-use bevy_event_bus::{BusEvent, EventBusError, EventBusErrorType, readers::BusEventReader};
+use bevy_event_bus::{BusEvent, EventBusError, EventBusErrorType, readers::BusMessageReader};
 use crossbeam_channel::TrySendError;
 
 /// Errors that can occur when working with the Kafka-specific reader.
@@ -63,25 +63,25 @@ impl std::fmt::Display for KafkaReaderError {
 
 impl std::error::Error for KafkaReaderError {}
 
-/// Kafka-specific `BusEventReader` implementation that can optionally perform manual commits
+/// Kafka-specific `BusMessageReader` implementation that can optionally perform manual commits
 /// and expose consumer lag metrics.
 #[derive(bevy::ecs::system::SystemParam)]
-pub struct KafkaEventReader<'w, 's, T: BusEvent + Event> {
-    wrapped_events: Local<'s, Vec<EventWrapper<T>>>,
+pub struct KafkaMessageReader<'w, 's, T: BusEvent + Message> {
+    wrapped_events: Local<'s, Vec<MessageWrapper<T>>>,
     metadata_drained: Option<ResMut<'w, DrainedTopicMetadata>>,
     metadata_offsets: Local<'s, HashMap<String, usize>>,
     commit_queue: Option<Res<'w, KafkaCommitQueue>>,
     lag_cache: Option<Res<'w, KafkaLagCacheResource>>,
     topology: Option<Res<'w, ProvisionedTopology>>,
     invalid_config_reports: Local<'s, HashSet<String>>,
-    error_writer: EventWriter<'w, EventBusError<T>>,
+    error_writer: MessageWriter<'w, EventBusError<T>>,
 }
 
-impl<'w, 's, T: BusEvent + Event> KafkaEventReader<'w, 's, T> {
+impl<'w, 's, T: BusEvent + Message> KafkaMessageReader<'w, 's, T> {
     /// Read all messages for the supplied Kafka configuration. When manual commit is requested
     /// (auto commit disabled) the reader ensures the backend has manual commit mode enabled
     /// for the consumer group before returning events.
-    pub fn read<C: EventBusConfig>(&mut self, config: &C) -> Vec<EventWrapper<T>> {
+    pub fn read<C: EventBusConfig>(&mut self, config: &C) -> Vec<MessageWrapper<T>> {
         if let Some(kafka_config) = config.as_any().downcast_ref::<KafkaConsumerConfig>() {
             if !self.validate_configuration(kafka_config) {
                 return Vec::new();
@@ -100,9 +100,10 @@ impl<'w, 's, T: BusEvent + Event> KafkaEventReader<'w, 's, T> {
                     if start < messages.len() {
                         for processed_msg in messages.iter().skip(start) {
                             match serde_json::from_slice::<T>(&processed_msg.payload) {
-                                Ok(event) => self
-                                    .wrapped_events
-                                    .push(EventWrapper::new(event, processed_msg.metadata.clone())),
+                                Ok(event) => self.wrapped_events.push(MessageWrapper::new(
+                                    event,
+                                    processed_msg.metadata.clone(),
+                                )),
                                 Err(_) => tracing::warn!(
                                     "Failed to deserialize event from topic {}",
                                     topic
@@ -125,7 +126,7 @@ impl<'w, 's, T: BusEvent + Event> KafkaEventReader<'w, 's, T> {
     pub fn commit(
         &mut self,
         config: &KafkaConsumerConfig,
-        event: &EventWrapper<T>,
+        event: &MessageWrapper<T>,
     ) -> Result<(), KafkaReaderError> {
         if config.is_auto_commit_enabled() {
             return Err(KafkaReaderError::ManualCommitDisabled);
@@ -190,7 +191,7 @@ impl<'w, 's, T: BusEvent + Event> KafkaEventReader<'w, 's, T> {
     }
 }
 
-impl<'w, 's, T: BusEvent + Event> KafkaEventReader<'w, 's, T> {
+impl<'w, 's, T: BusEvent + Message> KafkaMessageReader<'w, 's, T> {
     fn validate_configuration(&mut self, config: &KafkaConsumerConfig) -> bool {
         let Some(topology) = self.topology.as_ref().and_then(|topo| topo.kafka()) else {
             return true;
@@ -272,8 +273,8 @@ impl<'w, 's, T: BusEvent + Event> KafkaEventReader<'w, 's, T> {
     }
 }
 
-impl<'w, 's, T: BusEvent + Event> BusEventReader<T> for KafkaEventReader<'w, 's, T> {
-    fn read<C: EventBusConfig>(&mut self, config: &C) -> Vec<EventWrapper<T>> {
-        KafkaEventReader::read(self, config)
+impl<'w, 's, T: BusEvent + Message> BusMessageReader<T> for KafkaMessageReader<'w, 's, T> {
+    fn read<C: EventBusConfig>(&mut self, config: &C) -> Vec<MessageWrapper<T>> {
+        KafkaMessageReader::read(self, config)
     }
 }

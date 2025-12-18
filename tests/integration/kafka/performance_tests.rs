@@ -7,7 +7,7 @@
 
 use bevy::prelude::*;
 use bevy_event_bus::{
-    EventBusPlugins, KafkaEventReader, KafkaEventWriter,
+    EventBusPlugins, KafkaMessageReader, KafkaMessageWriter,
     config::kafka::{
         KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
         KafkaTopicSpec,
@@ -19,7 +19,7 @@ use integration_tests::utils::performance::{PerformanceMetrics, record_performan
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-#[derive(Event, Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[derive(Message, Deserialize, Serialize, Debug, Clone, PartialEq)]
 struct PerformanceTestEvent {
     id: u64,
     timestamp: u64,
@@ -247,7 +247,7 @@ fn run_throughput_test(
     }
 
     // Sending system
-    fn sender_system(mut state: ResMut<PerformanceTestState>, mut writer: KafkaEventWriter) {
+    fn sender_system(mut state: ResMut<PerformanceTestState>, mut writer: KafkaMessageWriter) {
         if state.measuring && state.messages_sent >= state.messages_to_send {
             if state.send_end_time.is_none() {
                 state.send_end_time = Some(Instant::now());
@@ -322,7 +322,7 @@ fn run_throughput_test(
             let event = PerformanceTestEvent::new(sequence, sequence as u32, state.payload_size);
 
             // Fire-and-forget write - no Result to handle
-            writer.write(&config, event);
+            writer.write(&config, event, None);
 
             if state.measuring {
                 state.messages_sent += 1;
@@ -335,7 +335,7 @@ fn run_throughput_test(
     // Receiving system
     fn receiver_system(
         mut state: ResMut<PerformanceTestState>,
-        mut reader: KafkaEventReader<PerformanceTestEvent>,
+        mut reader: KafkaMessageReader<PerformanceTestEvent>,
     ) {
         let config = KafkaConsumerConfig::new(state.consumer_group.clone(), [&state.test_topic]);
         let batch = reader.read(&config);

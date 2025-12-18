@@ -6,8 +6,8 @@ use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
 use bevy_event_bus::{
-    ConsumerMetrics, DrainMetricsEvent, DrainedTopicMetadata, EventBusConsumerConfig,
-    EventBusPlugins, EventMetadata, ProcessedMessage, RedisEventReader, RedisEventWriter,
+    ConsumerMetrics, DrainMetricsMessage, DrainedTopicMetadata, EventBusConsumerConfig,
+    EventBusPlugins, MessageMetadata, ProcessedMessage, RedisMessageReader, RedisMessageWriter,
 };
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
@@ -17,7 +17,7 @@ use integration_tests::utils::redis_setup::{self, build_basic_app_simple};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
-#[derive(Event, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Message, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 struct TestMsg {
     v: u32,
 }
@@ -49,7 +49,7 @@ fn unlimited_buffer_gathers() {
         let entry = buffers.topics.entry(stream.clone()).or_default();
         for i in 0..5u32 {
             let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
-            let metadata = EventMetadata::new(stream.clone(), Instant::now(), None, None);
+            let metadata = MessageMetadata::new(stream.clone(), Instant::now(), None, None);
             entry.push(ProcessedMessage { payload, metadata });
         }
     }
@@ -57,7 +57,7 @@ fn unlimited_buffer_gathers() {
     let stream_for_reader = stream.clone();
     let _ = app
         .world_mut()
-        .run_system_once(move |mut reader: RedisEventReader<TestMsg>| {
+        .run_system_once(move |mut reader: RedisMessageReader<TestMsg>| {
             let config = RedisConsumerConfig::ungrouped([stream_for_reader.clone()]);
             let collected: Vec<_> = reader
                 .read(&config)
@@ -86,7 +86,7 @@ fn frame_limit_respected() {
         let entry = buffers.topics.entry(stream.clone()).or_default();
         for i in 0..10u32 {
             let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
-            let metadata = EventMetadata::new(stream.clone(), Instant::now(), None, None);
+            let metadata = MessageMetadata::new(stream.clone(), Instant::now(), None, None);
             entry.push(ProcessedMessage { payload, metadata });
         }
     }
@@ -94,7 +94,7 @@ fn frame_limit_respected() {
     let stream_for_reader = stream.clone();
     let _ = app
         .world_mut()
-        .run_system_once(move |mut reader: RedisEventReader<TestMsg>| {
+        .run_system_once(move |mut reader: RedisMessageReader<TestMsg>| {
             let config = RedisConsumerConfig::ungrouped([stream_for_reader.clone()]);
             let count = reader.read(&config).len();
             assert_eq!(
@@ -113,7 +113,7 @@ fn drain_metrics_emitted_and_updated() {
         let entry = buffers.topics.entry("m".into()).or_default();
         for i in 0..3u32 {
             let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
-            let metadata = EventMetadata::new("m".into(), Instant::now(), None, None);
+            let metadata = MessageMetadata::new("m".into(), Instant::now(), None, None);
             entry.push(ProcessedMessage { payload, metadata });
         }
     }
@@ -128,17 +128,16 @@ fn drain_metrics_emitted_and_updated() {
     );
 
     let mut received = Vec::new();
-    app.world_mut().resource_scope(
-        |_world, mut events: Mut<bevy::ecs::event::Events<DrainMetricsEvent>>| {
-            for event in events.drain() {
-                received.push(event);
+    app.world_mut()
+        .resource_scope(|_world, mut messages: Mut<Messages<DrainMetricsMessage>>| {
+            for message in messages.drain() {
+                received.push(message);
             }
-        },
-    );
+        });
 
     assert!(
         !received.is_empty(),
-        "Expected at least one DrainMetricsEvent to be emitted"
+        "Expected at least one DrainMetricsMessage to be emitted"
     );
 
     if let Some(last) = received.last() {
@@ -199,7 +198,7 @@ fn unlimited_buffer_separate_backends() {
     let stream_clone = stream.clone();
     writer.add_systems(
         Update,
-        move |mut w: RedisEventWriter, mut sent: Local<usize>| {
+        move |mut w: RedisMessageWriter, mut sent: Local<usize>| {
             if *sent < 50 {
                 let config = RedisProducerConfig::new(stream_clone.clone());
                 // Send 10 events per frame
@@ -210,6 +209,7 @@ fn unlimited_buffer_separate_backends() {
                             message: format!("unlimited_{}", *sent * 10 + i),
                             value: (*sent * 10 + i) as i32,
                         },
+                        None,
                     );
                 }
                 *sent += 1;
@@ -222,7 +222,7 @@ fn unlimited_buffer_separate_backends() {
     let group_clone = consumer_group.clone();
     reader.add_systems(
         Update,
-        move |mut r: RedisEventReader<TestEvent>, mut stats: ResMut<BackgroundStats>| {
+        move |mut r: RedisMessageReader<TestEvent>, mut stats: ResMut<BackgroundStats>| {
             let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()]);
             // No explicit count limit - should read all available
 
@@ -302,7 +302,7 @@ fn drain_metrics_separate_backends() {
     let stream_clone = stream.clone();
     writer.add_systems(
         Update,
-        move |mut w: RedisEventWriter, mut frame: Local<usize>| {
+        move |mut w: RedisMessageWriter, mut frame: Local<usize>| {
             *frame += 1;
             let config = RedisProducerConfig::new(stream_clone.clone());
 
@@ -322,6 +322,7 @@ fn drain_metrics_separate_backends() {
                         message: format!("drain_test_{}_{}", *frame, i),
                         value: (*frame * 100 + i) as i32,
                     },
+                    None,
                 );
             }
         },
@@ -332,7 +333,7 @@ fn drain_metrics_separate_backends() {
     let group_clone = consumer_group.clone();
     reader.add_systems(
         Update,
-        move |mut r: RedisEventReader<TestEvent>, mut stats: ResMut<BackgroundStats>| {
+        move |mut r: RedisMessageReader<TestEvent>, mut stats: ResMut<BackgroundStats>| {
             let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()]);
 
             let drained_this_frame = r.read(&config).len();
@@ -405,7 +406,7 @@ fn drain_empty_separate_backends() {
     let group_clone = consumer_group.clone();
     reader.add_systems(
         Update,
-        move |mut r: RedisEventReader<TestEvent>, mut stats: ResMut<BackgroundStats>| {
+        move |mut r: RedisMessageReader<TestEvent>, mut stats: ResMut<BackgroundStats>| {
             let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()])
                 .read_block_timeout(Duration::from_millis(100)); // Short timeout
 
@@ -488,7 +489,7 @@ fn frame_limit_separate_backends() {
     let stream_clone = stream.clone();
     writer.add_systems(
         Update,
-        move |mut w: RedisEventWriter, mut sent: Local<bool>| {
+        move |mut w: RedisMessageWriter, mut sent: Local<bool>| {
             if !*sent {
                 *sent = true;
                 let config = RedisProducerConfig::new(stream_clone.clone());
@@ -499,6 +500,7 @@ fn frame_limit_separate_backends() {
                             message: format!("frame_limit_{}", i),
                             value: i,
                         },
+                        None,
                     );
                 }
             }
@@ -510,7 +512,7 @@ fn frame_limit_separate_backends() {
     let group_clone = consumer_group.clone();
     reader.add_systems(
         Update,
-        move |mut r: RedisEventReader<TestEvent>, mut limiter: ResMut<FrameLimiter>| {
+        move |mut r: RedisMessageReader<TestEvent>, mut limiter: ResMut<FrameLimiter>| {
             let config = RedisConsumerConfig::new(group_clone.clone(), [stream_clone.clone()]);
 
             let received_this_frame = r.read(&config).len();

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use crate::BusEvent;
-use crate::resources::backend_metadata::{BackendMetadata, EventMetadata};
+use crate::resources::backend_metadata::{BackendMetadata, MessageMetadata};
 #[cfg(test)]
 use crate::resources::backend_metadata::{KafkaMetadata, RedisMetadata};
 
@@ -18,7 +18,7 @@ pub struct IncomingMessage {
     pub backend_metadata: Option<Box<dyn BackendMetadata>>,
 }
 
-impl EventMetadata {
+impl MessageMetadata {
     /// Get the key as a UTF-8 string if possible
     pub fn key_as_string(&self) -> Option<String> {
         self.key.clone()
@@ -48,43 +48,43 @@ impl IncomingMessage {
     }
 }
 
-/// Unified event wrapper that provides direct access to event data along with its metadata.
-/// Wrappers are only produced for externally sourced events, so metadata is always present.
-/// The wrapper can be used directly as the event thanks to the `Deref` implementation.
+/// Unified message wrapper that provides direct access to message data along with its metadata.
+/// Wrappers are only produced for externally sourced messages, so metadata is always present.
+/// The wrapper can be used directly as the message thanks to the `Deref` implementation.
 #[derive(Debug, Clone)]
-pub struct EventWrapper<T: BusEvent> {
+pub struct MessageWrapper<T: BusEvent> {
     event: T,
-    metadata: EventMetadata,
+    metadata: MessageMetadata,
 }
 
-impl<T: BusEvent> EventWrapper<T> {
-    /// Create a new `EventWrapper` for an event coming from the external bus.
-    pub fn new(event: T, metadata: EventMetadata) -> Self {
+impl<T: BusEvent> MessageWrapper<T> {
+    /// Create a new `MessageWrapper` for a message coming from the external bus.
+    pub fn new(event: T, metadata: MessageMetadata) -> Self {
         Self { event, metadata }
     }
 
-    /// Get the event data regardless of source
+    /// Get the message data regardless of source
     pub fn event(&self) -> &T {
         &self.event
     }
 
-    /// Get metadata associated with this event
-    pub fn metadata(&self) -> &EventMetadata {
+    /// Get metadata associated with this message
+    pub fn metadata(&self) -> &MessageMetadata {
         &self.metadata
     }
 
-    /// Extract the inner event, consuming the wrapper
+    /// Extract the inner message, consuming the wrapper
     pub fn into_event(self) -> T {
         self.event
     }
 
-    /// Extract both event and metadata, consuming the wrapper
-    pub fn into_parts(self) -> (T, EventMetadata) {
+    /// Extract both message and metadata, consuming the wrapper
+    pub fn into_parts(self) -> (T, MessageMetadata) {
         (self.event, self.metadata)
     }
 }
 
-impl<T: BusEvent> std::ops::Deref for EventWrapper<T> {
+impl<T: BusEvent> std::ops::Deref for MessageWrapper<T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -111,7 +111,7 @@ pub struct MessageQueue {
 #[derive(Clone, Debug)]
 pub struct ProcessedMessage {
     pub payload: Vec<u8>,
-    pub metadata: EventMetadata,
+    pub metadata: MessageMetadata,
 }
 
 /// Per-topic metadata-aware message buffers filled by drain system each frame
@@ -134,9 +134,9 @@ pub struct ConsumerMetrics {
     pub idle_frames: usize,
 }
 
-/// Event emitted after each drain with snapshot metrics (optional for user systems)
-#[derive(Event, Debug, Clone)]
-pub struct DrainMetricsEvent {
+/// Message emitted after each drain with snapshot metrics (optional for user systems)
+#[derive(Message, Debug, Clone)]
+pub struct DrainMetricsMessage {
     pub drained: usize,
     pub remaining: usize,
     pub total_drained: usize,
@@ -171,7 +171,7 @@ pub struct TypeErasedEvent {
     pub event: Box<dyn std::any::Any + Send + Sync>,
 
     /// Metadata associated with this event
-    pub metadata: EventMetadata,
+    pub metadata: MessageMetadata,
 
     /// Name of the decoder that produced this event (for debugging)
     pub decoder_name: &'static str,
@@ -186,7 +186,7 @@ impl TopicDecodedEvents {
     pub fn add_event<T: 'static + Send + Sync>(
         &mut self,
         event: T,
-        metadata: EventMetadata,
+        metadata: MessageMetadata,
         decoder_name: &'static str,
     ) {
         let type_id = std::any::TypeId::of::<T>();
@@ -203,7 +203,7 @@ impl TopicDecodedEvents {
     }
 
     /// Get events of a specific type, converting them back from type-erased storage
-    pub fn get_events<T: BusEvent>(&self) -> Vec<EventWrapper<T>> {
+    pub fn get_events<T: BusEvent>(&self) -> Vec<MessageWrapper<T>> {
         let type_id = std::any::TypeId::of::<T>();
 
         if let Some(type_erased_events) = self.events_by_type.get(&type_id) {
@@ -212,7 +212,7 @@ impl TopicDecodedEvents {
                 .filter_map(|te| {
                     te.event
                         .downcast_ref::<T>()
-                        .map(|event| EventWrapper::new(event.clone(), te.metadata.clone()))
+                        .map(|event| MessageWrapper::new(event.clone(), te.metadata.clone()))
                 })
                 .collect()
         } else {
@@ -258,7 +258,8 @@ mod tests {
 
     #[test]
     fn test_key_parsing() {
-        let mut metadata = EventMetadata::new("test_topic".to_string(), Instant::now(), None, None);
+        let mut metadata =
+            MessageMetadata::new("test_topic".to_string(), Instant::now(), None, None);
 
         assert_eq!(metadata.key_as_string(), None);
         assert_eq!(metadata.key_display(), None);
@@ -293,7 +294,7 @@ mod tests {
         headers.insert("correlation_id".to_string(), "abc-123".to_string());
         headers.insert("source_service".to_string(), "world_simulator".to_string());
 
-        let metadata_with_headers = EventMetadata::new(
+        let metadata_with_headers = MessageMetadata::new(
             "events_topic".to_string(),
             Instant::now(),
             Some("event_key_789".to_string()),
@@ -336,7 +337,7 @@ mod tests {
             headers: HashMap::new(),
         };
 
-        let metadata = EventMetadata::new(
+        let metadata = MessageMetadata::new(
             "kafka_topic".to_string(),
             Instant::now(),
             Some("partition_key".to_string()),
@@ -357,7 +358,7 @@ mod tests {
             manual_ack: true,
         };
 
-        let metadata = EventMetadata::new(
+        let metadata = MessageMetadata::new(
             "redis_stream".to_string(),
             Instant::now(),
             None,

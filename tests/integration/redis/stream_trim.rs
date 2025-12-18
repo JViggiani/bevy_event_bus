@@ -2,7 +2,7 @@
 
 use bevy::prelude::*;
 use bevy_event_bus::config::redis::{RedisStreamSpec, TrimStrategy};
-use bevy_event_bus::{EventBusPlugins, RedisEventWriter};
+use bevy_event_bus::{EventBusPlugins, RedisMessageWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{self, unique_topic};
 use integration_tests::utils::redis_setup;
@@ -16,7 +16,7 @@ struct TrimRequest {
     executed: bool,
 }
 
-fn trim_stream_once(mut writer: RedisEventWriter, mut request: ResMut<TrimRequest>) {
+fn trim_stream_once(mut writer: RedisMessageWriter, mut request: ResMut<TrimRequest>) {
     if request.executed {
         return;
     }

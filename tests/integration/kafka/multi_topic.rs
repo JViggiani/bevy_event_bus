@@ -65,11 +65,21 @@ async fn test_multi_topic_isolation() {
     let serialized_b = to_string(&event_b).expect("Serialization should succeed for topic B");
 
     assert!(
-        backend.try_send_serialized(serialized_a.as_bytes(), &topic_a, SendOptions::default()),
+        backend.try_send_serialized(
+            serialized_a.as_bytes(),
+            &topic_a,
+            SendOptions::default(),
+            None,
+        ),
         "Failed to send to topic A",
     );
     assert!(
-        backend.try_send_serialized(serialized_b.as_bytes(), &topic_b, SendOptions::default()),
+        backend.try_send_serialized(
+            serialized_b.as_bytes(),
+            &topic_b,
+            SendOptions::default(),
+            None,
+        ),
         "Failed to send to topic B",
     );
 

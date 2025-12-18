@@ -3,8 +3,8 @@ use std::{collections::HashMap, time::Duration};
 use bevy::prelude::*;
 use bevy_event_bus::config::kafka::{KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec};
 use bevy_event_bus::{
-    EventBusConfig, EventBusPlugins, KafkaConsumerConfig, KafkaEventBusBackend, KafkaEventReader,
-    KafkaEventWriter, KafkaProducerConfig, TopologyMode,
+    EventBusConfig, EventBusPlugins, KafkaConsumerConfig, KafkaEventBusBackend, KafkaMessageReader,
+    KafkaMessageWriter, KafkaProducerConfig, TopologyMode,
 };
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{
@@ -60,7 +60,7 @@ fn configuration_with_readers_writers_works() {
         let topic_clone = topic.clone();
         let consumer_group_clone = consumer_group.clone();
         let consumer_system =
-            move |mut reader: KafkaEventReader<TestEvent>, mut collected: ResMut<Collected>| {
+            move |mut reader: KafkaMessageReader<TestEvent>, mut collected: ResMut<Collected>| {
                 // Read using configuration
                 let config = KafkaConsumerConfig::new(consumer_group_clone.clone(), [&topic_clone]);
                 let events = reader.read(&config);
@@ -81,7 +81,7 @@ fn configuration_with_readers_writers_works() {
 
         // Producer system using configuration
         let topic_clone = topic.clone();
-        let producer_system = move |mut writer: KafkaEventWriter| {
+        let producer_system = move |mut writer: KafkaMessageWriter| {
             // Write using configuration - producers specify topics
             let config = KafkaProducerConfig::new([topic_clone.clone()]).compression_type("none");
             writer.write(
@@ -90,6 +90,7 @@ fn configuration_with_readers_writers_works() {
                     message: "config_test".to_string(),
                     value: 42,
                 },
+                None,
             );
         };
 
@@ -176,7 +177,7 @@ fn kafka_specific_methods_work() {
     });
 
     // Writer system that uses Kafka-specific write methods
-    fn test_kafka_write_methods(mut writer: KafkaEventWriter, configs: Res<TestConfigs>) {
+    fn test_kafka_write_methods(mut writer: KafkaMessageWriter, configs: Res<TestConfigs>) {
         // Test Kafka-specific write methods
         let config_with_key = configs.producer.clone().partition_key("partition_key");
         writer.write(
@@ -185,6 +186,7 @@ fn kafka_specific_methods_work() {
                 message: "key_test".to_string(),
                 value: 1,
             },
+            None,
         );
 
         let config_with_headers = configs.producer.clone().headers_map(HashMap::from([
@@ -197,13 +199,17 @@ fn kafka_specific_methods_work() {
                 message: "headers_test".to_string(),
                 value: 2,
             },
+            None,
         );
 
         let _flush_result = writer.flush(std::time::Duration::from_secs(1));
     }
 
     // Reader system that uses Kafka-specific read methods
-    fn test_kafka_read_methods(mut reader: KafkaEventReader<TestEvent>, configs: Res<TestConfigs>) {
+    fn test_kafka_read_methods(
+        mut reader: KafkaMessageReader<TestEvent>,
+        configs: Res<TestConfigs>,
+    ) {
         // Test Kafka-specific read methods
         let _events = reader.read(&configs.consumer);
         let _lag = reader.consumer_lag(&configs.consumer);

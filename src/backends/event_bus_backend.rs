@@ -1,5 +1,6 @@
 use crate::config::{kafka::KafkaTopologyConfig, redis::RedisTopologyConfig};
-use crate::resources::{ConsumerMetrics, IncomingMessage};
+use crate::errors::BusErrorKind;
+use crate::resources::{ConsumerMetrics, IncomingMessage, MessageMetadata};
 use async_trait::async_trait;
 use bevy::prelude::{App, World};
 use bevy_event_bus::BusEvent;
@@ -7,6 +8,7 @@ use crossbeam_channel::Receiver;
 use std::any::Any;
 use std::error::Error;
 use std::fmt::{Debug, Display};
+use std::sync::Arc;
 
 /// Descriptor summarising the manual commit mechanism exposed by a backend.
 #[derive(Debug, Clone)]
@@ -100,6 +102,50 @@ pub trait EventBusBackendConfig: Send + Sync + 'static {
 pub enum StreamTrimStrategy {
     Exact,
     Approximate,
+}
+
+/// Delivery failure details emitted by backends when async send fails.
+#[derive(Clone, Debug)]
+pub struct DeliveryFailure {
+    pub backend: &'static str,
+    pub kind: BusErrorKind,
+    pub topic: String,
+    pub error: String,
+    pub metadata: Option<MessageMetadata>,
+}
+
+/// Invocable callback used to report delivery failures.
+pub struct DeliveryFailureCallback {
+    inner: Arc<dyn Fn(DeliveryFailure) + Send + Sync>,
+}
+
+impl DeliveryFailureCallback {
+    pub fn new<F>(callback: F) -> Self
+    where
+        F: Fn(DeliveryFailure) + Send + Sync + 'static,
+    {
+        Self {
+            inner: Arc::new(callback),
+        }
+    }
+
+    pub fn call(&self, failure: DeliveryFailure) {
+        (self.inner)(failure);
+    }
+}
+
+impl Clone for DeliveryFailureCallback {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl Debug for DeliveryFailureCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeliveryFailureCallback").finish()
+    }
 }
 
 /// Backend-specific knobs applied when dispatching serialized events.
@@ -211,8 +257,13 @@ pub trait EventBusBackend: Send + Sync + 'static + Debug {
 
     /// Non-blocking send that queues the event for delivery.
     /// Returns true if the event was queued successfully, false if it failed.
-    fn try_send_serialized(&self, event_json: &[u8], topic: &str, options: SendOptions<'_>)
-    -> bool;
+    fn try_send_serialized(
+        &self,
+        event_json: &[u8],
+        topic: &str,
+        options: SendOptions<'_>,
+        failure_handler: Option<Arc<DeliveryFailureCallback>>,
+    ) -> bool;
 
     /// Receive serialized messages from a topic.
     /// Returns empty vec if no messages or on error.
@@ -243,7 +294,7 @@ impl dyn EventBusBackend {
     /// Returns true if the event was serialized and queued successfully.
     pub fn try_send<T: BusEvent>(&self, event: &T, topic: &str, options: SendOptions<'_>) -> bool {
         match serde_json::to_vec(event) {
-            Ok(serialized) => self.try_send_serialized(&serialized, topic, options),
+            Ok(serialized) => self.try_send_serialized(&serialized, topic, options, None),
             Err(_) => false, // Serialization failed
         }
     }

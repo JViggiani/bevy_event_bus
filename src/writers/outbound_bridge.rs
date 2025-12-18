@@ -4,8 +4,13 @@ use std::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 
 use bevy_event_bus::backends::{EventBusBackendResource, event_bus_backend::SendOptions};
-use bevy_event_bus::writers::EventBusErrorQueue;
-use bevy_event_bus::{BusEvent, EventBusError, EventBusErrorType};
+use bevy_event_bus::errors::{BusErrorCallback, BusErrorContext, BusErrorKind};
+use bevy_event_bus::resources::MessageMetadata;
+use bevy_event_bus::BusEvent;
+
+/// Optional error callback used by the outbound bridge.
+#[derive(Resource, Clone)]
+pub struct OutboundErrorCallback(pub BusErrorCallback);
 
 /// Tracks event types that need an outbound bridge and the systems used to service them.
 #[derive(Resource, Default)]
@@ -15,7 +20,7 @@ pub struct OutboundBridgeRegistry {
 }
 
 impl OutboundBridgeRegistry {
-    pub fn register_type<T: BusEvent + Event>(&mut self) {
+    pub fn register_type<T: BusEvent + Message>(&mut self) {
         let ty = TypeId::of::<T>();
         self.callbacks.entry(ty).or_insert(add_bridge::<T>);
     }
@@ -53,11 +58,11 @@ impl OutboundTopicRegistry {
     }
 }
 
-fn outbound_bridge_system<T: BusEvent + Event>(
-    mut reader: EventReader<T>,
+fn outbound_bridge_system<T: BusEvent + Message>(
+    mut reader: MessageReader<T>,
     topic_registry: Option<Res<OutboundTopicRegistry>>,
     backend: Option<Res<EventBusBackendResource>>,
-    error_queue: Res<EventBusErrorQueue>,
+    error_callback: Option<Res<OutboundErrorCallback>>,
 ) {
     let Some(registry) = topic_registry else {
         return;
@@ -71,6 +76,23 @@ fn outbound_bridge_system<T: BusEvent + Event>(
         return;
     }
 
+    let callback_ref = error_callback.as_ref().map(|cb| &cb.0);
+
+    let emit_error = |topic: &str, kind: BusErrorKind, message: &str, metadata: Option<MessageMetadata>| {
+        if let Some(cb) = callback_ref {
+            cb(BusErrorContext::new(
+                "outbound",
+                topic.to_string(),
+                kind,
+                message.to_string(),
+                metadata,
+                None,
+            ));
+        } else {
+            tracing::warn!(backend = "outbound", topic = %topic, error = ?kind, "Unhandled outbound bridge error: {message}");
+        }
+    };
+
     for event in reader.read() {
         match backend.as_ref() {
             Some(backend_res) => {
@@ -79,37 +101,25 @@ fn outbound_bridge_system<T: BusEvent + Event>(
 
                 for topic in topics {
                     if !backend.try_send(event, topic, SendOptions::default()) {
-                        let error_event = EventBusError::immediate(
-                            topic.clone(),
-                            EventBusErrorType::Other,
-                            "Failed to send to external backend".to_string(),
-                            event.clone(),
-                        );
-                        error_queue.add_error(error_event);
+                        emit_error(topic, BusErrorKind::DeliveryFailure, "Failed to send to external backend", None);
                     }
                 }
             }
             None => {
                 for topic in topics {
-                    let error_event = EventBusError::immediate(
-                        topic.clone(),
-                        EventBusErrorType::NotConfigured,
-                        "No event bus backend configured".to_string(),
-                        event.clone(),
-                    );
-                    error_queue.add_error(error_event);
+                    emit_error(topic, BusErrorKind::NotConfigured, "No event bus backend configured", None);
                 }
             }
         }
     }
 }
 
-fn add_bridge<T: BusEvent + Event>(app: &mut App) {
+fn add_bridge<T: BusEvent + Message>(app: &mut App) {
     app.add_systems(PostUpdate, outbound_bridge_system::<T>);
 }
 
 /// Ensure the outbound bridge is configured for the given event type and topics.
-pub fn ensure_bridge<T: BusEvent + Event>(app: &mut App, topics: &[String]) {
+pub fn ensure_bridge<T: BusEvent + Message>(app: &mut App, topics: &[String]) {
     {
         let world = app.world_mut();
 
@@ -127,10 +137,6 @@ pub fn ensure_bridge<T: BusEvent + Event>(app: &mut App, topics: &[String]) {
 
 /// Activate any bridge systems whose supporting resources are available.
 pub fn activate_registered_bridges(app: &mut App) {
-    if !app.world().contains_resource::<EventBusErrorQueue>() {
-        return;
-    }
-
     let callbacks = {
         let world = app.world_mut();
         if let Some(mut registry) = world.get_resource_mut::<OutboundBridgeRegistry>() {

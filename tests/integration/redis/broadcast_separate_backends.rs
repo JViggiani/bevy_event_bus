@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
-use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
+use bevy_event_bus::{EventBusPlugins, RedisMessageReader, RedisMessageWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
     run_app_updates, unique_consumer_group, unique_consumer_group_member,
@@ -70,7 +70,7 @@ fn test_broadcast_with_separate_backends() {
     let g1 = membership1.group.clone();
     reader1.add_systems(
         Update,
-        move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
+        move |mut r: RedisMessageReader<TestEvent>, mut c: ResMut<EventCollector>| {
             let config = RedisConsumerConfig::new(g1.clone(), [s1.clone()]);
             let initial_count = c.0.len();
             for wrapper in r.read(&config) {
@@ -91,7 +91,7 @@ fn test_broadcast_with_separate_backends() {
     let g2 = membership2.group.clone();
     reader2.add_systems(
         Update,
-        move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
+        move |mut r: RedisMessageReader<TestEvent>, mut c: ResMut<EventCollector>| {
             let config = RedisConsumerConfig::new(g2.clone(), [s2.clone()]);
             let initial_count = c.0.len();
             for wrapper in r.read(&config) {
@@ -110,7 +110,7 @@ fn test_broadcast_with_separate_backends() {
     let stream_for_writer = stream.clone();
     writer.add_systems(
         Update,
-        move |mut w: RedisEventWriter, mut sent: Local<usize>| {
+        move |mut w: RedisMessageWriter, mut sent: Local<usize>| {
             if *sent < 4 {
                 let config = RedisProducerConfig::new(stream_for_writer.clone());
                 w.write(
@@ -119,6 +119,7 @@ fn test_broadcast_with_separate_backends() {
                         message: format!("broadcast_{}", *sent),
                         value: *sent as i32,
                     },
+                    None,
                 );
                 println!("Writer sent event {}: broadcast_{}", *sent, *sent);
                 *sent += 1;
@@ -202,7 +203,7 @@ fn test_single_backend_consumer_group_round_robin() {
     let reader_group = consumer_group.clone();
     reader1.add_systems(
         Update,
-        move |mut reader: RedisEventReader<TestEvent>, mut collected: ResMut<EventCollector>| {
+        move |mut reader: RedisMessageReader<TestEvent>, mut collected: ResMut<EventCollector>| {
             let config = RedisConsumerConfig::new(reader_group.clone(), [reader_stream.clone()]);
             for wrapper in reader.read(&config) {
                 collected.0.push(wrapper.event().clone());
@@ -218,7 +219,7 @@ fn test_single_backend_consumer_group_round_robin() {
     let reader_group = consumer_group.clone();
     reader2.add_systems(
         Update,
-        move |mut reader: RedisEventReader<TestEvent>, mut collected: ResMut<EventCollector>| {
+        move |mut reader: RedisMessageReader<TestEvent>, mut collected: ResMut<EventCollector>| {
             let config = RedisConsumerConfig::new(reader_group.clone(), [reader_stream.clone()]);
             for wrapper in reader.read(&config) {
                 collected.0.push(wrapper.event().clone());
@@ -232,7 +233,7 @@ fn test_single_backend_consumer_group_round_robin() {
     let writer_stream = stream.clone();
     writer.add_systems(
         Update,
-        move |mut writer: RedisEventWriter, mut sent: Local<usize>| {
+        move |mut writer: RedisMessageWriter, mut sent: Local<usize>| {
             if *sent < 6 {
                 let config = RedisProducerConfig::new(writer_stream.clone());
                 writer.write(
@@ -241,6 +242,7 @@ fn test_single_backend_consumer_group_round_robin() {
                         message: format!("message_{}", *sent),
                         value: *sent as i32,
                     },
+                    None,
                 );
                 *sent += 1;
             }

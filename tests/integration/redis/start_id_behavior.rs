@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
-use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
+use bevy_event_bus::{EventBusPlugins, RedisMessageReader, RedisMessageWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
     run_app_updates, unique_consumer_group_membership, unique_topic,
@@ -64,7 +64,7 @@ fn test_start_id_from_beginning() {
     let stream_for_writer = stream.clone();
     writer.add_systems(
         Update,
-        move |mut w: RedisEventWriter, mut sent: Local<usize>| {
+        move |mut w: RedisMessageWriter, mut sent: Local<usize>| {
             if *sent < 3 {
                 let config = RedisProducerConfig::new(stream_for_writer.clone());
                 w.write(
@@ -73,6 +73,7 @@ fn test_start_id_from_beginning() {
                         message: format!("before_consumer_{}", *sent),
                         value: *sent as i32,
                     },
+                    None,
                 );
                 *sent += 1;
             }
@@ -89,7 +90,7 @@ fn test_start_id_from_beginning() {
     let g = consumer_group.clone();
     reader.add_systems(
         Update,
-        move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
+        move |mut r: RedisMessageReader<TestEvent>, mut c: ResMut<EventCollector>| {
             let config = RedisConsumerConfig::new(g.clone(), [s.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
@@ -160,7 +161,7 @@ fn test_start_id_from_end() {
     let stream_for_writer = stream.clone();
     writer.add_systems(
         Update,
-        move |mut w: RedisEventWriter, mut sent: Local<usize>| {
+        move |mut w: RedisMessageWriter, mut sent: Local<usize>| {
             if *sent < 3 {
                 let config = RedisProducerConfig::new(stream_for_writer.clone());
                 w.write(
@@ -169,6 +170,7 @@ fn test_start_id_from_end() {
                         message: format!("before_consumer_{}", *sent),
                         value: *sent as i32,
                     },
+                    None,
                 );
                 *sent += 1;
             }
@@ -185,7 +187,7 @@ fn test_start_id_from_end() {
     let g = consumer_group.clone();
     reader.add_systems(
         Update,
-        move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
+        move |mut r: RedisMessageReader<TestEvent>, mut c: ResMut<EventCollector>| {
             let config = RedisConsumerConfig::new(g.clone(), [s.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
@@ -201,7 +203,7 @@ fn test_start_id_from_end() {
     let stream_for_writer_2 = stream.clone();
     writer.add_systems(
         Update,
-        move |mut w: RedisEventWriter, mut sent: Local<usize>| {
+        move |mut w: RedisMessageWriter, mut sent: Local<usize>| {
             if *sent >= 3 && *sent < 5 {
                 // Send 2 more events after consumer is ready
                 let config = RedisProducerConfig::new(stream_for_writer_2.clone());
@@ -211,6 +213,7 @@ fn test_start_id_from_end() {
                         message: format!("after_consumer_{}", *sent),
                         value: *sent as i32,
                     },
+                    None,
                 );
                 *sent += 1;
             }

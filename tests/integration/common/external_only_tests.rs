@@ -2,13 +2,11 @@ use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
 use bevy_event_bus::backends::EventBusBackendResource;
 use bevy_event_bus::config::kafka::{KafkaProducerConfig, KafkaTopologyEventBinding};
-use bevy_event_bus::{
-    EventBusError, EventBusErrorQueue, EventBusErrorType, EventBusPlugin, EventBusPlugins,
-    KafkaEventWriter,
-};
+use bevy_event_bus::{BusErrorCallback, BusErrorContext, BusErrorKind, EventBusPlugin, EventBusPlugins, KafkaMessageWriter};
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::unique_topic;
 use integration_tests::utils::mock_backend::MockEventBusBackend;
+use std::sync::{Arc, Mutex};
 
 #[derive(Resource, Default)]
 struct InternalSeen(usize);
@@ -26,7 +24,7 @@ fn writer_does_not_emit_bevy_events() {
     let topic_for_writer = topic.clone();
     app.add_systems(
         Update,
-        move |mut writer: KafkaEventWriter, mut fired: Local<bool>| {
+        move |mut writer: KafkaMessageWriter, mut fired: Local<bool>| {
             if !*fired {
                 *fired = true;
                 let config = KafkaProducerConfig::new([topic_for_writer.clone()]);
@@ -36,6 +34,7 @@ fn writer_does_not_emit_bevy_events() {
                         message: "no-internal-bridge".to_string(),
                         value: 7,
                     },
+                    None,
                 );
             }
         },
@@ -43,7 +42,7 @@ fn writer_does_not_emit_bevy_events() {
 
     app.add_systems(
         Update,
-        |mut reader: EventReader<TestEvent>, mut seen: ResMut<InternalSeen>| {
+        |mut reader: MessageReader<TestEvent>, mut seen: ResMut<InternalSeen>| {
             seen.0 += reader.read().count();
         },
     );
@@ -56,7 +55,7 @@ fn writer_does_not_emit_bevy_events() {
     let seen = app.world().resource::<InternalSeen>();
     assert_eq!(
         seen.0, 0,
-        "KafkaEventWriter should not emit additional Bevy events for the same payload",
+        "KafkaMessageWriter should not emit additional Bevy events for the same payload",
     );
 }
 
@@ -65,18 +64,24 @@ fn writer_queues_not_configured_error_when_backend_missing() {
     let mut app = App::new();
 
     app.add_plugins(EventBusPlugin);
-    app.insert_resource(EventBusErrorQueue::default());
 
-    // Register events/results needed for the writer and error queue
-    app.add_event::<TestEvent>();
-    app.add_event::<EventBusError<TestEvent>>();
+    // Register events/results needed for the writer
+    app.add_message::<TestEvent>();
 
     // Remove any backend resource to simulate a missing backend scenario
     app.world_mut().remove_resource::<EventBusBackendResource>();
 
+    let errors: Arc<Mutex<Vec<BusErrorContext>>> = Arc::new(Mutex::new(Vec::new()));
+    let callback: BusErrorCallback = {
+        let sink: Arc<Mutex<Vec<BusErrorContext>>> = Arc::clone(&errors);
+        std::sync::Arc::new(move |ctx| {
+            sink.lock().unwrap().push(ctx);
+        })
+    };
+
     // Drive the writer once
     app.world_mut()
-        .run_system_once(|mut writer: KafkaEventWriter| {
+        .run_system_once(move |mut writer: KafkaMessageWriter| {
             let config = KafkaProducerConfig::new([unique_topic("missing_backend")]);
             writer.write(
                 &config,
@@ -84,32 +89,17 @@ fn writer_queues_not_configured_error_when_backend_missing() {
                     message: "should-error".to_string(),
                     value: 99,
                 },
+                Some(callback.clone()),
             );
         })
         .expect("writer system should run without errors");
 
-    // Flush queued error events into the world
-    let pending = {
-        let queue = app.world().resource::<EventBusErrorQueue>();
-        queue.drain_pending()
-    };
-    for callback in pending {
-        callback(app.world_mut());
-    }
-
-    // Capture emitted errors
-    let errors: Vec<EventBusError<TestEvent>> = app
-        .world_mut()
-        .run_system_once(|mut reader: EventReader<EventBusError<TestEvent>>| {
-            reader.read().cloned().collect()
-        })
-        .expect("error reader should run");
-
+    let errors = errors.lock().unwrap();
     assert_eq!(errors.len(), 1, "Exactly one error should be emitted");
     let error = &errors[0];
-    assert_eq!(error.error_type, EventBusErrorType::NotConfigured);
+    assert_eq!(error.kind, BusErrorKind::NotConfigured);
     assert_eq!(
-        error.error_message, "No event bus backend configured",
+        error.message, "No event bus backend configured",
         "Error message should explain the missing backend",
     );
 }

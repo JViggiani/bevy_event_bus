@@ -2,7 +2,7 @@
 
 use bevy::prelude::*;
 use bevy_event_bus::config::redis::{RedisConsumerConfig, RedisConsumerGroupSpec, RedisStreamSpec};
-use bevy_event_bus::{EventBusPlugins, RedisEventReader};
+use bevy_event_bus::{EventBusPlugins, RedisMessageReader};
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{unique_consumer_group_membership, unique_topic};
 use integration_tests::utils::redis_setup::{self, SetupOptions};
@@ -46,7 +46,7 @@ fn idle_empty_stream_poll_does_not_block() {
     let group_read = consumer_group.clone();
     app.add_systems(
         Update,
-        move |mut reader: RedisEventReader<TestEvent>, mut ticks: ResMut<Ticks>| {
+        move |mut reader: RedisMessageReader<TestEvent>, mut ticks: ResMut<Ticks>| {
             let config = RedisConsumerConfig::new(group_read.clone(), [stream_read.clone()])
                 .read_block_timeout(std::time::Duration::from_millis(25));
             for _ in reader.read(&config) {

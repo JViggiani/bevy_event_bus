@@ -6,7 +6,7 @@ use bevy_event_bus::config::kafka::{
     KafkaTopicSpec,
 };
 use bevy_event_bus::{
-    EventBusError, EventBusErrorType, EventBusPlugins, KafkaEventReader, KafkaEventWriter,
+    EventBusError, EventBusErrorType, EventBusPlugins, KafkaMessageReader, KafkaMessageWriter,
 };
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
@@ -91,7 +91,7 @@ fn same_consumer_group_distributes_messages_round_robin() {
     let g1 = consumer_group.clone();
     reader1.add_systems(
         Update,
-        move |mut r: KafkaEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
+        move |mut r: KafkaMessageReader<TestEvent>, mut c: ResMut<EventCollector>| {
             let config = KafkaConsumerConfig::new(g1.clone(), [t1.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
@@ -108,7 +108,7 @@ fn same_consumer_group_distributes_messages_round_robin() {
     let g2 = consumer_group.clone();
     reader2.add_systems(
         Update,
-        move |mut r: KafkaEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
+        move |mut r: KafkaMessageReader<TestEvent>, mut c: ResMut<EventCollector>| {
             let config = KafkaConsumerConfig::new(g2.clone(), [t2.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
@@ -122,7 +122,7 @@ fn same_consumer_group_distributes_messages_round_robin() {
 
     writer.add_systems(
         Update,
-        move |mut w: KafkaEventWriter, mut sent: Local<usize>| {
+        move |mut w: KafkaMessageWriter, mut sent: Local<usize>| {
             if *sent < 6 {
                 let config = KafkaProducerConfig::new([topic_for_runtime_writer.clone()]);
                 w.write(
@@ -131,6 +131,7 @@ fn same_consumer_group_distributes_messages_round_robin() {
                         message: format!("message_{}", *sent),
                         value: *sent as i32,
                     },
+                    None,
                 );
                 *sent += 1;
             }
@@ -253,7 +254,7 @@ fn different_consumer_groups_receive_all_events() {
 
     writer.add_systems(
         Update,
-        move |mut w: KafkaEventWriter, mut sent: Local<usize>| {
+        move |mut w: KafkaMessageWriter, mut sent: Local<usize>| {
             if *sent < 4 {
                 let config = KafkaProducerConfig::new([topic_for_runtime_writer.clone()]);
                 w.write(
@@ -262,6 +263,7 @@ fn different_consumer_groups_receive_all_events() {
                         message: format!("broadcast_message_{}", *sent),
                         value: *sent as i32 + 100,
                     },
+                    None,
                 );
                 *sent += 1;
             }
@@ -277,7 +279,7 @@ fn different_consumer_groups_receive_all_events() {
     let g1 = consumer_group1.clone();
     reader1.add_systems(
         Update,
-        move |mut r: KafkaEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
+        move |mut r: KafkaMessageReader<TestEvent>, mut c: ResMut<EventCollector>| {
             let config = KafkaConsumerConfig::new(g1.clone(), [t1.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
@@ -294,7 +296,7 @@ fn different_consumer_groups_receive_all_events() {
     let g2 = consumer_group2.clone();
     reader2.add_systems(
         Update,
-        move |mut r: KafkaEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
+        move |mut r: KafkaMessageReader<TestEvent>, mut c: ResMut<EventCollector>| {
             let config = KafkaConsumerConfig::new(g2.clone(), [t2.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
@@ -385,7 +387,7 @@ fn writer_only_works_without_consumer_groups() {
     let topic_for_runtime_writer = topic.clone();
     writer.add_systems(
         Update,
-        move |mut w: KafkaEventWriter, mut events_sent: Local<usize>| {
+        move |mut w: KafkaMessageWriter, mut events_sent: Local<usize>| {
             if *events_sent < 3 {
                 let config = KafkaProducerConfig::new([topic_for_runtime_writer.clone()]);
                 w.write(
@@ -394,6 +396,7 @@ fn writer_only_works_without_consumer_groups() {
                         message: format!("writer_only_{}", *events_sent),
                         value: *events_sent as i32,
                     },
+                    None,
                 );
                 *events_sent += 1;
             }
@@ -409,7 +412,7 @@ fn writer_only_works_without_consumer_groups() {
     let reader_group_runtime = reader_group.clone();
     reader.add_systems(
         Update,
-        move |mut r: KafkaEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
+        move |mut r: KafkaMessageReader<TestEvent>, mut c: ResMut<EventCollector>| {
             let config = KafkaConsumerConfig::new(
                 reader_group_runtime.clone(),
                 [topic_for_reader_runtime.clone()],
@@ -474,7 +477,7 @@ fn reader_does_not_work_without_consumer_group() {
 
     reader.add_systems(
         Update,
-        |mut errors: EventReader<EventBusError<TestEvent>>,
+        |mut errors: MessageReader<EventBusError<TestEvent>>,
          mut collector: ResMut<ErrorCollector>| {
             for error in errors.read() {
                 collector.0.push(error.clone());
@@ -486,7 +489,7 @@ fn reader_does_not_work_without_consumer_group() {
     let reader_group_runtime = missing_group.clone();
     reader.add_systems(
         Update,
-        move |mut r: KafkaEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
+        move |mut r: KafkaMessageReader<TestEvent>, mut c: ResMut<EventCollector>| {
             let config = KafkaConsumerConfig::new(
                 reader_group_runtime.clone(),
                 [topic_for_reader_runtime.clone()],
@@ -504,7 +507,7 @@ fn reader_does_not_work_without_consumer_group() {
     let topic_for_runtime_writer = topic.clone();
     writer.add_systems(
         Update,
-        move |mut w: KafkaEventWriter, mut sent: Local<usize>| {
+        move |mut w: KafkaMessageWriter, mut sent: Local<usize>| {
             if *sent < 2 {
                 let config = KafkaProducerConfig::new([topic_for_runtime_writer.clone()]);
                 w.write(
@@ -513,6 +516,7 @@ fn reader_does_not_work_without_consumer_group() {
                         message: format!("missing_group_{}", *sent),
                         value: *sent as i32,
                     },
+                    None,
                 );
                 *sent += 1;
             }
@@ -583,7 +587,7 @@ fn invalid_consumer_group_does_not_steal_events_from_valid_group() {
 
     app.add_systems(
         Update,
-        |mut errors: EventReader<EventBusError<TestEvent>>,
+        |mut errors: MessageReader<EventBusError<TestEvent>>,
          mut collector: ResMut<ErrorCollector>| {
             for error in errors.read() {
                 collector.0.push(error.clone());
@@ -595,7 +599,7 @@ fn invalid_consumer_group_does_not_steal_events_from_valid_group() {
     let invalid_group = unique_consumer_group("kafka-invalid-reader");
     app.add_systems(
         Update,
-        move |mut reader: KafkaEventReader<TestEvent>,
+        move |mut reader: KafkaMessageReader<TestEvent>,
               mut invalid: ResMut<InvalidKafkaCollector>| {
             let config = KafkaConsumerConfig::new(invalid_group.clone(), [invalid_topic.clone()]);
             for wrapper in reader.read(&config) {
@@ -608,7 +612,7 @@ fn invalid_consumer_group_does_not_steal_events_from_valid_group() {
     let valid_group_runtime = valid_group.clone();
     app.add_systems(
         Update,
-        move |mut reader: KafkaEventReader<TestEvent>, mut valid: ResMut<ValidKafkaCollector>| {
+        move |mut reader: KafkaMessageReader<TestEvent>, mut valid: ResMut<ValidKafkaCollector>| {
             let config = KafkaConsumerConfig::new(
                 valid_group_runtime.clone(),
                 [valid_topic_runtime.clone()],
@@ -622,7 +626,7 @@ fn invalid_consumer_group_does_not_steal_events_from_valid_group() {
     let topic_for_writer = topic.clone();
     app.add_systems(
         Update,
-        move |mut writer: KafkaEventWriter, mut sent: Local<usize>| {
+        move |mut writer: KafkaMessageWriter, mut sent: Local<usize>| {
             if *sent < 3 {
                 let config = KafkaProducerConfig::new([topic_for_writer.clone()]);
                 writer.write(
@@ -631,6 +635,7 @@ fn invalid_consumer_group_does_not_steal_events_from_valid_group() {
                         message: format!("kafka_valid_group_message_{}", *sent),
                         value: *sent as i32,
                     },
+                    None,
                 );
                 *sent += 1;
             }

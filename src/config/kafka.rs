@@ -5,7 +5,7 @@ use crate::{
     BusEvent, EventBusError, backends::event_bus_backend::EventBusBackendConfig,
     decoder::DecoderRegistry,
 };
-use bevy::prelude::{App, Event};
+use bevy::prelude::{App, Message};
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -125,7 +125,7 @@ pub struct KafkaTopologyEventBinding {
 }
 
 impl KafkaTopologyEventBinding {
-    pub fn new<T: BusEvent + Event>(topics: Vec<String>) -> Self {
+    pub fn new<T: BusEvent + Message>(topics: Vec<String>) -> Self {
         Self {
             topics,
             register_fn: register_event_binding::<T>,
@@ -141,9 +141,9 @@ impl KafkaTopologyEventBinding {
     }
 }
 
-fn register_event_binding<T: BusEvent + Event>(app: &mut App, topics: &[String]) {
-    App::add_event::<T>(app);
-    App::add_event::<EventBusError<T>>(app);
+fn register_event_binding<T: BusEvent + Message>(app: &mut App, topics: &[String]) {
+    App::add_message::<T>(app);
+    App::add_message::<EventBusError<T>>(app);
 
     if !app.world().contains_resource::<DecoderRegistry>() {
         app.world_mut().insert_resource(DecoderRegistry::new());
@@ -226,7 +226,7 @@ impl KafkaTopologyBuilder {
         self
     }
 
-    pub fn add_event<T: BusEvent + Event>(
+    pub fn add_event<T: BusEvent + Message>(
         &mut self,
         topics: impl IntoIterator<Item = impl Into<String>>,
     ) -> &mut Self {
@@ -236,7 +236,10 @@ impl KafkaTopologyBuilder {
         self
     }
 
-    pub fn add_event_single<T: BusEvent + Event>(&mut self, topic: impl Into<String>) -> &mut Self {
+    pub fn add_event_single<T: BusEvent + Message>(
+        &mut self,
+        topic: impl Into<String>,
+    ) -> &mut Self {
         self.add_event::<T>([topic.into()])
     }
 
@@ -703,7 +706,7 @@ impl EventBusConfig for KafkaProducerConfig {
 
 /// Kafka-specific event metadata for manual commit functionality
 #[derive(Debug, Clone)]
-pub struct KafkaEventMetadata {
+pub struct KafkaMessageMetadata {
     pub topic: String,
     pub partition: i32,
     pub offset: i64,
@@ -715,7 +718,7 @@ pub struct KafkaEventMetadata {
 /// Event with manual commit capability (Kafka-only)
 pub struct UncommittedEvent<T> {
     event: T,
-    metadata: KafkaEventMetadata,
+    metadata: KafkaMessageMetadata,
     commit_fn: Option<Box<dyn FnOnce() -> Result<(), String> + Send + Sync>>,
 }
 
@@ -736,7 +739,7 @@ impl<T> UncommittedEvent<T> {
     /// Create a new uncommitted event
     pub fn new(
         event: T,
-        metadata: KafkaEventMetadata,
+        metadata: KafkaMessageMetadata,
         commit_fn: impl FnOnce() -> Result<(), String> + Send + Sync + 'static,
     ) -> Self {
         Self {
@@ -752,7 +755,7 @@ impl<T> UncommittedEvent<T> {
     }
 
     /// Get the Kafka metadata
-    pub fn metadata(&self) -> &KafkaEventMetadata {
+    pub fn metadata(&self) -> &KafkaMessageMetadata {
         &self.metadata
     }
 

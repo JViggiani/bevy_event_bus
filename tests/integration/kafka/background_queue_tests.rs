@@ -1,17 +1,17 @@
 use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
 use bevy_event_bus::config::kafka::KafkaConsumerConfig;
-use bevy_event_bus::{ConsumerMetrics, DrainMetricsEvent};
+use bevy_event_bus::{ConsumerMetrics, DrainMetricsMessage};
 use bevy_event_bus::{
-    DrainedTopicMetadata, EventBusConsumerConfig, EventMetadata, KafkaEventReader, KafkaMetadata,
-    ProcessedMessage,
+    DrainedTopicMetadata, EventBusConsumerConfig, KafkaMessageReader, KafkaMetadata,
+    MessageMetadata, ProcessedMessage,
 };
 use integration_tests::utils::build_basic_app_simple;
 use integration_tests::utils::helpers::{unique_consumer_group, unique_topic};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Event, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Message, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 struct TestMsg {
     v: u32,
 }
@@ -35,7 +35,7 @@ fn unlimited_buffer_gathers() {
         let entry = buffers.topics.entry(topic.clone()).or_default();
         for i in 0..5u32 {
             let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
-            let metadata = EventMetadata::new(
+            let metadata = MessageMetadata::new(
                 topic.clone(),
                 std::time::Instant::now(),
                 None,
@@ -56,7 +56,7 @@ fn unlimited_buffer_gathers() {
     // Reader should deserialize all
     let _ = app
         .world_mut()
-        .run_system_once(move |mut r: KafkaEventReader<TestMsg>| {
+        .run_system_once(move |mut r: KafkaMessageReader<TestMsg>| {
             let mut collected = Vec::new();
             let config = KafkaConsumerConfig::new(
                 consumer_group_for_reader.clone(),
@@ -84,7 +84,7 @@ fn frame_limit_respected() {
         let entry = buffers.topics.entry(topic.clone()).or_default();
         for i in 0..10u32 {
             let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
-            let metadata = EventMetadata::new(
+            let metadata = MessageMetadata::new(
                 topic.clone(),
                 std::time::Instant::now(),
                 None,
@@ -105,7 +105,7 @@ fn frame_limit_respected() {
     let consumer_group_for_reader = consumer_group.clone();
     let _ = app
         .world_mut()
-        .run_system_once(move |mut r: KafkaEventReader<TestMsg>| {
+        .run_system_once(move |mut r: KafkaMessageReader<TestMsg>| {
             let config = KafkaConsumerConfig::new(
                 consumer_group_for_reader.clone(),
                 [topic_for_reader.clone()],
@@ -125,7 +125,7 @@ fn drain_metrics_emitted_and_updated() {
         let entry = buffers.topics.entry("m".into()).or_default();
         for i in 0..3u32 {
             let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
-            let metadata = EventMetadata::new(
+            let metadata = MessageMetadata::new(
                 "m".to_string(),
                 std::time::Instant::now(),
                 None,
@@ -151,20 +151,19 @@ fn drain_metrics_emitted_and_updated() {
         "Expected at least one idle frame, got {}",
         metrics.idle_frames
     );
-    // Fetch events
+    // Fetch messages
     let mut received = Vec::new();
-    app.world_mut().resource_scope(
-        |_world, mut events: Mut<bevy::ecs::event::Events<DrainMetricsEvent>>| {
-            for e in events.drain() {
-                received.push(e);
+    app.world_mut()
+        .resource_scope(|_world, mut messages: Mut<Messages<DrainMetricsMessage>>| {
+            for message in messages.drain() {
+                received.push(message);
             }
-        },
-    );
+        });
     assert!(
         !received.is_empty(),
-        "Expected at least one DrainMetricsEvent"
+        "Expected at least one DrainMetricsMessage"
     );
-    // Last event should reflect current metrics remaining == queue_len_end
+    // Last message should reflect current metrics remaining == queue_len_end
     if let Some(last) = received.last() {
         assert_eq!(last.remaining, metrics.queue_len_end);
         assert_eq!(last.total_drained, metrics.total_drained);

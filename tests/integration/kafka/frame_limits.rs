@@ -3,7 +3,9 @@ use bevy_event_bus::config::kafka::{
     KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
     KafkaTopicSpec,
 };
-use bevy_event_bus::{EventBusConsumerConfig, EventBusPlugins, KafkaEventReader, KafkaEventWriter};
+use bevy_event_bus::{
+    EventBusConsumerConfig, EventBusPlugins, KafkaMessageReader, KafkaMessageWriter,
+};
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{unique_consumer_group, unique_topic, update_until};
 use integration_tests::utils::kafka_setup;
@@ -46,7 +48,7 @@ fn frame_limit_spreads_drain() {
     let mut reader = App::new();
     reader.add_plugins(EventBusPlugins(backend_r));
     let tclone = topic.clone();
-    writer.add_systems(Update, move |mut w: KafkaEventWriter| {
+    writer.add_systems(Update, move |mut w: KafkaMessageWriter| {
         let config = KafkaProducerConfig::new([tclone.clone()]);
         for i in 0..15 {
             w.write(
@@ -55,6 +57,7 @@ fn frame_limit_spreads_drain() {
                     message: format!("v{i}"),
                     value: i,
                 },
+                None,
             );
         }
     });
@@ -70,7 +73,7 @@ fn frame_limit_spreads_drain() {
     let tr = topic.clone();
     reader.add_systems(
         Update,
-        move |mut r: KafkaEventReader<TestEvent>, mut c: ResMut<Collected>| {
+        move |mut r: KafkaMessageReader<TestEvent>, mut c: ResMut<Collected>| {
             let config = KafkaConsumerConfig::new(consumer_group.as_str(), [&tr]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());

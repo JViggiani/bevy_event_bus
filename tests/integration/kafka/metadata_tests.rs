@@ -4,7 +4,7 @@ use bevy_event_bus::config::kafka::{
     KafkaTopicSpec, KafkaTopologyBuilder,
 };
 use bevy_event_bus::{
-    EventBusPlugins, EventWrapper, KafkaEventBusBackend, KafkaEventReader, KafkaEventWriter,
+    EventBusPlugins, KafkaEventBusBackend, KafkaMessageReader, KafkaMessageWriter, MessageWrapper,
 };
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{
@@ -76,23 +76,23 @@ fn metadata_propagation_from_kafka_to_bevy() {
     let topic_clone = topic.clone();
     writer.add_systems(
         Update,
-        move |mut w: KafkaEventWriter, mut sent: Local<bool>| {
+        move |mut w: KafkaMessageWriter, mut sent: Local<bool>| {
             if !*sent {
                 *sent = true;
                 let config = KafkaProducerConfig::new([topic_clone.clone()]);
-                w.write(&config, test_event.clone());
+                w.write(&config, test_event.clone(), None);
             }
         },
     );
 
     #[derive(Resource, Default)]
-    struct ReceivedEvents(Vec<EventWrapper<TestEvent>>);
+    struct ReceivedEvents(Vec<MessageWrapper<TestEvent>>);
 
     reader.insert_resource(ReceivedEvents::default());
     let tr = topic.clone();
     reader.add_systems(
         Update,
-        move |mut r: KafkaEventReader<TestEvent>, mut events: ResMut<ReceivedEvents>| {
+        move |mut r: KafkaMessageReader<TestEvent>, mut events: ResMut<ReceivedEvents>| {
             let config = KafkaConsumerConfig::new(consumer_group.as_str(), [&tr]);
             for wrapper in r.read(&config) {
                 events.0.push(wrapper.clone());
@@ -206,25 +206,25 @@ fn header_forwarding_producer_to_consumer() {
     let topic_clone = topic.clone();
     writer.add_systems(
         Update,
-        move |mut w: KafkaEventWriter, mut sent: Local<bool>| {
+        move |mut w: KafkaMessageWriter, mut sent: Local<bool>| {
             if !*sent {
                 *sent = true;
                 let config =
                     KafkaProducerConfig::new([topic_clone.clone()]).headers_map(headers.clone());
-                w.write(&config, test_event.clone());
+                w.write(&config, test_event.clone(), None);
             }
         },
     );
 
     #[derive(Resource, Default)]
-    struct ReceivedEvents(Vec<EventWrapper<TestEvent>>);
+    struct ReceivedEvents(Vec<MessageWrapper<TestEvent>>);
 
     reader.insert_resource(ReceivedEvents::default());
     let tr = topic.clone();
     let consumer_group_clone = consumer_group.clone();
     reader.add_systems(
         Update,
-        move |mut r: KafkaEventReader<TestEvent>, mut events: ResMut<ReceivedEvents>| {
+        move |mut r: KafkaMessageReader<TestEvent>, mut events: ResMut<ReceivedEvents>| {
             let config = KafkaConsumerConfig::new(consumer_group_clone.as_str(), [&tr]);
             for wrapper in r.read(&config) {
                 events.0.push(wrapper.clone());
@@ -312,7 +312,7 @@ fn timestamp_accuracy_for_latency_measurement() {
     let topic_clone = topic.clone();
     writer.add_systems(
         Update,
-        move |mut w: KafkaEventWriter, mut sent: Local<bool>| {
+        move |mut w: KafkaMessageWriter, mut sent: Local<bool>| {
             if !*sent {
                 *sent = true;
                 let event = TestEvent {
@@ -320,19 +320,19 @@ fn timestamp_accuracy_for_latency_measurement() {
                     value: 999,
                 };
                 let config = KafkaProducerConfig::new([topic_clone.clone()]);
-                w.write(&config, event);
+                w.write(&config, event, None);
             }
         },
     );
 
     #[derive(Resource, Default)]
-    struct ReceivedEvents(Vec<EventWrapper<TestEvent>>);
+    struct ReceivedEvents(Vec<MessageWrapper<TestEvent>>);
 
     reader.insert_resource(ReceivedEvents::default());
     let tr = topic.clone();
     reader.add_systems(
         Update,
-        move |mut r: KafkaEventReader<TestEvent>, mut events: ResMut<ReceivedEvents>| {
+        move |mut r: KafkaMessageReader<TestEvent>, mut events: ResMut<ReceivedEvents>| {
             let config = KafkaConsumerConfig::new(consumer_group.as_str(), [&tr]);
             for wrapper in r.read(&config) {
                 events.0.push(wrapper.clone());
@@ -433,7 +433,7 @@ fn mixed_metadata_and_regular_reading() {
     let topic_clone = topic.clone();
     writer.add_systems(
         Update,
-        move |mut w: KafkaEventWriter, mut sent: Local<bool>| {
+        move |mut w: KafkaMessageWriter, mut sent: Local<bool>| {
             if !*sent {
                 *sent = true;
                 let config = KafkaProducerConfig::new([topic_clone.clone()]);
@@ -442,7 +442,7 @@ fn mixed_metadata_and_regular_reading() {
                         message: format!("mixed-{}", i),
                         value: i,
                     };
-                    w.write(&config, event);
+                    w.write(&config, event, None);
                 }
             }
         },
@@ -451,7 +451,7 @@ fn mixed_metadata_and_regular_reading() {
     #[derive(Resource, Default)]
     struct RegularEvents(Vec<TestEvent>);
     #[derive(Resource, Default)]
-    struct MetadataEvents(Vec<EventWrapper<TestEvent>>);
+    struct MetadataEvents(Vec<MessageWrapper<TestEvent>>);
 
     regular_reader.insert_resource(RegularEvents::default());
     metadata_reader.insert_resource(MetadataEvents::default());
@@ -461,7 +461,7 @@ fn mixed_metadata_and_regular_reading() {
     // Regular reader using read()
     regular_reader.add_systems(
         Update,
-        move |mut r: KafkaEventReader<TestEvent>, mut events: ResMut<RegularEvents>| {
+        move |mut r: KafkaMessageReader<TestEvent>, mut events: ResMut<RegularEvents>| {
             let config = KafkaConsumerConfig::new(regular_group.as_str(), [&tr1]);
             for wrapper in r.read(&config) {
                 events.0.push(wrapper.event().clone());
@@ -472,7 +472,7 @@ fn mixed_metadata_and_regular_reading() {
     // Metadata reader using read() with External filtering
     metadata_reader.add_systems(
         Update,
-        move |mut r: KafkaEventReader<TestEvent>, mut events: ResMut<MetadataEvents>| {
+        move |mut r: KafkaMessageReader<TestEvent>, mut events: ResMut<MetadataEvents>| {
             let config = KafkaConsumerConfig::new(metadata_group.as_str(), [&tr2]);
             for wrapper in r.read(&config) {
                 events.0.push(wrapper.clone());

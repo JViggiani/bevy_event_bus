@@ -11,7 +11,7 @@ pub use event_bus_backend::EventBusBackend;
 
 #[cfg(feature = "kafka")]
 pub use kafka_backend::{
-    KafkaCommitOutcome, KafkaCommitRequest, KafkaCommitResult, KafkaCommitResultEvent,
+    KafkaCommitOutcome, KafkaCommitRequest, KafkaCommitResult, KafkaCommitResultMessage,
     KafkaCommitResultStats, KafkaEventBusBackend, KafkaLagCache,
 };
 

@@ -3,7 +3,7 @@ use bevy_event_bus::config::kafka::{
     KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
     KafkaTopicSpec,
 };
-use bevy_event_bus::{EventBusPlugins, KafkaEventReader, KafkaEventWriter};
+use bevy_event_bus::{EventBusPlugins, KafkaMessageReader, KafkaMessageWriter};
 use integration_tests::utils::events::{TestEvent, UserLoginEvent};
 use integration_tests::utils::helpers::{unique_consumer_group, unique_topic, update_until};
 use integration_tests::utils::kafka_setup;
@@ -59,7 +59,7 @@ fn single_topic_multiple_types_same_frame() {
     let consumer_group_for_login = consumer_group.clone();
     reader.add_systems(
         Update,
-        move |mut reader: KafkaEventReader<TestEvent>, mut collected: ResMut<CollectedTests>| {
+        move |mut reader: KafkaMessageReader<TestEvent>, mut collected: ResMut<CollectedTests>| {
             let config = KafkaConsumerConfig::new(consumer_group_for_test.as_str(), [&tr_a]);
             for wrapper in reader.read(&config) {
                 collected.0.push(wrapper.event().clone());
@@ -69,7 +69,7 @@ fn single_topic_multiple_types_same_frame() {
     let tr_b = topic.clone();
     reader.add_systems(
         Update,
-        move |mut reader: KafkaEventReader<UserLoginEvent>,
+        move |mut reader: KafkaMessageReader<UserLoginEvent>,
               mut collected: ResMut<CollectedLogins>| {
             let config = KafkaConsumerConfig::new(consumer_group_for_login.as_str(), [&tr_b]);
             for wrapper in reader.read(&config) {
@@ -82,7 +82,7 @@ fn single_topic_multiple_types_same_frame() {
     let tclone = topic.clone();
     writer.add_systems(
         Update,
-        move |mut writer: KafkaEventWriter, mut started: Local<bool>| {
+        move |mut writer: KafkaMessageWriter, mut started: Local<bool>| {
             if !*started {
                 *started = true;
                 return;
@@ -94,6 +94,7 @@ fn single_topic_multiple_types_same_frame() {
                     message: "hello".into(),
                     value: 42,
                 },
+                None,
             );
             writer.write(
                 &config,
@@ -101,6 +102,7 @@ fn single_topic_multiple_types_same_frame() {
                     user_id: "u1".into(),
                     timestamp: 1,
                 },
+                None,
             );
         },
     );
@@ -172,7 +174,7 @@ fn single_topic_multiple_types_interleaved_frames() {
     let consumer_group2_for_login = consumer_group2.clone();
     reader.add_systems(
         Update,
-        move |mut reader: KafkaEventReader<TestEvent>, mut collected: ResMut<CollectedTests>| {
+        move |mut reader: KafkaMessageReader<TestEvent>, mut collected: ResMut<CollectedTests>| {
             let config = KafkaConsumerConfig::new(consumer_group2_for_test.as_str(), [&tr_a2]);
             for wrapper in reader.read(&config) {
                 collected.0.push(wrapper.event().clone());
@@ -182,7 +184,7 @@ fn single_topic_multiple_types_interleaved_frames() {
     let tr_b2 = topic.clone();
     reader.add_systems(
         Update,
-        move |mut reader: KafkaEventReader<UserLoginEvent>,
+        move |mut reader: KafkaMessageReader<UserLoginEvent>,
               mut collected: ResMut<CollectedLogins>| {
             let config = KafkaConsumerConfig::new(consumer_group2_for_login.as_str(), [&tr_b2]);
             for wrapper in reader.read(&config) {
@@ -195,7 +197,7 @@ fn single_topic_multiple_types_interleaved_frames() {
     let tclone = topic.clone();
     writer.add_systems(
         Update,
-        move |mut writer: KafkaEventWriter, mut counter: Local<u32>| {
+        move |mut writer: KafkaMessageWriter, mut counter: Local<u32>| {
             let config = KafkaProducerConfig::new([tclone.clone()]);
             match *counter % 2 {
                 0 => {
@@ -205,6 +207,7 @@ fn single_topic_multiple_types_interleaved_frames() {
                             message: format!("m{}", *counter),
                             value: *counter as i32,
                         },
+                        None,
                     );
                 }
                 _ => {
@@ -214,6 +217,7 @@ fn single_topic_multiple_types_interleaved_frames() {
                             user_id: format!("u{}", *counter),
                             timestamp: *counter as u64,
                         },
+                        None,
                     );
                 }
             }

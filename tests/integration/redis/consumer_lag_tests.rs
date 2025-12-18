@@ -2,7 +2,7 @@
 
 use bevy::prelude::*;
 use bevy_event_bus::config::redis::{RedisConsumerConfig, RedisProducerConfig, RedisStreamSpec};
-use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
+use bevy_event_bus::{EventBusPlugins, RedisMessageReader, RedisMessageWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::unique_topic;
 use integration_tests::utils::redis_setup;
@@ -51,7 +51,7 @@ fn consumer_lag_and_stream_trimming() {
     let stream_clone = stream.clone();
     writer.add_systems(
         Update,
-        move |mut w: RedisEventWriter, mut count: Local<u32>| {
+        move |mut w: RedisMessageWriter, mut count: Local<u32>| {
             if *count < 15 {
                 *count += 1;
                 let config = RedisProducerConfig::new(stream_clone.clone());
@@ -61,6 +61,7 @@ fn consumer_lag_and_stream_trimming() {
                         message: format!("message_{}", *count),
                         value: *count as i32,
                     },
+                    None,
                 );
             }
         },
@@ -75,7 +76,7 @@ fn consumer_lag_and_stream_trimming() {
     let s = stream.clone();
     reader.add_systems(
         Update,
-        move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<Collected>| {
+        move |mut r: RedisMessageReader<TestEvent>, mut c: ResMut<Collected>| {
             let config = RedisConsumerConfig::ungrouped([s.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
@@ -117,7 +118,7 @@ fn stream_memory_optimization() {
     let stream_clone = stream.clone();
     writer.add_systems(
         Update,
-        move |mut w: RedisEventWriter, mut count: Local<u32>| {
+        move |mut w: RedisMessageWriter, mut count: Local<u32>| {
             if *count < 20 {
                 *count += 1;
                 let config = RedisProducerConfig::new(stream_clone.clone());
@@ -127,6 +128,7 @@ fn stream_memory_optimization() {
                         message: format!("burst_message_{}", *count),
                         value: *count as i32,
                     },
+                    None,
                 );
             }
         },

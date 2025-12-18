@@ -3,7 +3,7 @@ use bevy_event_bus::config::kafka::{
     KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
     KafkaTopicSpec,
 };
-use bevy_event_bus::{EventBusPlugins, EventWrapper, KafkaEventReader, KafkaEventWriter};
+use bevy_event_bus::{EventBusPlugins, KafkaMessageReader, KafkaMessageWriter, MessageWrapper};
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{
     unique_consumer_group, unique_topic, update_until, wait_for_events,
@@ -63,7 +63,7 @@ fn kafka_metadata_end_to_end_validation() {
     reader.add_plugins(EventBusPlugins(backend_r));
 
     #[derive(Resource, Default)]
-    struct ReceivedEventsWithMetadata(Vec<EventWrapper<TestEvent>>);
+    struct ReceivedEventsWithMetadata(Vec<MessageWrapper<TestEvent>>);
 
     #[derive(Resource, Clone)]
     struct Topic(String);
@@ -75,7 +75,7 @@ fn kafka_metadata_end_to_end_validation() {
     reader.insert_resource(ConsumerGroup(consumer_group));
 
     fn reader_system(
-        mut r: KafkaEventReader<TestEvent>,
+        mut r: KafkaMessageReader<TestEvent>,
         topic: Res<Topic>,
         group: Res<ConsumerGroup>,
         mut events: ResMut<ReceivedEventsWithMetadata>,
@@ -117,11 +117,11 @@ fn kafka_metadata_end_to_end_validation() {
         sent: false,
     });
 
-    fn writer_system(mut w: KafkaEventWriter, mut data: ResMut<TestData>) {
+    fn writer_system(mut w: KafkaMessageWriter, mut data: ResMut<TestData>) {
         if !data.sent {
             let config = KafkaProducerConfig::new([data.topic.clone()]);
             for test_event in &data.test_cases {
-                w.write(&config, test_event.clone());
+                w.write(&config, test_event.clone(), None);
             }
             data.sent = true;
             info!("Sent {} test events", data.test_cases.len());
@@ -225,7 +225,7 @@ fn kafka_metadata_end_to_end_validation() {
 
             let headers = &kafka_meta.headers;
 
-            // Note: Headers validation would require KafkaEventWriter enhancements
+            // Note: Headers validation would require KafkaMessageWriter enhancements
             // For now, we validate that the headers field exists and is accessible
             assert!(
                 headers.is_empty() || !headers.is_empty(),
@@ -307,8 +307,8 @@ fn kafka_metadata_topic_isolation() {
 
     #[derive(Resource, Default)]
     struct ReceivedEvents {
-        topic_a: Vec<EventWrapper<TestEvent>>,
-        topic_b: Vec<EventWrapper<TestEvent>>,
+        topic_a: Vec<MessageWrapper<TestEvent>>,
+        topic_b: Vec<MessageWrapper<TestEvent>>,
     }
 
     #[derive(Resource, Clone)]
@@ -328,7 +328,7 @@ fn kafka_metadata_topic_isolation() {
     reader.insert_resource(ConsumerGroup(consumer_group));
 
     fn reader_system_isolation(
-        mut r: KafkaEventReader<TestEvent>,
+        mut r: KafkaMessageReader<TestEvent>,
         topics: Res<Topics>,
         group: Res<ConsumerGroup>,
         mut events: ResMut<ReceivedEvents>,
@@ -362,7 +362,7 @@ fn kafka_metadata_topic_isolation() {
         sent: false,
     });
 
-    fn writer_system_isolation(mut w: KafkaEventWriter, mut data: ResMut<IsolationTestData>) {
+    fn writer_system_isolation(mut w: KafkaMessageWriter, mut data: ResMut<IsolationTestData>) {
         if !data.sent {
             let event_a = TestEvent {
                 message: "topic_a_event".to_string(),
@@ -374,9 +374,9 @@ fn kafka_metadata_topic_isolation() {
             };
 
             let config_a = KafkaProducerConfig::new([data.topic_a.clone()]);
-            w.write(&config_a, event_a);
+            w.write(&config_a, event_a, None);
             let config_b = KafkaProducerConfig::new([data.topic_b.clone()]);
-            w.write(&config_b, event_b);
+            w.write(&config_b, event_b, None);
             data.sent = true;
 
             info!("Sent events to both topics");
@@ -492,7 +492,7 @@ fn kafka_metadata_consistency_under_load() {
     reader.add_plugins(EventBusPlugins(backend_r));
 
     #[derive(Resource, Default)]
-    struct ReceivedEventsWithMetadata(Vec<EventWrapper<TestEvent>>);
+    struct ReceivedEventsWithMetadata(Vec<MessageWrapper<TestEvent>>);
 
     #[derive(Resource, Clone)]
     struct Topic(String);
@@ -504,7 +504,7 @@ fn kafka_metadata_consistency_under_load() {
     reader.insert_resource(ConsumerGroup(consumer_group));
 
     fn reader_system_consistency(
-        mut r: KafkaEventReader<TestEvent>,
+        mut r: KafkaMessageReader<TestEvent>,
         topic: Res<Topic>,
         group: Res<ConsumerGroup>,
         mut events: ResMut<ReceivedEventsWithMetadata>,
@@ -532,7 +532,7 @@ fn kafka_metadata_consistency_under_load() {
         sent: false,
     });
 
-    fn writer_system_consistency(mut w: KafkaEventWriter, mut data: ResMut<ConsistencyTestData>) {
+    fn writer_system_consistency(mut w: KafkaMessageWriter, mut data: ResMut<ConsistencyTestData>) {
         if !data.sent {
             let config = KafkaProducerConfig::new([data.topic.clone()]);
             for batch in 0..NUM_BATCHES {
@@ -541,7 +541,7 @@ fn kafka_metadata_consistency_under_load() {
                         message: format!("batch_{}_event_{}", batch, i),
                         value: (batch * BATCH_SIZE + i) as i32,
                     };
-                    w.write(&config, event);
+                    w.write(&config, event, None);
                 }
             }
             data.sent = true;

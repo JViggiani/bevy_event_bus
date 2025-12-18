@@ -3,7 +3,7 @@ use bevy_event_bus::config::kafka::{
     KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
     KafkaTopicSpec,
 };
-use bevy_event_bus::{EventBusPlugins, KafkaEventReader, KafkaEventWriter};
+use bevy_event_bus::{EventBusPlugins, KafkaMessageReader, KafkaMessageWriter};
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{unique_consumer_group, unique_topic, wait_for_events};
 use integration_tests::utils::kafka_setup;
@@ -54,7 +54,7 @@ fn per_topic_order_preserved() {
     let tr = topic.clone();
     reader.add_systems(
         Update,
-        move |mut r: KafkaEventReader<TestEvent>, mut c: ResMut<Collected>| {
+        move |mut r: KafkaMessageReader<TestEvent>, mut c: ResMut<Collected>| {
             let config = KafkaConsumerConfig::new(consumer_group.as_str(), [&tr]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
@@ -65,7 +65,7 @@ fn per_topic_order_preserved() {
     let tclone = topic.clone();
     writer.add_systems(
         Update,
-        move |mut writer: KafkaEventWriter, mut started: Local<bool>, mut counter: Local<u32>| {
+        move |mut writer: KafkaMessageWriter, mut started: Local<bool>, mut counter: Local<u32>| {
             if !*started {
                 *started = true;
                 return;
@@ -82,6 +82,7 @@ fn per_topic_order_preserved() {
                     message: format!("msg-{}", *counter),
                     value: *counter as i32,
                 },
+                None,
             );
             *counter += 1;
         },
@@ -161,7 +162,7 @@ fn cross_topic_interleave_each_ordered() {
     // Single send frame like earlier test
     writer.add_systems(
         Update,
-        move |mut writer: KafkaEventWriter, mut started: Local<bool>, mut counter: Local<u32>| {
+        move |mut writer: KafkaMessageWriter, mut started: Local<bool>, mut counter: Local<u32>| {
             if !*started {
                 *started = true;
                 return;
@@ -179,6 +180,7 @@ fn cross_topic_interleave_each_ordered() {
                     message: format!("A{}", *counter),
                     value: *counter as i32,
                 },
+                None,
             );
             writer.write(
                 &config_t2,
@@ -186,6 +188,7 @@ fn cross_topic_interleave_each_ordered() {
                     message: format!("B{}", *counter),
                     value: *counter as i32,
                 },
+                None,
             );
             *counter += 1;
         },
@@ -205,7 +208,7 @@ fn cross_topic_interleave_each_ordered() {
     let tb = t2.clone();
     reader.add_systems(
         Update,
-        move |mut r: KafkaEventReader<TestEvent>,
+        move |mut r: KafkaMessageReader<TestEvent>,
               mut c1: ResMut<CollectedT1>,
               mut c2: ResMut<CollectedT2>| {
             let config_a = KafkaConsumerConfig::new(consumer_group.as_str(), [&ta]);

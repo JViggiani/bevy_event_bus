@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy_event_bus::config::kafka::{
     KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec,
 };
-use bevy_event_bus::{EventBusPlugins, KafkaEventReader};
+use bevy_event_bus::{EventBusPlugins, KafkaMessageReader};
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{unique_consumer_group, unique_topic};
 use integration_tests::utils::kafka_setup;
@@ -37,7 +37,7 @@ fn idle_empty_topic_poll_does_not_block() {
     let topic_read = topic.clone();
     app.add_systems(
         Update,
-        move |mut r: KafkaEventReader<TestEvent>, mut ticks: ResMut<Ticks>| {
+        move |mut r: KafkaMessageReader<TestEvent>, mut ticks: ResMut<Ticks>| {
             // Try reading every frame; should be instant (reader fallback/drained path fast)
             let config = KafkaConsumerConfig::new(consumer_group.as_str(), [&topic_read]);
             for _ in r.read(&config) { /* none expected */ }
