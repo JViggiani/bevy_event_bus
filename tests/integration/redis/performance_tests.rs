@@ -8,7 +8,8 @@
 
 use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
-    RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
+    RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisRuntimeTuning,
+    RedisStreamSpec,
 };
 use bevy_event_bus::{EventBusPlugins, RedisMessageReader, RedisMessageWriter};
 use integration_tests::utils::helpers::{unique_consumer_group_membership, unique_topic};
@@ -41,10 +42,23 @@ impl PerformanceTestEvent {
     }
 }
 
+fn tuned_runtime(message_count: u64) -> RedisRuntimeTuning {
+    let capacity = (message_count as usize).saturating_mul(2).max(10_000);
+
+    RedisRuntimeTuning::default()
+        .ack_channel_capacity(capacity)
+        .ack_batch_size(1_024)
+        .message_channel_capacity(capacity)
+        .read_batch_size(512)
+        .ack_flush_interval(Duration::from_millis(1))
+}
+
 /// Measure baseline throughput with medium payloads.
 #[ignore]
 #[test]
 fn test_message_throughput() {
+    let message_count = 25_000;
+    let payload_size = 100;
     let stream = unique_topic("perf_test");
     let membership = unique_consumer_group_membership("perf_test_group");
     let consumer_group = membership.group.clone();
@@ -52,20 +66,23 @@ fn test_message_throughput() {
     let stream_for_topology = stream.clone();
     let group_for_topology = consumer_group.clone();
     let consumer_for_topology = membership.member.clone();
-    let (backend, _ctx) = redis_setup::prepare_backend(move |builder| {
+    let runtime = tuned_runtime(message_count);
+    let options = redis_setup::SetupOptions::new().runtime_tuning(runtime);
+    let request = redis_setup::build_request(options, move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_topology.clone()))
-            .add_consumer_group(RedisConsumerGroupSpec::new(
-                [stream_for_topology.clone()],
-                group_for_topology.clone(),
-                consumer_for_topology.clone(),
-            ))
+            .add_consumer_group(
+                RedisConsumerGroupSpec::new(
+                    [stream_for_topology.clone()],
+                    group_for_topology.clone(),
+                    consumer_for_topology.clone(),
+                )
+                .manual_ack(true),
+            )
             .add_event_single::<PerformanceTestEvent>(stream_for_topology.clone());
-    })
-    .expect("Redis backend setup successful");
+    });
 
-    let message_count = 25_000;
-    let payload_size = 100;
+    let (backend, _ctx) = redis_setup::setup(request).expect("Redis backend setup successful");
 
     run_throughput_test(
         "test_message_throughput",
@@ -81,6 +98,8 @@ fn test_message_throughput() {
 #[ignore]
 #[test]
 fn test_large_message_throughput() {
+    let message_count = 2_500;
+    let payload_size = 10_000; // 10 KB per message
     let stream = unique_topic("perf_large_test");
     let membership = unique_consumer_group_membership("perf_large_test_group");
     let consumer_group = membership.group.clone();
@@ -88,20 +107,23 @@ fn test_large_message_throughput() {
     let stream_for_topology = stream.clone();
     let group_for_topology = consumer_group.clone();
     let consumer_for_topology = membership.member.clone();
-    let (backend, _ctx) = redis_setup::prepare_backend(move |builder| {
+    let runtime = tuned_runtime(message_count);
+    let options = redis_setup::SetupOptions::new().runtime_tuning(runtime);
+    let request = redis_setup::build_request(options, move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_topology.clone()))
-            .add_consumer_group(RedisConsumerGroupSpec::new(
-                [stream_for_topology.clone()],
-                group_for_topology.clone(),
-                consumer_for_topology.clone(),
-            ))
+            .add_consumer_group(
+                RedisConsumerGroupSpec::new(
+                    [stream_for_topology.clone()],
+                    group_for_topology.clone(),
+                    consumer_for_topology.clone(),
+                )
+                .manual_ack(true),
+            )
             .add_event_single::<PerformanceTestEvent>(stream_for_topology.clone());
-    })
-    .expect("Redis backend setup successful");
+    });
 
-    let message_count = 2_500;
-    let payload_size = 10_000; // 10 KB per message
+    let (backend, _ctx) = redis_setup::setup(request).expect("Redis backend setup successful");
 
     run_throughput_test(
         "test_large_message_throughput",
@@ -117,6 +139,8 @@ fn test_large_message_throughput() {
 #[ignore]
 #[test]
 fn test_high_volume_small_messages() {
+    let message_count = 100_000;
+    let payload_size = 20;
     let stream = unique_topic("perf_small_test");
     let membership = unique_consumer_group_membership("perf_small_test_group");
     let consumer_group = membership.group.clone();
@@ -124,20 +148,23 @@ fn test_high_volume_small_messages() {
     let stream_for_topology = stream.clone();
     let group_for_topology = consumer_group.clone();
     let consumer_for_topology = membership.member.clone();
-    let (backend, _ctx) = redis_setup::prepare_backend(move |builder| {
+    let runtime = tuned_runtime(message_count);
+    let options = redis_setup::SetupOptions::new().runtime_tuning(runtime);
+    let request = redis_setup::build_request(options, move |builder| {
         builder
             .add_stream(RedisStreamSpec::new(stream_for_topology.clone()))
-            .add_consumer_group(RedisConsumerGroupSpec::new(
-                [stream_for_topology.clone()],
-                group_for_topology.clone(),
-                consumer_for_topology.clone(),
-            ))
+            .add_consumer_group(
+                RedisConsumerGroupSpec::new(
+                    [stream_for_topology.clone()],
+                    group_for_topology.clone(),
+                    consumer_for_topology.clone(),
+                )
+                .manual_ack(true),
+            )
             .add_event_single::<PerformanceTestEvent>(stream_for_topology.clone());
-    })
-    .expect("Redis backend setup successful");
+    });
 
-    let message_count = 100_000;
-    let payload_size = 20;
+    let (backend, _ctx) = redis_setup::setup(request).expect("Redis backend setup successful");
 
     run_throughput_test(
         "test_high_volume_small_messages",
@@ -337,6 +364,11 @@ fn run_throughput_test(
             }
 
             state.messages_received.push(wrapper.event().clone());
+
+            // Explicitly acknowledge to keep the pending list clear when manual acks are enabled.
+            if let Err(err) = reader.acknowledge(&wrapper) {
+                println!("Ack failed: {err:?}; will retry on next frame if redelivered");
+            }
 
             if state.messages_received.len() >= state.messages_to_send as usize
                 && state.receive_end_time.is_none()

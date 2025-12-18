@@ -4,7 +4,8 @@ use bevy::prelude::App;
 use bevy_event_bus::EventBusPlugins;
 use bevy_event_bus::backends::RedisEventBusBackend;
 use bevy_event_bus::config::redis::{
-    RedisBackendConfig, RedisConnectionConfig, RedisTopologyBuilder, RedisTopologyConfig,
+    RedisBackendConfig, RedisConnectionConfig, RedisRuntimeTuning, RedisTopologyBuilder,
+    RedisTopologyConfig,
 };
 use once_cell::sync::Lazy;
 use redis::RedisError;
@@ -73,6 +74,7 @@ pub struct SetupOptions {
     read_block_timeout: Duration,
     connection_overrides: HashMap<String, String>,
     pool_size: Option<usize>,
+    runtime_tuning: Option<RedisRuntimeTuning>,
 }
 
 impl SetupOptions {
@@ -84,6 +86,7 @@ impl SetupOptions {
             read_block_timeout: Duration::from_millis(250),
             connection_overrides: HashMap::new(),
             pool_size: None,
+            runtime_tuning: None,
         }
     }
 
@@ -96,6 +99,12 @@ impl SetupOptions {
     /// Override the Redis connection pool size.
     pub fn pool_size(mut self, pool_size: usize) -> Self {
         self.pool_size = Some(pool_size);
+        self
+    }
+
+    /// Override the Redis runtime tuning parameters for tests that need custom buffering.
+    pub fn runtime_tuning(mut self, runtime: RedisRuntimeTuning) -> Self {
+        self.runtime_tuning = Some(runtime);
         self
     }
 
@@ -212,6 +221,7 @@ fn build_backend_from_parts(
         read_block_timeout,
         connection_overrides,
         pool_size,
+        runtime_tuning,
     } = options;
 
     let mut connection = RedisConnectionConfig::new(connection_string.clone());
@@ -225,7 +235,10 @@ fn build_backend_from_parts(
     let topology = builder.build();
     ensure_topology_provisioned(&connection_string, &topology)?;
 
-    let config = RedisBackendConfig::new(connection, topology, read_block_timeout);
+    let mut config = RedisBackendConfig::new(connection, topology, read_block_timeout);
+    if let Some(runtime) = runtime_tuning {
+        config = config.runtime_tuning(runtime);
+    }
     let backend = RedisEventBusBackend::new(config).map_err(|err| anyhow!(err))?;
     let context = RedisTestContext::new(connection_string);
     Ok((backend, context))
