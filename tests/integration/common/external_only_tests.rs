@@ -2,7 +2,10 @@ use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
 use bevy_event_bus::backends::EventBusBackendResource;
 use bevy_event_bus::config::kafka::{KafkaProducerConfig, KafkaTopologyEventBinding};
-use bevy_event_bus::{BusErrorCallback, BusErrorContext, BusErrorKind, EventBusPlugin, EventBusPlugins, KafkaMessageWriter};
+use bevy_event_bus::{
+    BusErrorCallback, BusErrorContext, BusErrorKind, EventBusPlugin, EventBusPlugins,
+    KafkaMessageWriter,
+};
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::unique_topic;
 use integration_tests::utils::mock_backend::MockEventBusBackend;

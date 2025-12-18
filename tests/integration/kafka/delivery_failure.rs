@@ -2,7 +2,9 @@ use std::time::Duration;
 
 use bevy::prelude::*;
 use bevy_event_bus::config::kafka::KafkaProducerConfig;
-use bevy_event_bus::{BusErrorCallback, BusErrorContext, BusErrorKind, EventBusPlugins, KafkaMessageWriter};
+use bevy_event_bus::{
+    BusErrorCallback, BusErrorContext, BusErrorKind, EventBusPlugins, KafkaMessageWriter,
+};
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{unique_topic, update_until};
 use integration_tests::utils::kafka_setup::{self, SetupOptions};

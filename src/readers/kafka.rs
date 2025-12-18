@@ -104,7 +104,7 @@ impl<'w, 's, T: BusEvent + Message> KafkaMessageReader<'w, 's, T> {
                                     event,
                                     processed_msg.metadata.clone(),
                                 )),
-                                Err(_) => tracing::warn!(
+                                Err(_) => bevy::log::warn!(
                                     "Failed to deserialize event from topic {}",
                                     topic
                                 ),
@@ -262,7 +262,7 @@ impl<'w, 's, T: BusEvent + Message> KafkaMessageReader<'w, 's, T> {
                 metadata: None,
             };
             self.error_writer.write(error);
-            tracing::warn!(
+            bevy::log::warn!(
                 backend = "kafka",
                 consumer_group = %group,
                 topic = %topic,

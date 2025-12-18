@@ -7,9 +7,9 @@ pub mod outbound_bridge;
 
 use bevy::prelude::*;
 
+use bevy_event_bus::BusEvent;
 use bevy_event_bus::config::EventBusConfig;
 use bevy_event_bus::errors::BusErrorCallback;
-use bevy_event_bus::BusEvent;
 
 #[cfg(feature = "kafka")]
 pub use kafka::{KafkaMessageWriter, KafkaWriterError};
@@ -32,8 +32,7 @@ pub trait BusMessageWriter<T: BusEvent + Message> {
         config: &C,
         events: I,
         error_callback: Option<BusErrorCallback>,
-    )
-    where
+    ) where
         C: EventBusConfig,
         I: IntoIterator<Item = T>;
 }

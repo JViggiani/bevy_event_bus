@@ -1,6 +1,8 @@
 use bevy::prelude::*;
 use bevy_event_bus::config::redis::RedisProducerConfig;
-use bevy_event_bus::{BusErrorCallback, BusErrorContext, BusErrorKind, EventBusPlugins, RedisMessageWriter};
+use bevy_event_bus::{
+    BusErrorCallback, BusErrorContext, BusErrorKind, EventBusPlugins, RedisMessageWriter,
+};
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{unique_topic, update_until};
 use integration_tests::utils::redis_setup;

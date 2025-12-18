@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use bevy::log::{debug, error, warn};
 use crossbeam_channel::{Receiver, SendTimeoutError, Sender, TryRecvError, TrySendError, bounded};
 use redis::aio::ConnectionManager;
 use redis::streams::{StreamId, StreamKey, StreamReadReply};
@@ -10,7 +11,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
-use tracing::{debug, error, warn};
 
 use crate::config::TopologyMode;
 use bevy::prelude::*;
@@ -558,7 +558,7 @@ impl RedisEventBusBackend {
                 }
 
                 for request in drained {
-                    tracing::trace!(backend = "redis", stream = %request.stream, "Sending Redis write request");
+                    bevy::log::trace!(backend = "redis", stream = %request.stream, "Sending Redis write request");
                     let mut guard = manager.lock().await;
                     let mut cmd = redis::cmd("XADD");
                     cmd.arg(&request.stream);
@@ -1103,10 +1103,7 @@ impl RedisEventBusBackend {
 
         matches.sort_by(|a, b| Self::redis_entry_position(a).cmp(&Self::redis_entry_position(b)));
 
-        matches
-            .into_iter()
-            .map(|msg| msg.payload)
-            .collect()
+        matches.into_iter().map(|msg| msg.payload).collect()
     }
 
     fn message_matches(message: &IncomingMessage, stream: &str, group: Option<&str>) -> bool {
@@ -1340,32 +1337,34 @@ impl EventBusBackend for RedisEventBusBackend {
         let sender = self.state.write_sender();
         match sender.try_send(request) {
             Ok(_) => {
-                tracing::trace!(backend = "redis", stream = %stream_name, "Enqueued Redis write request");
+                bevy::log::trace!(backend = "redis", stream = %stream_name, "Enqueued Redis write request");
                 true
             }
-            Err(TrySendError::Full(request)) => match sender.send_timeout(request, Duration::from_millis(50)) {
-                Ok(()) => true,
-                Err(SendTimeoutError::Timeout(request)) => {
-                    request.failure_handler.call(DeliveryFailure {
-                        backend: "redis",
-                        kind: BusErrorKind::DeliveryFailure,
-                        topic: request.stream.clone(),
-                        error: "Redis writer queue is full; try again later".to_string(),
-                        metadata: None,
-                    });
-                    false
+            Err(TrySendError::Full(request)) => {
+                match sender.send_timeout(request, Duration::from_millis(50)) {
+                    Ok(()) => true,
+                    Err(SendTimeoutError::Timeout(request)) => {
+                        request.failure_handler.call(DeliveryFailure {
+                            backend: "redis",
+                            kind: BusErrorKind::DeliveryFailure,
+                            topic: request.stream.clone(),
+                            error: "Redis writer queue is full; try again later".to_string(),
+                            metadata: None,
+                        });
+                        false
+                    }
+                    Err(SendTimeoutError::Disconnected(_)) => {
+                        handler.call(DeliveryFailure {
+                            backend: "redis",
+                            kind: BusErrorKind::NotConfigured,
+                            topic: stream_name.clone(),
+                            error: "Redis writer queue unavailable".to_string(),
+                            metadata: None,
+                        });
+                        false
+                    }
                 }
-                Err(SendTimeoutError::Disconnected(_)) => {
-                    handler.call(DeliveryFailure {
-                        backend: "redis",
-                        kind: BusErrorKind::NotConfigured,
-                        topic: stream_name.clone(),
-                        error: "Redis writer queue unavailable".to_string(),
-                        metadata: None,
-                    });
-                    false
-                }
-            },
+            }
             Err(TrySendError::Disconnected(_)) => {
                 handler.call(DeliveryFailure {
                     backend: "redis",

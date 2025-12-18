@@ -1,3 +1,5 @@
+use bevy::log::tracing_subscriber::EnvFilter;
+use bevy::log::{info, info_span};
 use bevy::prelude::*;
 use bevy_event_bus::config::kafka::{
     KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
@@ -9,8 +11,6 @@ use integration_tests::utils::helpers::{
     run_app_updates, unique_consumer_group, unique_topic, wait_for_events,
 };
 use integration_tests::utils::kafka_setup;
-use tracing::{info, info_span};
-use tracing_subscriber::EnvFilter;
 
 #[derive(Resource)]
 struct WriterState {
@@ -67,7 +67,7 @@ fn capture_wrapped_events(
 
 #[test]
 fn external_bus_events_flow_from_both_writers() {
-    let _ = tracing_subscriber::fmt()
+    let _ = bevy::log::tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )

@@ -1,3 +1,4 @@
+use bevy::log::{info, info_span};
 use bevy::prelude::*;
 use bevy_event_bus::config::kafka::{
     KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
@@ -9,7 +10,6 @@ use integration_tests::utils::helpers::{
     unique_consumer_group, unique_topic, update_until, wait_for_events,
 };
 use integration_tests::utils::kafka_setup;
-use tracing::{info, info_span};
 
 /// Test that validates Kafka metadata propagation with real broker interaction
 ///

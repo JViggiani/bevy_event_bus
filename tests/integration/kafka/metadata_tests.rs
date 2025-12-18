@@ -1,3 +1,4 @@
+use bevy::log::{info, info_span};
 use bevy::prelude::*;
 use bevy_event_bus::config::kafka::{
     KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
@@ -12,7 +13,6 @@ use integration_tests::utils::helpers::{
 };
 use integration_tests::utils::kafka_setup;
 use std::collections::HashMap;
-use tracing::{info, info_span};
 
 fn topic_spec(name: &str) -> KafkaTopicSpec {
     KafkaTopicSpec::new(name.to_string())

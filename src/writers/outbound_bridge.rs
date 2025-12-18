@@ -3,10 +3,10 @@ use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 
+use bevy_event_bus::BusEvent;
 use bevy_event_bus::backends::{EventBusBackendResource, event_bus_backend::SendOptions};
 use bevy_event_bus::errors::{BusErrorCallback, BusErrorContext, BusErrorKind};
 use bevy_event_bus::resources::MessageMetadata;
-use bevy_event_bus::BusEvent;
 
 /// Optional error callback used by the outbound bridge.
 #[derive(Resource, Clone)]
@@ -78,7 +78,10 @@ fn outbound_bridge_system<T: BusEvent + Message>(
 
     let callback_ref = error_callback.as_ref().map(|cb| &cb.0);
 
-    let emit_error = |topic: &str, kind: BusErrorKind, message: &str, metadata: Option<MessageMetadata>| {
+    let emit_error = |topic: &str,
+                      kind: BusErrorKind,
+                      message: &str,
+                      metadata: Option<MessageMetadata>| {
         if let Some(cb) = callback_ref {
             cb(BusErrorContext::new(
                 "outbound",
@@ -89,7 +92,7 @@ fn outbound_bridge_system<T: BusEvent + Message>(
                 None,
             ));
         } else {
-            tracing::warn!(backend = "outbound", topic = %topic, error = ?kind, "Unhandled outbound bridge error: {message}");
+            bevy::log::warn!(backend = "outbound", topic = %topic, error = ?kind, "Unhandled outbound bridge error: {message}");
         }
     };
 
@@ -101,13 +104,23 @@ fn outbound_bridge_system<T: BusEvent + Message>(
 
                 for topic in topics {
                     if !backend.try_send(event, topic, SendOptions::default()) {
-                        emit_error(topic, BusErrorKind::DeliveryFailure, "Failed to send to external backend", None);
+                        emit_error(
+                            topic,
+                            BusErrorKind::DeliveryFailure,
+                            "Failed to send to external backend",
+                            None,
+                        );
                     }
                 }
             }
             None => {
                 for topic in topics {
-                    emit_error(topic, BusErrorKind::NotConfigured, "No event bus backend configured", None);
+                    emit_error(
+                        topic,
+                        BusErrorKind::NotConfigured,
+                        "No event bus backend configured",
+                        None,
+                    );
                 }
             }
         }

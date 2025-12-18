@@ -95,7 +95,7 @@ impl DecoderRegistry {
         let decoder_name = decoder.name();
         let decoders = self.topic_decoders.entry(topic.to_string()).or_default();
         decoders.push(Box::new(decoder));
-        tracing::debug!(
+        bevy::log::debug!(
             topic = %topic,
             decoder = %decoder_name,
             total_decoders = decoders.len(),
@@ -135,7 +135,7 @@ impl DecoderRegistry {
                             type_id: decoder.event_type_id(),
                             decoder_name,
                         });
-                        tracing::trace!(
+                        bevy::log::trace!(
                             topic = %topic,
                             decoder = %decoder_name,
                             "Decoder succeeded"
@@ -143,7 +143,7 @@ impl DecoderRegistry {
                     }
                     None => {
                         stats.failures += 1;
-                        tracing::trace!(
+                        bevy::log::trace!(
                             topic = %topic,
                             decoder = %decoder_name,
                             "Decoder failed"

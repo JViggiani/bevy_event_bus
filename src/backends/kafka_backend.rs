@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use bevy::log::{debug, warn};
 use crossbeam_channel::{
     Receiver, RecvTimeoutError, SendTimeoutError, Sender, TryRecvError, TrySendError, bounded,
 };
@@ -23,7 +24,6 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::task::JoinHandle;
-use tracing::{debug, warn};
 
 use bevy::prelude::*;
 use bevy_event_bus::{
@@ -38,12 +38,12 @@ use bevy_event_bus::{
         KafkaBackendConfig, KafkaConnectionConfig, KafkaConsumerGroupSpec, KafkaInitialOffset,
         KafkaTopologyConfig,
     },
+    errors::BusErrorKind,
     resources::{
         ConsumerMetrics, IncomingMessage, KafkaCommitQueue, KafkaCommitResultChannel,
         KafkaLagCacheResource, MessageMetadata, backend_metadata::KafkaMetadata,
     },
     runtime,
-    errors::BusErrorKind,
 };
 
 #[derive(Debug, Clone)]
@@ -793,9 +793,11 @@ impl EventBusBackend for KafkaEventBusBackend {
             }
         }
 
-        let mut record =
-            BaseRecord::<[u8], [u8], Arc<DeliveryFailureCallback>>::with_opaque_to(topic, handler.clone())
-                .payload(event_json);
+        let mut record = BaseRecord::<[u8], [u8], Arc<DeliveryFailureCallback>>::with_opaque_to(
+            topic,
+            handler.clone(),
+        )
+        .payload(event_json);
 
         if let Some(key) = options.partition_key {
             record = record.key(key.as_bytes());
