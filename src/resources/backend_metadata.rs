@@ -2,9 +2,9 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::time::Instant;
 
-/// Generic event metadata that works across all backends
+/// Generic message metadata that works across all backends
 #[derive(Debug, Clone)]
-pub struct EventMetadata {
+pub struct MessageMetadata {
     pub source: String, // topic/queue/stream name
     pub timestamp: Instant,
     pub key: Option<String>, // Generic message key
@@ -64,7 +64,7 @@ impl BackendMetadata for RedisMetadata {
 }
 
 /// Extension methods for easy access to backend-specific metadata
-impl EventMetadata {
+impl MessageMetadata {
     /// Create new metadata with backend-specific data
     pub fn new(
         source: String,

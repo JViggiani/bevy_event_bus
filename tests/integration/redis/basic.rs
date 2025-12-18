@@ -6,7 +6,7 @@ use bevy_event_bus::config::redis::{
     RedisProducerConfig, RedisStreamSpec, RedisTopologyBuilder,
 };
 use bevy_event_bus::{
-    EventBusBackend, EventBusPlugins, RedisEventBusBackend, RedisEventReader, RedisEventWriter,
+    EventBusBackend, EventBusPlugins, RedisEventBusBackend, RedisMessageReader, RedisMessageWriter,
     TopologyMode, block_on,
 };
 use integration_tests::utils::TestEvent;
@@ -61,7 +61,7 @@ fn redis_single_direction_writer_reader_flow() {
     reader_app.insert_resource(ConsumerGroup(consumer_group.clone()));
 
     fn reader_system(
-        mut reader: RedisEventReader<TestEvent>,
+        mut reader: RedisMessageReader<TestEvent>,
         stream: Res<Stream>,
         group: Res<ConsumerGroup>,
         mut collected: ResMut<Collected>,
@@ -86,12 +86,12 @@ fn redis_single_direction_writer_reader_flow() {
     };
     writer_app.insert_resource(Outgoing(event_to_send.clone(), stream.clone()));
 
-    fn writer_system(mut writer: RedisEventWriter, data: Res<Outgoing>, mut sent: Local<bool>) {
+    fn writer_system(mut writer: RedisMessageWriter, data: Res<Outgoing>, mut sent: Local<bool>) {
         if *sent {
             return;
         }
         let config = RedisProducerConfig::new(data.1.clone());
-        writer.write(&config, data.0.clone());
+        writer.write(&config, data.0.clone(), None);
         *sent = true;
     }
     writer_app.add_systems(Update, writer_system);
@@ -309,7 +309,7 @@ fn redis_bidirectional_apps_exchange_events() {
     }
 
     fn reader_system(
-        mut reader: RedisEventReader<TestEvent>,
+        mut reader: RedisMessageReader<TestEvent>,
         stream: Res<StreamName>,
         group: Res<GroupName>,
         mut received: ResMut<Received>,
@@ -320,13 +320,13 @@ fn redis_bidirectional_apps_exchange_events() {
         }
     }
 
-    fn writer_system(mut writer: RedisEventWriter, mut outgoing: ResMut<OutgoingEvents>) {
+    fn writer_system(mut writer: RedisMessageWriter, mut outgoing: ResMut<OutgoingEvents>) {
         if outgoing.sent {
             return;
         }
         let config = RedisProducerConfig::new(outgoing.stream.clone());
         for event in outgoing.events.clone() {
-            writer.write(&config, event);
+            writer.write(&config, event, None);
         }
         outgoing.sent = true;
     }

@@ -5,7 +5,7 @@ use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
 use bevy_event_bus::{
-    EventBusError, EventBusErrorType, EventBusPlugins, RedisEventReader, RedisEventWriter,
+    EventBusError, EventBusErrorType, EventBusPlugins, RedisMessageReader, RedisMessageWriter,
 };
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
@@ -86,7 +86,7 @@ fn same_consumer_group_distributes_messages_round_robin() {
     let g1 = consumer_group.clone();
     reader1.add_systems(
         Update,
-        move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
+        move |mut r: RedisMessageReader<TestEvent>, mut c: ResMut<EventCollector>| {
             let config = RedisConsumerConfig::new(g1.clone(), [s1.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
@@ -103,7 +103,7 @@ fn same_consumer_group_distributes_messages_round_robin() {
     let g2 = consumer_group.clone();
     reader2.add_systems(
         Update,
-        move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
+        move |mut r: RedisMessageReader<TestEvent>, mut c: ResMut<EventCollector>| {
             let config = RedisConsumerConfig::new(g2.clone(), [s2.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
@@ -118,7 +118,7 @@ fn same_consumer_group_distributes_messages_round_robin() {
     let stream_for_runtime_writer = stream.clone();
     writer.add_systems(
         Update,
-        move |mut w: RedisEventWriter, mut sent: Local<usize>| {
+        move |mut w: RedisMessageWriter, mut sent: Local<usize>| {
             if *sent < 6 {
                 let config = RedisProducerConfig::new(stream_for_runtime_writer.clone());
                 w.write(
@@ -127,6 +127,7 @@ fn same_consumer_group_distributes_messages_round_robin() {
                         message: format!("message_{}", *sent),
                         value: *sent as i32,
                     },
+                    None,
                 );
                 *sent += 1;
             }
@@ -242,7 +243,7 @@ fn different_consumer_groups_receive_all_events() {
     let g1 = consumer_group1.clone();
     reader1.add_systems(
         Update,
-        move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
+        move |mut r: RedisMessageReader<TestEvent>, mut c: ResMut<EventCollector>| {
             let config = RedisConsumerConfig::new(g1.clone(), [s1.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
@@ -259,7 +260,7 @@ fn different_consumer_groups_receive_all_events() {
     let g2 = consumer_group2.clone();
     reader2.add_systems(
         Update,
-        move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
+        move |mut r: RedisMessageReader<TestEvent>, mut c: ResMut<EventCollector>| {
             let config = RedisConsumerConfig::new(g2.clone(), [s2.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
@@ -274,7 +275,7 @@ fn different_consumer_groups_receive_all_events() {
     let stream_for_runtime_writer = stream.clone();
     writer.add_systems(
         Update,
-        move |mut w: RedisEventWriter, mut sent: Local<usize>| {
+        move |mut w: RedisMessageWriter, mut sent: Local<usize>| {
             if *sent < 4 {
                 let config = RedisProducerConfig::new(stream_for_runtime_writer.clone());
                 w.write(
@@ -283,6 +284,7 @@ fn different_consumer_groups_receive_all_events() {
                         message: format!("broadcast_message_{}", *sent),
                         value: 100 + *sent as i32,
                     },
+                    None,
                 );
                 *sent += 1;
             }
@@ -373,7 +375,7 @@ fn writer_only_works_without_consumer_groups() {
     let stream_for_runtime_writer = stream.clone();
     writer.add_systems(
         Update,
-        move |mut w: RedisEventWriter, mut events_sent: Local<usize>| {
+        move |mut w: RedisMessageWriter, mut events_sent: Local<usize>| {
             if *events_sent < 3 {
                 let config = RedisProducerConfig::new(stream_for_runtime_writer.clone());
                 w.write(
@@ -382,6 +384,7 @@ fn writer_only_works_without_consumer_groups() {
                         message: format!("writer_only_{}", *events_sent),
                         value: *events_sent as i32,
                     },
+                    None,
                 );
                 *events_sent += 1;
             }
@@ -397,7 +400,7 @@ fn writer_only_works_without_consumer_groups() {
     let reader_group = reader_membership.group.clone();
     reader.add_systems(
         Update,
-        move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
+        move |mut r: RedisMessageReader<TestEvent>, mut c: ResMut<EventCollector>| {
             let config = RedisConsumerConfig::new(reader_group.clone(), [s.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
@@ -457,7 +460,7 @@ fn reader_does_not_work_without_consumer_group() {
 
     reader.add_systems(
         Update,
-        |mut errors: EventReader<EventBusError<TestEvent>>,
+        |mut errors: MessageReader<EventBusError<TestEvent>>,
          mut collector: ResMut<ErrorCollector>| {
             for error in errors.read() {
                 collector.0.push(error.clone());
@@ -469,7 +472,7 @@ fn reader_does_not_work_without_consumer_group() {
     let missing_group = membership.group.clone();
     reader.add_systems(
         Update,
-        move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
+        move |mut r: RedisMessageReader<TestEvent>, mut c: ResMut<EventCollector>| {
             let config = RedisConsumerConfig::new(missing_group.clone(), [s.clone()]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
@@ -484,7 +487,7 @@ fn reader_does_not_work_without_consumer_group() {
     let stream_for_runtime_writer = stream.clone();
     writer.add_systems(
         Update,
-        move |mut w: RedisEventWriter, mut sent: Local<usize>| {
+        move |mut w: RedisMessageWriter, mut sent: Local<usize>| {
             if *sent < 2 {
                 let config = RedisProducerConfig::new(stream_for_runtime_writer.clone());
                 w.write(
@@ -493,6 +496,7 @@ fn reader_does_not_work_without_consumer_group() {
                         message: format!("missing_group_{}", *sent),
                         value: *sent as i32,
                     },
+                    None,
                 );
                 *sent += 1;
             }
@@ -564,7 +568,7 @@ fn invalid_consumer_group_does_not_steal_events_from_valid_group() {
 
     app.add_systems(
         Update,
-        |mut errors: EventReader<EventBusError<TestEvent>>,
+        |mut errors: MessageReader<EventBusError<TestEvent>>,
          mut collector: ResMut<ErrorCollector>| {
             for error in errors.read() {
                 collector.0.push(error.clone());
@@ -576,7 +580,7 @@ fn invalid_consumer_group_does_not_steal_events_from_valid_group() {
     let invalid_group = unique_consumer_group("invalid-group-reader");
     app.add_systems(
         Update,
-        move |mut reader: RedisEventReader<TestEvent>,
+        move |mut reader: RedisMessageReader<TestEvent>,
               mut invalid: ResMut<InvalidGroupCollector>| {
             let config = RedisConsumerConfig::new(invalid_group.clone(), [invalid_stream.clone()]);
             for wrapper in reader.read(&config) {
@@ -589,7 +593,7 @@ fn invalid_consumer_group_does_not_steal_events_from_valid_group() {
     let valid_group_runtime = valid_group.clone();
     app.add_systems(
         Update,
-        move |mut reader: RedisEventReader<TestEvent>, mut valid: ResMut<ValidGroupCollector>| {
+        move |mut reader: RedisMessageReader<TestEvent>, mut valid: ResMut<ValidGroupCollector>| {
             let config = RedisConsumerConfig::new(
                 valid_group_runtime.clone(),
                 [valid_stream_runtime.clone()],
@@ -603,7 +607,7 @@ fn invalid_consumer_group_does_not_steal_events_from_valid_group() {
     let stream_for_writer = stream.clone();
     app.add_systems(
         Update,
-        move |mut writer: RedisEventWriter, mut sent: Local<usize>| {
+        move |mut writer: RedisMessageWriter, mut sent: Local<usize>| {
             if *sent < 3 {
                 let config = RedisProducerConfig::new(stream_for_writer.clone());
                 writer.write(
@@ -612,6 +616,7 @@ fn invalid_consumer_group_does_not_steal_events_from_valid_group() {
                         message: format!("valid_group_message_{}", *sent),
                         value: *sent as i32,
                     },
+                    None,
                 );
                 *sent += 1;
             }

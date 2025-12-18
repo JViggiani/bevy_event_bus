@@ -1,13 +1,13 @@
 # bevy_event_bus
 
-A Bevy plugin that bridges Bevy's event system with external message brokers such as Kafka and Redis. It keeps authoring ergonomics close to standard Bevy patterns while allowing for ingestion, decoding, and delivery of events to and from a bevy app.
+A Bevy plugin that bridges Bevy's message system with external brokers such as Kafka and Redis. It keeps authoring ergonomics close to standard Bevy patterns while allowing for ingestion, decoding, and delivery of messages to and from a Bevy app.
 
 ## Features
 
 - Topology-driven registration - declare topics, consumer groups, and event bindings up front via `KafkaTopologyBuilder`; the backend applies them automatically during startup.
-- Multi-decoder pipeline – register multiple decoders per topic and fan decoded payloads out to matching Bevy events in a single pass.
+- Multi-decoder pipeline – register multiple decoders per topic and fan decoded payloads out to matching Bevy messages in a single pass.
 - Type-safe configuration – reuse strongly typed consumer and producer configs across systems without exposing backend-specific traits in your signatures.
-- Rich observability – drain metrics, lag snapshots, and commit statistics surface as Bevy resources/events ready for diagnostics.
+- Rich observability – drain metrics, lag snapshots, and commit statistics surface as Bevy resources/messages ready for diagnostics.
 - Extensible architecture – Kafka and Redis ship out of the box; additional brokers can plug in by implementing the backend trait.
 
 ## Installation
@@ -21,8 +21,8 @@ bevy_event_bus = { version = "0.2", features = ["kafka", "redis"] }
 
 ## Quick start
 
-1. **Define your Bevy events.** Implementing `Serialize`, `Deserialize`, `Clone`, `Send`, and `Sync` is enough — the `BusEvent` marker trait is automatically implemented.
-2. **Describe your topology.** Use the `KafkaTopologyBuilder` to declare topics, consumer groups, and which Bevy events bind to which topics.
+1. **Define your Bevy messages.** Derive `Message` (and `Event` if you still emit internally), plus `Serialize`, `Deserialize`, `Clone`, and `Sync` — the `BusEvent` marker trait is implemented automatically.
+2. **Describe your topology.** Use the `KafkaTopologyBuilder` to declare topics, consumer groups, and which Bevy message types bind to which topics.
 3. **Spin up the plugin.** Build a `KafkaBackendConfig`, pass it to `KafkaEventBusBackend`, then add `EventBusPlugins` to your app.
 
 ```rust
@@ -35,7 +35,7 @@ use bevy_event_bus::config::kafka::{
     KafkaInitialOffset, KafkaProducerConfig, KafkaTopologyBuilder, KafkaTopicSpec,
 };
 
-#[derive(Event, Clone, serde::Serialize, serde::Deserialize, Debug)]
+#[derive(Message, Clone, serde::Serialize, serde::Deserialize, Debug)]
 struct PlayerLevelUp {
     player_id: u64,
     new_level: u32,
@@ -98,7 +98,7 @@ impl Default for LevelUpConsumerConfig {
 }
 
 fn emit_level_ups(
-    mut writer: KafkaEventWriter,
+    mut writer: KafkaMessageWriter,
     config: Res<LevelUpProducerConfig>,
     query: Query<(Entity, &LevelComponent), Added<LevelComponent>>,
 ) {
@@ -112,7 +112,7 @@ fn emit_level_ups(
 }
 
 fn apply_level_ups(
-    mut reader: KafkaEventReader<PlayerLevelUp>,
+    mut reader: KafkaMessageReader<PlayerLevelUp>,
     config: Res<LevelUpConsumerConfig>,
 ) {
     for wrapper in reader.read(&config.0) {
@@ -123,8 +123,8 @@ fn apply_level_ups(
 
 ## Error handling
 
-- Delivery failures surface as `EventBusError<T>` events. Add a Bevy system that reads `EventReader<EventBusError<T>>` to react to dropped messages, backend outages, or serialization issues.
-- Deserialization issues emit `EventBusDecodeError` events. Metadata includes the raw payload, decoder name, and original topic so you can log or dead-letter messages.
+- Delivery failures surface as `EventBusError<T>` messages. Add a Bevy system that reads `MessageReader<EventBusError<T>>` to react to dropped messages, backend outages, or serialization issues.
+- Deserialization issues emit `EventBusDecodeError` messages. Metadata includes the raw payload, decoder name, and original topic so you can log or dead-letter messages.
 - For Kafka-specific acknowledgement workflows, consume `KafkaCommitResultEvent` and inspect `KafkaCommitResultStats` for aggregate success/failure counts.
 
 ## Observability & diagnostics

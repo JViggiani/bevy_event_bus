@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use bevy_event_bus::EventBusBackend;
-use bevy_event_bus::backends::event_bus_backend::{ReceiveOptions, SendOptions};
+use bevy_event_bus::backends::event_bus_backend::{
+    DeliveryFailureCallback, ReceiveOptions, SendOptions,
+};
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
 
@@ -58,6 +60,7 @@ impl EventBusBackend for MockEventBusBackend {
         _event_json: &[u8],
         topic: &str,
         _options: SendOptions<'_>,
+        _failure_handler: Option<Arc<DeliveryFailureCallback>>,
     ) -> bool {
         // Check if we should simulate a failure for this topic
         if self.should_fail(topic) {

@@ -29,9 +29,10 @@ use bevy::prelude::*;
 use bevy_event_bus::{
     TopologyMode,
     backends::event_bus_backend::{
-        BackendConfigError, BackendPluginSetup, EventBusBackend, LagReportingBackend,
-        LagReportingDescriptor, LagReportingHandle, ManualCommitController, ManualCommitDescriptor,
-        ManualCommitHandle, ManualCommitStyle, ReceiveOptions, SendOptions,
+        BackendConfigError, BackendPluginSetup, DeliveryFailure, DeliveryFailureCallback,
+        EventBusBackend, LagReportingBackend, LagReportingDescriptor, LagReportingHandle,
+        ManualCommitController, ManualCommitDescriptor, ManualCommitHandle, ManualCommitStyle,
+        ReceiveOptions, SendOptions,
     },
     config::kafka::{
         KafkaBackendConfig, KafkaConnectionConfig, KafkaConsumerGroupSpec, KafkaInitialOffset,
@@ -39,9 +40,10 @@ use bevy_event_bus::{
     },
     resources::{
         ConsumerMetrics, IncomingMessage, KafkaCommitQueue, KafkaCommitResultChannel,
-        KafkaLagCacheResource, backend_metadata::KafkaMetadata,
+        KafkaLagCacheResource, MessageMetadata, backend_metadata::KafkaMetadata,
     },
     runtime,
+    errors::BusErrorKind,
 };
 
 #[derive(Debug, Clone)]
@@ -154,13 +156,13 @@ impl LagReportingHandle for KafkaLagHandle {
 fn kafka_commit_result_dispatch_system(
     mut commands: Commands,
     maybe_channel: Option<Res<KafkaCommitResultChannel>>,
-    mut events: EventWriter<KafkaCommitResultEvent>,
+    mut messages: MessageWriter<KafkaCommitResultMessage>,
 ) {
     if let Some(channel) = maybe_channel {
         loop {
             match channel.receiver.try_recv() {
                 Ok(result) => {
-                    events.write(KafkaCommitResultEvent {
+                    messages.write(KafkaCommitResultMessage {
                         backend: "kafka".into(),
                         consumer_group: result.consumer_group,
                         topic: result.topic,
@@ -181,18 +183,18 @@ fn kafka_commit_result_dispatch_system(
 
 fn kafka_commit_result_stats_system(
     mut stats: ResMut<KafkaCommitResultStats>,
-    mut events: EventReader<KafkaCommitResultEvent>,
+    mut messages: MessageReader<KafkaCommitResultMessage>,
 ) {
-    for event in events.read() {
+    for message in messages.read() {
         let key = (
-            event.backend.clone(),
-            event.consumer_group.clone(),
-            event.topic.clone(),
+            message.backend.clone(),
+            message.consumer_group.clone(),
+            message.topic.clone(),
         );
         let entry = stats.totals.entry(key).or_default();
-        entry.partition = event.partition;
-        entry.last_offset = event.offset;
-        match &event.error {
+        entry.partition = message.partition;
+        entry.last_offset = message.offset;
+        match &message.error {
             Some(err) => {
                 entry.failures += 1;
                 entry.last_error = Some(err.clone());
@@ -205,9 +207,9 @@ fn kafka_commit_result_stats_system(
     }
 }
 
-/// Emitted when an asynchronous Kafka manual commit completes.
-#[derive(Event, Debug, Clone)]
-pub struct KafkaCommitResultEvent {
+/// Message emitted when an asynchronous Kafka manual commit completes.
+#[derive(Message, Debug, Clone)]
+pub struct KafkaCommitResultMessage {
     pub backend: String,
     pub consumer_group: String,
     pub topic: String,
@@ -287,9 +289,9 @@ struct EventBusProducerContext;
 impl ClientContext for EventBusProducerContext {}
 
 impl ProducerContext for EventBusProducerContext {
-    type DeliveryOpaque = ();
+    type DeliveryOpaque = Arc<DeliveryFailureCallback>;
 
-    fn delivery(&self, delivery_result: &DeliveryResult, _delivery_opaque: Self::DeliveryOpaque) {
+    fn delivery(&self, delivery_result: &DeliveryResult, delivery_opaque: Self::DeliveryOpaque) {
         match delivery_result {
             Err((kafka_error, owned_message)) => {
                 warn!(
@@ -298,7 +300,42 @@ impl ProducerContext for EventBusProducerContext {
                     error = %kafka_error,
                     "Kafka message delivery failed"
                 );
-                // TODO: Fire EventBusError<T> event when we have access to the event type
+                let mut headers_map = HashMap::new();
+                if let Some(headers) = owned_message.headers() {
+                    for header in headers.iter() {
+                        if let Some(value) = header.value {
+                            if let Ok(str_value) = String::from_utf8(value.to_vec()) {
+                                headers_map.insert(header.key.to_string(), str_value);
+                            }
+                        }
+                    }
+                }
+
+                let backend_metadata = KafkaMetadata {
+                    topic: owned_message.topic().to_string(),
+                    partition: owned_message.partition(),
+                    offset: owned_message.offset(),
+                    consumer_group: None,
+                    manual_commit: false,
+                    headers: headers_map,
+                };
+
+                let metadata = MessageMetadata::new(
+                    owned_message.topic().to_string(),
+                    Instant::now(),
+                    owned_message
+                        .key()
+                        .and_then(|k| String::from_utf8(k.to_vec()).ok()),
+                    Some(Box::new(backend_metadata)),
+                );
+
+                delivery_opaque.call(DeliveryFailure {
+                    backend: "kafka",
+                    kind: BusErrorKind::DeliveryFailure,
+                    topic: owned_message.topic().to_string(),
+                    error: kafka_error.to_string(),
+                    metadata: Some(metadata),
+                });
             }
             Ok(delivery) => {
                 debug!(
@@ -651,7 +688,7 @@ impl EventBusBackend for KafkaEventBusBackend {
     }
 
     fn configure_plugin(&self, app: &mut App) {
-        app.add_event::<KafkaCommitResultEvent>();
+        app.add_message::<KafkaCommitResultMessage>();
         app.init_resource::<KafkaCommitResultStats>();
         app.add_systems(
             PreUpdate,
@@ -715,8 +752,50 @@ impl EventBusBackend for KafkaEventBusBackend {
         event_json: &[u8],
         topic: &str,
         options: SendOptions<'_>,
+        failure_handler: Option<Arc<DeliveryFailureCallback>>,
     ) -> bool {
-        let mut record = BaseRecord::to(topic).payload(event_json);
+        let handler = failure_handler
+            .unwrap_or_else(|| Arc::new(DeliveryFailureCallback::new(|_failure| {})));
+
+        let topic_known = self
+            .state
+            .config
+            .topology
+            .topics()
+            .iter()
+            .any(|spec| spec.name == topic);
+
+        if !topic_known {
+            let missing = self
+                .state
+                .producer
+                .client()
+                .fetch_metadata(Some(topic), Duration::from_secs(1))
+                .map(|metadata| {
+                    metadata
+                        .topics()
+                        .iter()
+                        .find(|meta| meta.name() == topic)
+                        .map(|meta| meta.error().is_some())
+                        .unwrap_or(true)
+                })
+                .unwrap_or(true);
+
+            if missing {
+                handler.call(DeliveryFailure {
+                    backend: "kafka",
+                    kind: BusErrorKind::InvalidWriteConfig,
+                    topic: topic.to_string(),
+                    error: "Topic is not provisioned in Kafka topology".to_string(),
+                    metadata: None,
+                });
+                return false;
+            }
+        }
+
+        let mut record =
+            BaseRecord::<[u8], [u8], Arc<DeliveryFailureCallback>>::with_opaque_to(topic, handler.clone())
+                .payload(event_json);
 
         if let Some(key) = options.partition_key {
             record = record.key(key.as_bytes());
@@ -741,6 +820,13 @@ impl EventBusBackend for KafkaEventBusBackend {
             Ok(_) => true,
             Err((err, _)) => {
                 warn!(target = %topic, error = %err, "Failed to enqueue Kafka message");
+                handler.call(DeliveryFailure {
+                    backend: "kafka",
+                    kind: BusErrorKind::DeliveryFailure,
+                    topic: topic.to_string(),
+                    error: err.to_string(),
+                    metadata: None,
+                });
                 false
             }
         }

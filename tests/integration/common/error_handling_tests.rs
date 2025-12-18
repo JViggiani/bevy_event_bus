@@ -1,8 +1,8 @@
 //! Comprehensive error handling tests for bevy_event_bus
 //!
 //! This module tests the library's resilience and error handling capabilities using
-//! the new fire-and-forget API where KafkaEventWriter methods return () and errors
-//! are sent as EventBusError<T> events.
+//! the new fire-and-forget API where KafkaMessageWriter methods return () and errors
+//! are surfaced via error callbacks.
 //!
 //! Tests cover:
 //! - Mock backend delivery failures
@@ -13,39 +13,77 @@
 
 use bevy::prelude::*;
 use bevy_event_bus::config::kafka::{KafkaProducerConfig, KafkaTopologyEventBinding};
-use bevy_event_bus::{EventBusError, EventBusPlugins, KafkaEventWriter};
+use bevy_event_bus::{BusErrorCallback, BusErrorContext, BusErrorKind, EventBusPlugins, KafkaMessageWriter};
 use integration_tests::utils::MockEventBusBackend;
 use integration_tests::utils::helpers::unique_topic;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::sync::{Arc, Mutex};
+
+#[derive(Clone)]
+struct ErrorStore {
+    callback: BusErrorCallback,
+    store: Arc<Mutex<Vec<BusErrorContext>>>,
+}
+
+impl ErrorStore {
+    fn new() -> Self {
+        let store = Arc::new(Mutex::new(Vec::new()));
+        let callback: BusErrorCallback = {
+            let sink = Arc::clone(&store);
+            Arc::new(move |ctx| {
+                sink.lock().unwrap().push(ctx);
+            })
+        };
+        Self { callback, store }
+    }
+
+    fn collected(&self) -> Vec<BusErrorContext> {
+        self.store.lock().unwrap().clone()
+    }
+
+    fn drain(&self) -> Vec<BusErrorContext> {
+        let mut guard = self.store.lock().unwrap();
+        std::mem::take(&mut *guard)
+    }
+}
+
+fn decode_event<T: DeserializeOwned>(ctx: &BusErrorContext) -> Option<T> {
+    ctx.original_bytes
+        .as_ref()
+        .and_then(|bytes| serde_json::from_slice(bytes).ok())
+}
+
+#[derive(Resource, Clone)]
+struct ErrorStoreResource(ErrorStore);
 
 // Event types for various test scenarios
-#[derive(Event, Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[derive(Message, Deserialize, Serialize, Debug, Clone, PartialEq)]
 struct TestErrorEvent {
     id: u32,
     message: String,
 }
 
-#[derive(Event, Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Message, Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 struct PlayerEvent {
     player_id: u32,
     action: String,
 }
 
-#[derive(Event, Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Message, Clone, Debug, Serialize, Deserialize, PartialEq)]
 struct CombatEvent {
     attacker_id: u32,
     target_id: u32,
     damage: i32,
 }
 
-#[derive(Event, Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Message, Clone, Debug, Serialize, Deserialize, PartialEq)]
 struct AnalyticsEvent {
     event_type: String,
     user_id: u32,
     timestamp: u64,
 }
 
-#[derive(Event, Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Message, Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 struct TestEvent {
     id: u32,
     message: String,
@@ -70,16 +108,17 @@ fn test_delivery_error_handling() {
     #[derive(Resource, Default)]
     struct ErrorTestState {
         messages_sent: u32,
-        errors_received: Vec<EventBusError<TestErrorEvent>>,
         test_completed: bool,
     }
 
+    let errors = ErrorStore::new();
+    app.insert_resource(ErrorStoreResource(errors.clone()));
     app.insert_resource(ErrorTestState::default());
 
     // System to write events that will fail due to simulated backend issues
     app.add_systems(
         Update,
-        move |mut state: ResMut<ErrorTestState>, mut writer: KafkaEventWriter| {
+        move |mut state: ResMut<ErrorTestState>, mut writer: KafkaMessageWriter, errors: Res<ErrorStoreResource>| {
             if !state.test_completed {
                 let config = KafkaProducerConfig::new([topic_clone.clone()]);
                 for i in 0..3 {
@@ -91,21 +130,10 @@ fn test_delivery_error_handling() {
                     state.messages_sent += 1;
 
                     // Fire-and-forget write - delivery failures will appear as error events
-                    writer.write(&config, test_event);
+                    writer.write(&config, test_event, Some(errors.0.callback.clone()));
                 }
 
                 state.test_completed = true;
-            }
-        },
-    );
-
-    // System to collect errors
-    app.add_systems(
-        Update,
-        |mut errors: EventReader<EventBusError<TestErrorEvent>>,
-         mut state: ResMut<ErrorTestState>| {
-            for error in errors.read() {
-                state.errors_received.push(error.clone());
             }
         },
     );
@@ -114,8 +142,8 @@ fn test_delivery_error_handling() {
     for _ in 0..5 {
         app.update();
     }
-
     let state = app.world().resource::<ErrorTestState>();
+    let errors_collected = errors.collected();
 
     assert!(state.messages_sent > 0, "Should have sent messages");
     assert_eq!(
@@ -124,38 +152,16 @@ fn test_delivery_error_handling() {
     );
 
     // With mock backend configured to fail, we should get errors for all messages
-    assert_eq!(
-        state.errors_received.len(),
-        3,
-        "Should receive exactly 3 errors. Got: {} errors",
-        state.errors_received.len()
-    );
+    assert_eq!(errors_collected.len(), 3, "Should receive exactly 3 errors. Got: {} errors", errors_collected.len());
 
     // Verify error details
-    for (i, error) in state.errors_received.iter().enumerate() {
-        assert_eq!(
-            error.topic, topic,
-            "Error {} should contain correct topic",
-            i
-        );
-        assert!(
-            error.original_event.is_some(),
-            "Error {} should contain original event",
-            i
-        );
-
-        let original_event = error.original_event.as_ref().unwrap();
-        assert_eq!(
-            original_event.id, i as u32,
-            "Error {} should preserve original event id",
-            i
-        );
-        assert_eq!(
-            original_event.message,
-            format!("Test message {}", i),
-            "Error {} should preserve original message",
-            i
-        );
+    for (i, error) in errors_collected.iter().enumerate() {
+        assert_eq!(error.topic, topic, "Error {} should contain correct topic", i);
+        assert_eq!(error.kind, BusErrorKind::DeliveryFailure);
+        assert!(error.original_bytes.is_some(), "Error {} should include serialized payload", i);
+        // best-effort check the payload encodes the id we sent
+        let payload_text = String::from_utf8_lossy(error.original_bytes.as_ref().unwrap());
+        assert!(payload_text.contains(&format!("{}", i)), "Payload should contain event id {i}");
     }
 }
 
@@ -186,21 +192,21 @@ fn test_multiple_event_types_error_handling() {
 
     #[derive(Resource, Default)]
     struct MultiEventTestState {
-        player_errors: Vec<EventBusError<PlayerEvent>>,
-        combat_errors: Vec<EventBusError<CombatEvent>>,
-        analytics_errors: Vec<EventBusError<AnalyticsEvent>>,
         test_completed: bool,
     }
 
+    let errors = ErrorStore::new();
+    app.insert_resource(ErrorStoreResource(errors.clone()));
     app.insert_resource(MultiEventTestState::default());
 
     // System to write events to all topics
     app.add_systems(
         Update,
-        move |mut state: ResMut<MultiEventTestState>,
-              mut player_writer: KafkaEventWriter,
-              mut combat_writer: KafkaEventWriter,
-              mut analytics_writer: KafkaEventWriter| {
+          move |mut state: ResMut<MultiEventTestState>,
+              mut player_writer: KafkaMessageWriter,
+              mut combat_writer: KafkaMessageWriter,
+              mut analytics_writer: KafkaMessageWriter,
+              errors: Res<ErrorStoreResource>| {
             if !state.test_completed {
                 let player_config = KafkaProducerConfig::new([player_topic_clone.clone()]);
                 let combat_config = KafkaProducerConfig::new([combat_topic_clone.clone()]);
@@ -210,7 +216,11 @@ fn test_multiple_event_types_error_handling() {
                     player_id: 123,
                     action: "login".to_string(),
                 };
-                player_writer.write(&player_config, player_event);
+                player_writer.write(
+                    &player_config,
+                    player_event,
+                    Some(errors.0.callback.clone()),
+                );
 
                 // Combat event
                 let combat_event = CombatEvent {
@@ -218,7 +228,11 @@ fn test_multiple_event_types_error_handling() {
                     target_id: 789,
                     damage: 100,
                 };
-                combat_writer.write(&combat_config, combat_event);
+                combat_writer.write(
+                    &combat_config,
+                    combat_event,
+                    Some(errors.0.callback.clone()),
+                );
 
                 // Analytics event
                 let analytics_event = AnalyticsEvent {
@@ -226,80 +240,46 @@ fn test_multiple_event_types_error_handling() {
                     user_id: 123,
                     timestamp: 1234567890,
                 };
-                analytics_writer.write(&analytics_config, analytics_event);
+                analytics_writer.write(
+                    &analytics_config,
+                    analytics_event,
+                    Some(errors.0.callback.clone()),
+                );
 
                 state.test_completed = true;
             }
         },
     );
 
-    // Systems to collect errors for each event type
-    app.add_systems(
-        Update,
-        (
-            |mut player_errors: EventReader<EventBusError<PlayerEvent>>,
-             mut state: ResMut<MultiEventTestState>| {
-                for error in player_errors.read() {
-                    state.player_errors.push(error.clone());
-                }
-            },
-            |mut combat_errors: EventReader<EventBusError<CombatEvent>>,
-             mut state: ResMut<MultiEventTestState>| {
-                for error in combat_errors.read() {
-                    state.combat_errors.push(error.clone());
-                }
-            },
-            |mut analytics_errors: EventReader<EventBusError<AnalyticsEvent>>,
-             mut state: ResMut<MultiEventTestState>| {
-                for error in analytics_errors.read() {
-                    state.analytics_errors.push(error.clone());
-                }
-            },
-        ),
-    );
-
     // Run for a few frames to allow error propagation
     for _ in 0..5 {
         app.update();
     }
+    let errors = errors.collected();
 
-    let state = app.world().resource::<MultiEventTestState>();
+    let player_error = errors
+        .iter()
+        .find(|e| e.topic == player_topic && e.kind == BusErrorKind::DeliveryFailure)
+        .expect("Should receive 1 player error");
+    let player_original: PlayerEvent =
+        decode_event(player_error).expect("player error should decode payload");
+    assert_eq!(player_original.player_id, 123);
 
-    // Verify we got errors for all event types
-    assert_eq!(
-        state.player_errors.len(),
-        1,
-        "Should receive 1 player error"
-    );
-    assert_eq!(
-        state.combat_errors.len(),
-        1,
-        "Should receive 1 combat error"
-    );
-    assert_eq!(
-        state.analytics_errors.len(),
-        1,
-        "Should receive 1 analytics error"
-    );
+    let combat_error = errors
+        .iter()
+        .find(|e| e.topic == combat_topic && e.kind == BusErrorKind::DeliveryFailure)
+        .expect("Should receive 1 combat error");
+    let combat_original: CombatEvent =
+        decode_event(combat_error).expect("combat error should decode payload");
+    assert_eq!(combat_original.damage, 100);
 
-    // Verify error details for each type
-    let player_error = &state.player_errors[0];
-    assert_eq!(player_error.topic, player_topic);
-    assert!(player_error.original_event.is_some());
-    assert_eq!(player_error.original_event.as_ref().unwrap().player_id, 123);
-
-    let combat_error = &state.combat_errors[0];
-    assert_eq!(combat_error.topic, combat_topic);
-    assert!(combat_error.original_event.is_some());
-    assert_eq!(combat_error.original_event.as_ref().unwrap().damage, 100);
-
-    let analytics_error = &state.analytics_errors[0];
-    assert_eq!(analytics_error.topic, analytics_topic);
-    assert!(analytics_error.original_event.is_some());
-    assert_eq!(
-        analytics_error.original_event.as_ref().unwrap().user_id,
-        123
-    );
+    let analytics_error = errors
+        .iter()
+        .find(|e| e.topic == analytics_topic && e.kind == BusErrorKind::DeliveryFailure)
+        .expect("Should receive 1 analytics error");
+    let analytics_original: AnalyticsEvent =
+        decode_event(analytics_error).expect("analytics error should decode payload");
+    assert_eq!(analytics_original.user_id, 123);
 }
 
 /// Test centralized error handling pattern with mixed success/failure
@@ -327,17 +307,17 @@ fn test_centralized_error_handling() {
     #[derive(Resource, Default)]
     struct CentralizedErrorTestState {
         events_sent: u32,
-        all_errors: Vec<EventBusError<TestEvent>>,
-        error_counts_by_topic: std::collections::HashMap<String, u32>,
         test_completed: bool,
     }
 
+    let errors = ErrorStore::new();
+    app.insert_resource(ErrorStoreResource(errors.clone()));
     app.insert_resource(CentralizedErrorTestState::default());
 
     // System to send events to both topics
     app.add_systems(
         Update,
-        move |mut state: ResMut<CentralizedErrorTestState>, mut writer: KafkaEventWriter| {
+        move |mut state: ResMut<CentralizedErrorTestState>, mut writer: KafkaMessageWriter, errors: Res<ErrorStoreResource>| {
             if !state.test_completed {
                 let working_config = KafkaProducerConfig::new([working_topic_clone.clone()]);
                 let failing_config = KafkaProducerConfig::new([failing_topic_clone.clone()]);
@@ -348,7 +328,7 @@ fn test_centralized_error_handling() {
                         message: format!("Working event {}", i),
                     };
                     state.events_sent += 1;
-                    writer.write(&working_config, event);
+                    writer.write(&working_config, event, Some(errors.0.callback.clone()));
                 }
 
                 // Send to failing topic
@@ -358,26 +338,10 @@ fn test_centralized_error_handling() {
                         message: format!("Failing event {}", i),
                     };
                     state.events_sent += 1;
-                    writer.write(&failing_config, event);
+                    writer.write(&failing_config, event, Some(errors.0.callback.clone()));
                 }
 
                 state.test_completed = true;
-            }
-        },
-    );
-
-    // Centralized error handling system
-    app.add_systems(
-        Update,
-        |mut errors: EventReader<EventBusError<TestEvent>>,
-         mut state: ResMut<CentralizedErrorTestState>| {
-            for error in errors.read() {
-                state.all_errors.push(error.clone());
-                let count = state
-                    .error_counts_by_topic
-                    .entry(error.topic.clone())
-                    .or_insert(0);
-                *count += 1;
             }
         },
     );
@@ -388,41 +352,27 @@ fn test_centralized_error_handling() {
     }
 
     let state = app.world().resource::<CentralizedErrorTestState>();
+    let collected = errors.collected();
 
     assert_eq!(state.events_sent, 6, "Should have sent 6 events total");
 
-    // Only failing topic should generate errors
-    assert_eq!(
-        state.all_errors.len(),
-        3,
-        "Should have 3 errors from failing topic"
-    );
-    assert_eq!(
-        state.error_counts_by_topic.len(),
-        1,
-        "Should have errors from only 1 topic"
-    );
-    assert_eq!(
-        state.error_counts_by_topic.get(&failing_topic_assert),
-        Some(&3),
-        "Should have 3 errors from failing topic"
-    );
+    let failing_errors: Vec<_> = collected
+        .iter()
+        .filter(|e| e.topic == failing_topic_assert && e.kind == BusErrorKind::DeliveryFailure)
+        .collect();
+    let working_errors: Vec<_> = collected
+        .iter()
+        .filter(|e| e.topic == working_topic && e.kind == BusErrorKind::DeliveryFailure)
+        .collect();
+
+    assert_eq!(failing_errors.len(), 3, "Should have 3 errors from failing topic");
+    assert!(working_errors.is_empty(), "Working topic should not produce errors");
 
     // All errors should be from failing topic with correct event data
-    for error in &state.all_errors {
-        assert_eq!(
-            error.topic, failing_topic_assert,
-            "All errors should be from failing topic"
-        );
-        assert!(
-            error.original_event.is_some(),
-            "All errors should contain original event"
-        );
-        let original = error.original_event.as_ref().unwrap();
-        assert!(
-            original.id >= 100,
-            "Original event should have failing topic ID range"
-        );
+    for error in &failing_errors {
+        assert_eq!(error.topic, failing_topic_assert, "All errors should be from failing topic");
+        let original: TestEvent = decode_event(error).expect("Should decode original event");
+        assert!(original.id >= 100, "Original event should have failing topic ID range");
         assert!(
             original.message.contains("Failing event"),
             "Original event should have failing message"
@@ -449,16 +399,17 @@ fn test_batch_operation_error_handling() {
     struct BatchTestState {
         batch_operations: u32,
         events_per_batch: u32,
-        total_errors: Vec<EventBusError<TestEvent>>,
         test_completed: bool,
     }
 
+    let errors = ErrorStore::new();
+    app.insert_resource(ErrorStoreResource(errors.clone()));
     app.insert_resource(BatchTestState::default());
 
     // System to send events in batches
     app.add_systems(
         Update,
-        move |mut state: ResMut<BatchTestState>, mut writer: KafkaEventWriter| {
+        move |mut state: ResMut<BatchTestState>, mut writer: KafkaMessageWriter, errors: Res<ErrorStoreResource>| {
             if !state.test_completed {
                 let events_per_batch = 5;
                 let num_batches = 3;
@@ -475,7 +426,7 @@ fn test_batch_operation_error_handling() {
                             id: batch * events_per_batch + event_in_batch,
                             message: format!("Batch {} Event {}", batch, event_in_batch),
                         };
-                        writer.write(&config, event);
+                        writer.write(&config, event, Some(errors.0.callback.clone()));
                     }
                 }
 
@@ -484,22 +435,12 @@ fn test_batch_operation_error_handling() {
         },
     );
 
-    // System to collect all errors
-    app.add_systems(
-        Update,
-        |mut errors: EventReader<EventBusError<TestEvent>>, mut state: ResMut<BatchTestState>| {
-            for error in errors.read() {
-                state.total_errors.push(error.clone());
-            }
-        },
-    );
-
     // Run for a few frames
     for _ in 0..5 {
         app.update();
     }
-
     let state = app.world().resource::<BatchTestState>();
+    let collected = errors.collected();
 
     let expected_total_events = state.batch_operations * state.events_per_batch;
 
@@ -515,28 +456,18 @@ fn test_batch_operation_error_handling() {
 
     // All events should fail since the topic is configured to fail
     assert_eq!(
-        state.total_errors.len(),
+        collected.len(),
         expected_total_events as usize,
         "Should receive error for every event sent. Expected: {}, Got: {}",
         expected_total_events,
-        state.total_errors.len()
+        collected.len()
     );
 
     // Verify each error contains the correct batch and event information
-    for (i, error) in state.total_errors.iter().enumerate() {
+    for (i, error) in collected.iter().enumerate() {
         assert_eq!(error.topic, topic, "Error {} should have correct topic", i);
-        assert!(
-            error.original_event.is_some(),
-            "Error {} should contain original event",
-            i
-        );
-
-        let original = error.original_event.as_ref().unwrap();
-        assert_eq!(
-            original.id, i as u32,
-            "Error {} should preserve event ID",
-            i
-        );
+        let original: TestEvent = decode_event(error).expect("Error should decode event");
+        assert_eq!(original.id, i as u32, "Error {} should preserve event ID", i);
         assert!(
             original.message.contains("Batch"),
             "Error {} should preserve batch message",
@@ -566,11 +497,13 @@ fn test_error_retry_mechanism() {
         initial_events_sent: u32,
         retry_attempts: u32,
         max_retries: u32,
-        errors_received: Vec<EventBusError<TestEvent>>,
+        errors_received: Vec<BusErrorContext>,
         retried_event_ids: std::collections::HashSet<u32>,
         initial_send_complete: bool,
     }
 
+    let errors = ErrorStore::new();
+    app.insert_resource(ErrorStoreResource(errors.clone()));
     app.insert_resource(RetryTestState {
         max_retries: 3,
         ..Default::default()
@@ -579,7 +512,7 @@ fn test_error_retry_mechanism() {
     // System to send initial events
     app.add_systems(
         Update,
-        move |mut state: ResMut<RetryTestState>, mut writer: KafkaEventWriter| {
+        move |mut state: ResMut<RetryTestState>, mut writer: KafkaMessageWriter, errors: Res<ErrorStoreResource>| {
             if !state.initial_send_complete {
                 // Send initial events
                 let config = KafkaProducerConfig::new([topic_clone1.clone()]);
@@ -589,7 +522,7 @@ fn test_error_retry_mechanism() {
                         message: format!("Initial event {}", i),
                     };
                     state.initial_events_sent += 1;
-                    writer.write(&config, event);
+                    writer.write(&config, event, Some(errors.0.callback.clone()));
                 }
                 state.initial_send_complete = true;
             }
@@ -599,26 +532,21 @@ fn test_error_retry_mechanism() {
     // System to handle errors and implement retry logic
     app.add_systems(
         Update,
-        move |mut errors: EventReader<EventBusError<TestEvent>>,
+        move |errors: Res<ErrorStoreResource>,
               mut state: ResMut<RetryTestState>,
-              mut writer: KafkaEventWriter| {
+              mut writer: KafkaMessageWriter| {
             let retry_config = KafkaProducerConfig::new([topic_clone2.clone()]);
-            for error in errors.read() {
+            for error in errors.0.drain() {
                 state.errors_received.push(error.clone());
 
-                // Extract original event
-                if let Some(original_event) = &error.original_event {
+                if let Some(original_event) = decode_event::<TestEvent>(&error) {
                     let event_id = original_event.id;
-
-                    // Check if we should retry (haven't exceeded max retries for this event)
                     if state.retry_attempts < state.max_retries
                         && !state.retried_event_ids.contains(&event_id)
                     {
-                        // Mark this event as retried
                         state.retried_event_ids.insert(event_id);
                         state.retry_attempts += 1;
 
-                        // Create retry event with modified message
                         let retry_event = TestEvent {
                             id: original_event.id,
                             message: format!(
@@ -627,8 +555,11 @@ fn test_error_retry_mechanism() {
                             ),
                         };
 
-                        // Retry the event (will still fail in this test since mock backend is configured to fail)
-                        writer.write(&retry_config, retry_event);
+                        writer.write(
+                            &retry_config,
+                            retry_event,
+                            Some(errors.0.callback.clone()),
+                        );
                     }
                 }
             }
@@ -666,20 +597,12 @@ fn test_error_retry_mechanism() {
     let initial_errors: Vec<_> = state
         .errors_received
         .iter()
-        .filter(|e| {
-            e.original_event
-                .as_ref()
-                .is_some_and(|ev| !ev.message.contains("retry"))
-        })
+        .filter(|e| decode_event::<TestEvent>(e).map(|ev| !ev.message.contains("retry")).unwrap_or(false))
         .collect();
     let retry_errors: Vec<_> = state
         .errors_received
         .iter()
-        .filter(|e| {
-            e.original_event
-                .as_ref()
-                .is_some_and(|ev| ev.message.contains("retry"))
-        })
+        .filter(|e| decode_event::<TestEvent>(e).map(|ev| ev.message.contains("retry")).unwrap_or(false))
         .collect();
 
     assert_eq!(initial_errors.len(), 3, "Should have 3 initial errors");
@@ -687,14 +610,7 @@ fn test_error_retry_mechanism() {
 
     // Verify retry events have correct format
     for retry_error in retry_errors {
-        assert!(
-            retry_error
-                .original_event
-                .as_ref()
-                .unwrap()
-                .message
-                .contains("retry"),
-            "Retry error should contain retry message"
-        );
+        let original: TestEvent = decode_event(retry_error).expect("retry event should decode");
+        assert!(original.message.contains("retry"), "Retry error should contain retry message");
     }
 }

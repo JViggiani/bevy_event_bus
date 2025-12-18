@@ -3,7 +3,7 @@ use bevy_event_bus::config::kafka::{
     KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
     KafkaTopicSpec,
 };
-use bevy_event_bus::{EventBusPlugins, KafkaEventReader, KafkaEventWriter};
+use bevy_event_bus::{EventBusPlugins, KafkaMessageReader, KafkaMessageWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
     run_app_updates, unique_consumer_group, unique_topic, update_two_apps_until, update_until,
@@ -59,7 +59,7 @@ fn kafka_single_direction_writer_reader_flow() {
     reader_app.insert_resource(ConsumerGroup(consumer_group.clone()));
 
     fn reader_system(
-        mut reader: KafkaEventReader<TestEvent>,
+        mut reader: KafkaMessageReader<TestEvent>,
         topic: Res<Topic>,
         group: Res<ConsumerGroup>,
         mut collected: ResMut<Collected>,
@@ -83,12 +83,12 @@ fn kafka_single_direction_writer_reader_flow() {
     };
     writer_app.insert_resource(Outgoing(event_to_send.clone(), topic.clone()));
 
-    fn writer_system(mut writer: KafkaEventWriter, data: Res<Outgoing>, mut sent: Local<bool>) {
+    fn writer_system(mut writer: KafkaMessageWriter, data: Res<Outgoing>, mut sent: Local<bool>) {
         if *sent {
             return;
         }
         let config = KafkaProducerConfig::new([data.1.clone()]);
-        writer.write(&config, data.0.clone());
+        writer.write(&config, data.0.clone(), None);
         *sent = true;
     }
     writer_app.add_systems(Update, writer_system);
@@ -163,7 +163,7 @@ fn kafka_bidirectional_apps_exchange_events() {
     }
 
     fn reader_system(
-        mut reader: KafkaEventReader<TestEvent>,
+        mut reader: KafkaMessageReader<TestEvent>,
         topic: Res<TopicName>,
         group: Res<GroupName>,
         mut received: ResMut<Received>,
@@ -174,13 +174,13 @@ fn kafka_bidirectional_apps_exchange_events() {
         }
     }
 
-    fn writer_system(mut writer: KafkaEventWriter, mut outgoing: ResMut<OutgoingEvents>) {
+    fn writer_system(mut writer: KafkaMessageWriter, mut outgoing: ResMut<OutgoingEvents>) {
         if outgoing.sent {
             return;
         }
         let config = KafkaProducerConfig::new([outgoing.topic.clone()]);
         for event in outgoing.events.clone() {
-            writer.write(&config, event);
+            writer.write(&config, event, None);
         }
         outgoing.sent = true;
     }

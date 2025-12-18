@@ -3,9 +3,9 @@ use std::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 use bevy_event_bus::config::EventBusConfig;
 use bevy_event_bus::resources::{
-    DrainedTopicMetadata, EventWrapper, ProvisionedTopology, RedisAckQueue, RedisAckRequest,
+    DrainedTopicMetadata, MessageWrapper, ProvisionedTopology, RedisAckQueue, RedisAckRequest,
 };
-use bevy_event_bus::{BusEvent, EventBusError, EventBusErrorType, readers::BusEventReader};
+use bevy_event_bus::{BusEvent, EventBusError, EventBusErrorType, readers::BusMessageReader};
 use crossbeam_channel::TrySendError;
 
 /// Errors that can occur when working with the Redis-specific reader.
@@ -48,21 +48,21 @@ impl std::fmt::Display for RedisReaderError {
 
 impl std::error::Error for RedisReaderError {}
 
-/// Redis-specific `BusEventReader` implementation that exposes manual acknowledgements.
+/// Redis-specific `BusMessageReader` implementation that exposes manual acknowledgements.
 #[derive(bevy::ecs::system::SystemParam)]
-pub struct RedisEventReader<'w, 's, T: BusEvent + Event> {
-    wrapped_events: Local<'s, Vec<EventWrapper<T>>>,
+pub struct RedisMessageReader<'w, 's, T: BusEvent + Message> {
+    wrapped_events: Local<'s, Vec<MessageWrapper<T>>>,
     metadata_drained: Option<ResMut<'w, DrainedTopicMetadata>>,
     metadata_offsets: Local<'s, HashMap<String, usize>>,
     ack_queue: Option<Res<'w, RedisAckQueue>>,
     topology: Option<Res<'w, ProvisionedTopology>>,
     invalid_config_reports: Local<'s, HashSet<String>>,
-    error_writer: EventWriter<'w, EventBusError<T>>,
+    error_writer: MessageWriter<'w, EventBusError<T>>,
 }
 
-impl<'w, 's, T: BusEvent + Event> RedisEventReader<'w, 's, T> {
+impl<'w, 's, T: BusEvent + Message> RedisMessageReader<'w, 's, T> {
     /// Read all messages for the supplied Redis configuration.
-    pub fn read<C: EventBusConfig>(&mut self, config: &C) -> Vec<EventWrapper<T>> {
+    pub fn read<C: EventBusConfig>(&mut self, config: &C) -> Vec<MessageWrapper<T>> {
         let redis_config = config
             .as_any()
             .downcast_ref::<bevy_event_bus::config::redis::RedisConsumerConfig>();
@@ -106,7 +106,7 @@ impl<'w, 's, T: BusEvent + Event> RedisEventReader<'w, 's, T> {
 
                             if message_matches_group {
                                 match serde_json::from_slice::<T>(&processed_msg.payload) {
-                                    Ok(event) => self.wrapped_events.push(EventWrapper::new(
+                                    Ok(event) => self.wrapped_events.push(MessageWrapper::new(
                                         event,
                                         processed_msg.metadata.clone(),
                                     )),
@@ -129,7 +129,7 @@ impl<'w, 's, T: BusEvent + Event> RedisEventReader<'w, 's, T> {
     }
 
     /// Acknowledge a previously read message. Only valid when manual acknowledgements are enabled.
-    pub fn acknowledge(&mut self, event: &EventWrapper<T>) -> Result<(), RedisReaderError> {
+    pub fn acknowledge(&mut self, event: &MessageWrapper<T>) -> Result<(), RedisReaderError> {
         let queue = self
             .ack_queue
             .as_ref()
@@ -156,7 +156,7 @@ impl<'w, 's, T: BusEvent + Event> RedisEventReader<'w, 's, T> {
     }
 }
 
-impl<'w, 's, T: BusEvent + Event> RedisEventReader<'w, 's, T> {
+impl<'w, 's, T: BusEvent + Message> RedisMessageReader<'w, 's, T> {
     fn validate_configuration(
         &mut self,
         config: &bevy_event_bus::config::redis::RedisConsumerConfig,
@@ -253,8 +253,8 @@ impl<'w, 's, T: BusEvent + Event> RedisEventReader<'w, 's, T> {
     }
 }
 
-impl<'w, 's, T: BusEvent + Event> BusEventReader<T> for RedisEventReader<'w, 's, T> {
-    fn read<C: EventBusConfig>(&mut self, config: &C) -> Vec<EventWrapper<T>> {
-        RedisEventReader::read(self, config)
+impl<'w, 's, T: BusEvent + Message> BusMessageReader<T> for RedisMessageReader<'w, 's, T> {
+    fn read<C: EventBusConfig>(&mut self, config: &C) -> Vec<MessageWrapper<T>> {
+        RedisMessageReader::read(self, config)
     }
 }

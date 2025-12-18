@@ -10,14 +10,14 @@ use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
-use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
+use bevy_event_bus::{EventBusPlugins, RedisMessageReader, RedisMessageWriter};
 use integration_tests::utils::helpers::{unique_consumer_group_membership, unique_topic};
 use integration_tests::utils::performance::{PerformanceMetrics, record_performance_results};
 use integration_tests::utils::redis_setup;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-#[derive(Event, Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[derive(Message, Deserialize, Serialize, Debug, Clone, PartialEq)]
 struct PerformanceTestEvent {
     id: u64,
     timestamp: u64,
@@ -226,7 +226,7 @@ fn run_throughput_test(
     }
 
     // Sending system
-    fn sender_system(mut state: ResMut<PerformanceTestState>, mut writer: RedisEventWriter) {
+    fn sender_system(mut state: ResMut<PerformanceTestState>, mut writer: RedisMessageWriter) {
         if state.measuring && state.messages_sent >= state.messages_to_send {
             if state.send_end_time.is_none() {
                 state.send_end_time = Some(Instant::now());
@@ -301,7 +301,7 @@ fn run_throughput_test(
             let event = PerformanceTestEvent::new(sequence, sequence as u32, state.payload_size);
 
             // Fire-and-forget write - no Result to handle
-            writer.write(&config, event);
+            writer.write(&config, event, None);
 
             if state.measuring {
                 state.messages_sent += 1;
@@ -313,7 +313,7 @@ fn run_throughput_test(
 
     fn receiver_system(
         mut state: ResMut<PerformanceTestState>,
-        mut reader: RedisEventReader<PerformanceTestEvent>,
+        mut reader: RedisMessageReader<PerformanceTestEvent>,
     ) {
         let config = RedisConsumerConfig::new(state.consumer_group.clone(), [state.stream.clone()]);
         let batch = reader.read(&config);

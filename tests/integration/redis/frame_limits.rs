@@ -4,7 +4,9 @@ use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
-use bevy_event_bus::{EventBusConsumerConfig, EventBusPlugins, RedisEventReader, RedisEventWriter};
+use bevy_event_bus::{
+    EventBusConsumerConfig, EventBusPlugins, RedisMessageReader, RedisMessageWriter,
+};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
     unique_consumer_group_membership, unique_topic, update_until,
@@ -64,14 +66,14 @@ fn frame_limit_spreads_drain() {
 
     writer.insert_resource(Payload(events_to_send.clone(), stream.clone()));
 
-    fn writer_system(mut writer: RedisEventWriter, payload: Res<Payload>, mut sent: Local<bool>) {
+    fn writer_system(mut writer: RedisMessageWriter, payload: Res<Payload>, mut sent: Local<bool>) {
         if *sent {
             return;
         }
         *sent = true;
         let config = RedisProducerConfig::new(payload.1.clone());
         for event in &payload.0 {
-            writer.write(&config, event.clone());
+            writer.write(&config, event.clone(), None);
         }
     }
 
@@ -99,7 +101,7 @@ fn frame_limit_spreads_drain() {
     reader.insert_resource(Group(membership.group));
 
     fn reader_system(
-        mut reader: RedisEventReader<TestEvent>,
+        mut reader: RedisMessageReader<TestEvent>,
         stream: Res<Stream>,
         group: Res<Group>,
         mut collected: ResMut<Collected>,

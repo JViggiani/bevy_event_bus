@@ -18,7 +18,7 @@ use integration_tests::utils::helpers::unique_topic;
 use integration_tests::utils::kafka_setup;
 
 // Event types for the comprehensive test
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Event)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Message)]
 struct PlayerMove {
     player_id: u32,
     x: f32,
@@ -26,7 +26,7 @@ struct PlayerMove {
     timestamp: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Event)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Message)]
 struct PlayerAttack {
     attacker_id: u32,
     target_id: u32,
@@ -35,7 +35,7 @@ struct PlayerAttack {
     timestamp: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Event)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Message)]
 struct GameStateUpdate {
     level: u32,
     score: u64,

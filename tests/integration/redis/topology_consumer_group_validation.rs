@@ -4,10 +4,10 @@ use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
-use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
+use bevy_event_bus::{EventBusPlugins, RedisMessageReader, RedisMessageWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
-    run_app_updates, unique_consumer_group_membership, unique_topic,
+    run_app_updates, unique_consumer_group_membership, unique_topic, wait_for_events,
 };
 use integration_tests::utils::redis_setup;
 
@@ -60,7 +60,7 @@ fn test_topology_setup_principle() {
     let runtime_group = consumer_group.clone();
     reader.add_systems(
         Update,
-        move |mut r: RedisEventReader<TestEvent>, mut c: ResMut<EventCollector>| {
+        move |mut r: RedisMessageReader<TestEvent>, mut c: ResMut<EventCollector>| {
             let start_read = std::time::Instant::now();
 
             // This should be cheap - consumer group already exists and is ready
@@ -83,7 +83,7 @@ fn test_topology_setup_principle() {
     let stream_for_writer = stream.clone();
     writer.add_systems(
         Update,
-        move |mut w: RedisEventWriter, mut sent: Local<bool>| {
+        move |mut w: RedisMessageWriter, mut sent: Local<bool>| {
             if !*sent {
                 let start_write = std::time::Instant::now();
 
@@ -95,6 +95,7 @@ fn test_topology_setup_principle() {
                         message: "runtime-message".to_string(),
                         value: 123,
                     },
+                    None,
                 );
 
                 let write_time = start_write.elapsed();
@@ -114,14 +115,17 @@ fn test_topology_setup_principle() {
     // Runtime operations should be fast
     println!("Performing runtime read/write operations...");
 
-    run_app_updates(&mut reader, 3);
-    run_app_updates(&mut writer, 3);
-    run_app_updates(&mut reader, 5);
+    // Prime the reader once, send a single event, then wait deterministically for receipt.
+    run_app_updates(&mut reader, 1);
+    run_app_updates(&mut writer, 1);
 
-    let collected = reader.world().resource::<EventCollector>();
+    let collected_events = wait_for_events(&mut reader, &stream, 5_000, 1, |app| {
+        let collected = app.world().resource::<EventCollector>();
+        collected.0.clone()
+    });
 
     println!("✅ Runtime operations completed successfully");
-    println!("Messages processed: {}", collected.0.len());
+    println!("Messages processed: {}", collected_events.len());
 
     // Verify the principle worked
     assert!(
@@ -129,7 +133,7 @@ fn test_topology_setup_principle() {
         "Setup should take a measurable amount of time"
     );
     assert!(
-        !collected.0.is_empty(),
+        !collected_events.is_empty(),
         "Runtime operations should work efficiently"
     );
 

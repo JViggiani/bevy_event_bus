@@ -6,7 +6,7 @@ use bevy_event_bus::config::kafka::{
     KafkaTopicSpec,
 };
 use bevy_event_bus::{
-    EventBusBackend, EventBusPlugins, KafkaEventBusBackend, KafkaEventReader, KafkaEventWriter,
+    EventBusBackend, EventBusPlugins, KafkaEventBusBackend, KafkaMessageReader, KafkaMessageWriter,
     backends::event_bus_backend::SendOptions,
 };
 use integration_tests::utils::events::TestEvent;
@@ -48,7 +48,12 @@ fn offset_configuration_earliest_receives_historical_events() {
             };
             let payload = serde_json::to_vec(&event).expect("serialize historical event");
             assert!(
-                backend_producer.try_send_serialized(&payload, &topic, SendOptions::default()),
+                backend_producer.try_send_serialized(
+                    &payload,
+                    &topic,
+                    SendOptions::default(),
+                    None,
+                ),
                 "Failed to enqueue historical event"
             );
         }
@@ -161,7 +166,7 @@ fn offset_configuration_latest_ignores_historical_events() {
         producer_app.add_plugins(EventBusPlugins(backend_producer));
 
         let topic_clone = topic.clone();
-        producer_app.add_systems(Update, move |mut w: KafkaEventWriter| {
+        producer_app.add_systems(Update, move |mut w: KafkaMessageWriter| {
             // Send 3 historical events that the latest consumer should NOT see
             let config = KafkaProducerConfig::new([topic_clone.clone()]);
             for i in 0..3 {
@@ -171,6 +176,7 @@ fn offset_configuration_latest_ignores_historical_events() {
                         message: format!("historical_{}", i),
                         value: i,
                     },
+                    None,
                 );
             }
         });
@@ -212,7 +218,7 @@ fn offset_configuration_latest_ignores_historical_events() {
     let topic_read = topic.clone();
     latest_app.add_systems(
         Update,
-        move |mut r: KafkaEventReader<TestEvent>, mut c: ResMut<CollectedLatest>| {
+        move |mut r: KafkaMessageReader<TestEvent>, mut c: ResMut<CollectedLatest>| {
             let config = KafkaConsumerConfig::new(consumer_group.clone(), [&topic_read]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());
@@ -222,7 +228,7 @@ fn offset_configuration_latest_ignores_historical_events() {
 
     // Now add a writer to the same app to send new events AFTER consumer is established
     let topic_send = topic.clone();
-    latest_app.add_systems(Update, move |mut w: KafkaEventWriter| {
+    latest_app.add_systems(Update, move |mut w: KafkaMessageWriter| {
         // Send new event after consumer is established
         let config = KafkaProducerConfig::new([topic_send.clone()]);
         w.write(
@@ -231,6 +237,7 @@ fn offset_configuration_latest_ignores_historical_events() {
                 message: "new_event".to_string(),
                 value: 999,
             },
+            None,
         );
     });
 
@@ -306,7 +313,7 @@ fn default_offset_configuration_is_latest() {
         producer_app.add_plugins(EventBusPlugins(backend_producer));
 
         let topic_clone = topic.clone();
-        producer_app.add_systems(Update, move |mut w: KafkaEventWriter| {
+        producer_app.add_systems(Update, move |mut w: KafkaMessageWriter| {
             let config = KafkaProducerConfig::new([topic_clone.clone()]);
             w.write(
                 &config,
@@ -314,6 +321,7 @@ fn default_offset_configuration_is_latest() {
                     message: "should_not_see_this".to_string(),
                     value: 42,
                 },
+                None,
             );
         });
         producer_app.update();
@@ -353,7 +361,7 @@ fn default_offset_configuration_is_latest() {
     let topic_read = topic.clone();
     app.add_systems(
         Update,
-        move |mut r: KafkaEventReader<TestEvent>, mut c: ResMut<Collected>| {
+        move |mut r: KafkaMessageReader<TestEvent>, mut c: ResMut<Collected>| {
             let config = KafkaConsumerConfig::new(consumer_group.clone(), [&topic_read]);
             for wrapper in r.read(&config) {
                 c.0.push(wrapper.event().clone());

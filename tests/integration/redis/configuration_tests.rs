@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec, TrimStrategy,
 };
-use bevy_event_bus::{EventBusConfig, EventBusPlugins, RedisEventReader, RedisEventWriter};
+use bevy_event_bus::{EventBusConfig, EventBusPlugins, RedisMessageReader, RedisMessageWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
     run_app_updates, unique_consumer_group_membership, unique_topic, update_until,
@@ -53,7 +53,7 @@ fn configuration_with_readers_writers_works() {
         let stream_clone = stream.clone();
         let consumer_group_clone = consumer_group.clone();
         let consumer_system =
-            move |mut reader: RedisEventReader<TestEvent>, mut collected: ResMut<Collected>| {
+            move |mut reader: RedisMessageReader<TestEvent>, mut collected: ResMut<Collected>| {
                 let config =
                     RedisConsumerConfig::new(consumer_group_clone.clone(), [stream_clone.clone()]);
                 let events = reader.read(&config);
@@ -78,9 +78,9 @@ fn configuration_with_readers_writers_works() {
             value: 42,
         };
 
-        let producer_system = move |mut writer: RedisEventWriter| {
+        let producer_system = move |mut writer: RedisMessageWriter| {
             let config = RedisProducerConfig::new(stream_clone.clone());
-            writer.write(&config, event_payload.clone());
+            writer.write(&config, event_payload.clone(), None);
         };
 
         app.add_systems(Update, producer_system);
@@ -156,7 +156,7 @@ fn redis_specific_methods_work() {
     });
 
     // Writer system that uses Redis-specific write methods
-    fn test_redis_write_methods(mut writer: RedisEventWriter, configs: Res<TestConfigs>) {
+    fn test_redis_write_methods(mut writer: RedisMessageWriter, configs: Res<TestConfigs>) {
         let stream = configs.producer.stream().to_string();
 
         let trimmed_config = configs.producer.clone().maxlen(500);
@@ -166,6 +166,7 @@ fn redis_specific_methods_work() {
                 message: "redis_trimmed".to_string(),
                 value: 999,
             },
+            None,
         );
 
         let exact_trim_config = configs
@@ -178,6 +179,7 @@ fn redis_specific_methods_work() {
                 message: "redis_exact".to_string(),
                 value: 1000,
             },
+            None,
         );
 
         writer
@@ -187,7 +189,10 @@ fn redis_specific_methods_work() {
     }
 
     // Reader system that uses Redis-specific read methods
-    fn test_redis_read_methods(mut reader: RedisEventReader<TestEvent>, configs: Res<TestConfigs>) {
+    fn test_redis_read_methods(
+        mut reader: RedisMessageReader<TestEvent>,
+        configs: Res<TestConfigs>,
+    ) {
         let reader_config = configs
             .consumer
             .clone()

@@ -16,13 +16,15 @@ use crate::config::TopologyMode;
 use bevy::prelude::*;
 use bevy_event_bus::{
     backends::event_bus_backend::{
-        BackendConfigError, BackendPluginSetup, EventBusBackend, ManualCommitDescriptor,
-        ManualCommitHandle, ManualCommitStyle, ReceiveOptions, SendOptions, StreamTrimStrategy,
+        BackendConfigError, BackendPluginSetup, DeliveryFailure, DeliveryFailureCallback,
+        EventBusBackend, ManualCommitDescriptor, ManualCommitHandle, ManualCommitStyle,
+        ReceiveOptions, SendOptions, StreamTrimStrategy,
     },
     config::redis::{
         RedisBackendConfig, RedisConnectionConfig, RedisConsumerGroupSpec, RedisRuntimeTuning,
         RedisTopologyConfig, TrimStrategy,
     },
+    errors::BusErrorKind,
     resources::{
         ConsumerMetrics, IncomingMessage, RedisAckQueue, RedisAckRequest,
         backend_metadata::RedisMetadata,
@@ -104,12 +106,22 @@ struct RedisTrimRequest {
     strategy: TrimStrategy,
 }
 
+struct RedisWriteRequest {
+    stream: String,
+    payload: Vec<u8>,
+    stream_trim: Option<StreamWriteConfig>,
+    partition_key: Option<String>,
+    failure_handler: Arc<DeliveryFailureCallback>,
+}
+
 /// Shared runtime state for the Redis backend so cloned backends operate over the same queues and tasks.
 struct RedisBackendState {
     config: RedisBackendConfig,
     runtime: RedisRuntimeTuning,
     client: redis::Client,
     writer: Mutex<Option<Arc<tokio::sync::Mutex<ConnectionManager>>>>,
+    write_tx: Sender<RedisWriteRequest>,
+    write_rx: Mutex<Option<Receiver<RedisWriteRequest>>>,
     incoming_tx: Sender<IncomingMessage>,
     incoming_rx: Mutex<Option<Receiver<IncomingMessage>>>,
     pending_messages: Mutex<VecDeque<IncomingMessage>>,
@@ -127,6 +139,14 @@ struct RedisBackendState {
 impl RedisBackendState {
     fn take_receiver(&self) -> Option<Receiver<IncomingMessage>> {
         self.incoming_rx.lock().unwrap().take()
+    }
+
+    fn write_sender(&self) -> Sender<RedisWriteRequest> {
+        self.write_tx.clone()
+    }
+
+    fn take_write_receiver(&self) -> Option<Receiver<RedisWriteRequest>> {
+        self.write_rx.lock().unwrap().take()
     }
 
     fn ack_sender(&self) -> Option<Sender<RedisAckRequest>> {
@@ -450,6 +470,7 @@ impl RedisEventBusBackend {
         let runtime = config.runtime.clone();
 
         let (incoming_tx, incoming_rx) = bounded(runtime.message_channel_capacity);
+        let (write_tx, write_rx) = bounded(runtime.message_channel_capacity);
         let (ack_tx, ack_rx) = if manual_ack {
             let (tx, rx) = bounded(runtime.ack_channel_capacity);
             (Some(tx), Some(rx))
@@ -463,6 +484,8 @@ impl RedisEventBusBackend {
             runtime,
             client,
             writer: Mutex::new(None),
+            write_tx,
+            write_rx: Mutex::new(Some(write_rx)),
             incoming_tx,
             incoming_rx: Mutex::new(Some(incoming_rx)),
             pending_messages: Mutex::new(VecDeque::new()),
@@ -483,10 +506,98 @@ impl RedisEventBusBackend {
     }
 
     fn spawn_runtime_tasks(&self) {
+        self.spawn_writer_worker();
         self.spawn_group_readers();
         self.spawn_plain_stream_readers();
         self.spawn_ack_worker();
         self.spawn_trim_worker();
+    }
+
+    fn spawn_writer_worker(&self) {
+        let Some(receiver) = self.state.take_write_receiver() else {
+            return;
+        };
+
+        let Some(manager) = self.state.writer() else {
+            warn!("Redis writer connection not available; writer worker not started");
+            return;
+        };
+
+        let running = self.state.running.clone();
+
+        let handle = runtime::runtime().spawn(async move {
+            while running.load(Ordering::SeqCst) {
+                let mut drained = Vec::new();
+                let mut saw_disconnect = false;
+
+                match receiver.recv_timeout(Duration::from_millis(50)) {
+                    Ok(request) => drained.push(request),
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                        saw_disconnect = true;
+                    }
+                }
+
+                loop {
+                    match receiver.try_recv() {
+                        Ok(req) => drained.push(req),
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => {
+                            saw_disconnect = true;
+                            break;
+                        }
+                    }
+                }
+
+                if drained.is_empty() {
+                    if saw_disconnect {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                    continue;
+                }
+
+                for request in drained {
+                    tracing::trace!(backend = "redis", stream = %request.stream, "Sending Redis write request");
+                    let mut guard = manager.lock().await;
+                    let mut cmd = redis::cmd("XADD");
+                    cmd.arg(&request.stream);
+
+                    if let Some(cfg) = request.stream_trim.clone() {
+                        if let Some(maxlen) = cfg.maxlen {
+                            cmd.arg("MAXLEN");
+                            if cfg.trim_strategy == TrimStrategy::Approximate {
+                                cmd.arg("~");
+                            }
+                            cmd.arg(maxlen);
+                        }
+                    }
+
+                    cmd.arg("*");
+                    cmd.arg("payload").arg(&request.payload);
+                    if let Some(key) = request.partition_key.as_deref() {
+                        cmd.arg("event_key").arg(key);
+                    }
+
+                    if let Err(err) = cmd.query_async::<_, RedisValue>(&mut *guard).await {
+                        warn!(stream = %request.stream, error = %err, "Failed to enqueue Redis message");
+                        request.failure_handler.call(DeliveryFailure {
+                            backend: "redis",
+                            kind: BusErrorKind::DeliveryFailure,
+                            topic: request.stream.clone(),
+                            error: err.to_string(),
+                            metadata: None,
+                        });
+                    }
+                }
+
+                if saw_disconnect {
+                    break;
+                }
+            }
+        });
+
+        self.state.push_handle(handle);
     }
 
     fn spawn_group_readers(&self) {
@@ -945,14 +1056,14 @@ impl RedisEventBusBackend {
     }
 
     fn drain_matching_messages(&self, stream: &str, group: Option<&str>) -> Vec<Vec<u8>> {
-        let mut matches = Vec::new();
+        let mut matches: Vec<IncomingMessage> = Vec::new();
         let mut deferred = VecDeque::new();
 
         {
             let mut pending = self.state.pending_messages.lock().unwrap();
             while let Some(msg) = pending.pop_front() {
                 if Self::message_matches(&msg, stream, group) {
-                    matches.push(msg.payload.clone());
+                    matches.push(msg);
                 } else {
                     deferred.push_back(msg);
                 }
@@ -969,7 +1080,7 @@ impl RedisEventBusBackend {
                 match receiver.try_recv() {
                     Ok(msg) => {
                         if Self::message_matches(&msg, stream, group) {
-                            matches.push(msg.payload.clone());
+                            matches.push(msg);
                         } else {
                             deferred.push_back(msg);
                         }
@@ -990,7 +1101,12 @@ impl RedisEventBusBackend {
             }
         }
 
+        matches.sort_by(|a, b| Self::redis_entry_position(a).cmp(&Self::redis_entry_position(b)));
+
         matches
+            .into_iter()
+            .map(|msg| msg.payload)
+            .collect()
     }
 
     fn message_matches(message: &IncomingMessage, stream: &str, group: Option<&str>) -> bool {
@@ -1008,6 +1124,18 @@ impl RedisEventBusBackend {
                 .unwrap_or(false),
             None => true,
         }
+    }
+
+    fn redis_entry_position(message: &IncomingMessage) -> Option<(u64, u64)> {
+        let meta = message
+            .backend_metadata
+            .as_ref()
+            .and_then(|meta| meta.as_any().downcast_ref::<RedisMetadata>())?;
+
+        let mut parts = meta.entry_id.splitn(2, '-');
+        let timestamp = parts.next()?.parse().ok()?;
+        let sequence = parts.next()?.parse().ok()?;
+        Some((timestamp, sequence))
     }
 
     fn stream_write_cfg(&self, stream: &str) -> Option<StreamWriteConfig> {
@@ -1153,15 +1281,43 @@ impl EventBusBackend for RedisEventBusBackend {
         event_json: &[u8],
         stream: &str,
         options: SendOptions<'_>,
+        failure_handler: Option<Arc<DeliveryFailureCallback>>,
     ) -> bool {
-        let manager = match self.state.writer() {
-            Some(manager) => manager,
-            None => return false,
-        };
+        let handler = failure_handler
+            .unwrap_or_else(|| Arc::new(DeliveryFailureCallback::new(|_failure| {})));
+
+        if !self
+            .state
+            .config
+            .topology
+            .streams()
+            .iter()
+            .any(|spec| spec.name == stream)
+        {
+            handler.call(DeliveryFailure {
+                backend: "redis",
+                kind: BusErrorKind::InvalidWriteConfig,
+                topic: stream.to_string(),
+                error: "Stream is not provisioned in Redis topology".to_string(),
+                metadata: None,
+            });
+            return false;
+        }
+
+        if self.state.writer().is_none() {
+            handler.call(DeliveryFailure {
+                backend: "redis",
+                kind: BusErrorKind::NotConfigured,
+                topic: stream.to_string(),
+                error: "Redis writer connection not available".to_string(),
+                metadata: None,
+            });
+            return false;
+        }
 
         let payload = event_json.to_vec();
         let stream_name = stream.to_string();
-        let key = options.partition_key.map(|k| k.to_string());
+        let partition_key = options.partition_key.map(|k| k.to_string());
         let override_cfg = options
             .stream_trim
             .map(|(maxlen, strategy)| StreamWriteConfig {
@@ -1171,33 +1327,56 @@ impl EventBusBackend for RedisEventBusBackend {
                     StreamTrimStrategy::Approximate => TrimStrategy::Approximate,
                 },
             });
-        let write_cfg = override_cfg.or_else(|| self.stream_write_cfg(stream));
+        let stream_trim = override_cfg.or_else(|| self.stream_write_cfg(stream));
 
-        runtime::runtime().spawn(async move {
-            let mut guard = manager.lock().await;
-            let mut cmd = redis::cmd("XADD");
-            cmd.arg(&stream_name);
-            if let Some(cfg) = write_cfg {
-                if let Some(maxlen) = cfg.maxlen {
-                    cmd.arg("MAXLEN");
-                    if cfg.trim_strategy == TrimStrategy::Approximate {
-                        cmd.arg("~");
-                    }
-                    cmd.arg(maxlen);
+        let request = RedisWriteRequest {
+            stream: stream_name.clone(),
+            payload,
+            stream_trim,
+            partition_key,
+            failure_handler: handler.clone(),
+        };
+
+        let sender = self.state.write_sender();
+        match sender.try_send(request) {
+            Ok(_) => {
+                tracing::trace!(backend = "redis", stream = %stream_name, "Enqueued Redis write request");
+                true
+            }
+            Err(TrySendError::Full(request)) => match sender.send_timeout(request, Duration::from_millis(50)) {
+                Ok(()) => true,
+                Err(SendTimeoutError::Timeout(request)) => {
+                    request.failure_handler.call(DeliveryFailure {
+                        backend: "redis",
+                        kind: BusErrorKind::DeliveryFailure,
+                        topic: request.stream.clone(),
+                        error: "Redis writer queue is full; try again later".to_string(),
+                        metadata: None,
+                    });
+                    false
                 }
+                Err(SendTimeoutError::Disconnected(_)) => {
+                    handler.call(DeliveryFailure {
+                        backend: "redis",
+                        kind: BusErrorKind::NotConfigured,
+                        topic: stream_name.clone(),
+                        error: "Redis writer queue unavailable".to_string(),
+                        metadata: None,
+                    });
+                    false
+                }
+            },
+            Err(TrySendError::Disconnected(_)) => {
+                handler.call(DeliveryFailure {
+                    backend: "redis",
+                    kind: BusErrorKind::NotConfigured,
+                    topic: stream_name,
+                    error: "Redis writer queue unavailable".to_string(),
+                    metadata: None,
+                });
+                false
             }
-            cmd.arg("*");
-            cmd.arg("payload").arg(&payload);
-            if let Some(k) = key.as_deref() {
-                cmd.arg("event_key").arg(k);
-            }
-
-            if let Err(err) = cmd.query_async::<_, RedisValue>(&mut *guard).await {
-                warn!(stream = %stream_name, error = %err, "Failed to enqueue Redis message");
-            }
-        });
-
-        true
+        }
     }
 
     async fn receive_serialized(&self, stream: &str, options: ReceiveOptions<'_>) -> Vec<Vec<u8>> {

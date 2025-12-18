@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
-use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
+use bevy_event_bus::{EventBusPlugins, RedisMessageReader, RedisMessageWriter};
 use integration_tests::utils::helpers::{
     unique_consumer_group_membership, unique_topic, update_until,
 };
@@ -62,7 +62,7 @@ fn single_topic_multiple_types_same_frame() {
     let group_for_tests = consumer_group.clone();
     reader.add_systems(
         Update,
-        move |mut reader: RedisEventReader<TestEvent>, mut collected: ResMut<CollectedTests>| {
+        move |mut reader: RedisMessageReader<TestEvent>, mut collected: ResMut<CollectedTests>| {
             let config =
                 RedisConsumerConfig::new(group_for_tests.clone(), [stream_for_tests.clone()]);
             for wrapper in reader.read(&config) {
@@ -75,7 +75,7 @@ fn single_topic_multiple_types_same_frame() {
     let group_for_logins = consumer_group.clone();
     reader.add_systems(
         Update,
-        move |mut reader: RedisEventReader<UserLoginEvent>,
+        move |mut reader: RedisMessageReader<UserLoginEvent>,
               mut collected: ResMut<CollectedLogins>| {
             let config =
                 RedisConsumerConfig::new(group_for_logins.clone(), [stream_for_logins.clone()]);
@@ -88,7 +88,7 @@ fn single_topic_multiple_types_same_frame() {
     let stream_for_writer = stream.clone();
     writer.add_systems(
         Update,
-        move |mut writer: RedisEventWriter, mut started: Local<bool>| {
+        move |mut writer: RedisMessageWriter, mut started: Local<bool>| {
             if !*started {
                 *started = true;
                 return;
@@ -101,6 +101,7 @@ fn single_topic_multiple_types_same_frame() {
                     message: "hello".to_string(),
                     value: 42,
                 },
+                None,
             );
             writer.write(
                 &config,
@@ -108,6 +109,7 @@ fn single_topic_multiple_types_same_frame() {
                     user_id: "u1".to_string(),
                     timestamp: 1,
                 },
+                None,
             );
         },
     );
@@ -190,7 +192,7 @@ fn single_topic_multiple_types_interleaved_frames() {
     let group_for_tests = consumer_group.clone();
     reader.add_systems(
         Update,
-        move |mut reader: RedisEventReader<TestEvent>, mut collected: ResMut<CollectedTests>| {
+        move |mut reader: RedisMessageReader<TestEvent>, mut collected: ResMut<CollectedTests>| {
             let config =
                 RedisConsumerConfig::new(group_for_tests.clone(), [stream_for_tests.clone()]);
             for wrapper in reader.read(&config) {
@@ -203,7 +205,7 @@ fn single_topic_multiple_types_interleaved_frames() {
     let group_for_logins = consumer_group.clone();
     reader.add_systems(
         Update,
-        move |mut reader: RedisEventReader<UserLoginEvent>,
+        move |mut reader: RedisMessageReader<UserLoginEvent>,
               mut collected: ResMut<CollectedLogins>| {
             let config =
                 RedisConsumerConfig::new(group_for_logins.clone(), [stream_for_logins.clone()]);
@@ -216,7 +218,7 @@ fn single_topic_multiple_types_interleaved_frames() {
     let stream_for_writer = stream.clone();
     writer.add_systems(
         Update,
-        move |mut writer: RedisEventWriter, mut counter: Local<u32>| {
+        move |mut writer: RedisMessageWriter, mut counter: Local<u32>| {
             let config = RedisProducerConfig::new(stream_for_writer.clone());
             match *counter % 2 {
                 0 => {
@@ -226,6 +228,7 @@ fn single_topic_multiple_types_interleaved_frames() {
                             message: format!("m{}", *counter),
                             value: *counter as i32,
                         },
+                        None,
                     );
                 }
                 _ => {
@@ -235,6 +238,7 @@ fn single_topic_multiple_types_interleaved_frames() {
                             user_id: format!("u{}", *counter),
                             timestamp: *counter as u64,
                         },
+                        None,
                     );
                 }
             }

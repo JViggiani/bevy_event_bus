@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
-use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
+use bevy_event_bus::{EventBusPlugins, RedisMessageReader, RedisMessageWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
     unique_consumer_group, unique_consumer_group_member, unique_topic, update_until,
@@ -59,10 +59,10 @@ fn no_event_duplication_exactly_once_delivery() {
 
     writer.insert_resource(ToSend(expected_events.clone(), stream.clone()));
 
-    fn writer_system(mut writer: RedisEventWriter, data: Res<ToSend>) {
+    fn writer_system(mut writer: RedisMessageWriter, data: Res<ToSend>) {
         let config = RedisProducerConfig::new(data.1.clone());
         for event in &data.0 {
-            writer.write(&config, event.clone());
+            writer.write(&config, event.clone(), None);
         }
     }
 
@@ -83,7 +83,7 @@ fn no_event_duplication_exactly_once_delivery() {
     reader.insert_resource(Group(consumer_group));
 
     fn reader_system(
-        mut reader: RedisEventReader<TestEvent>,
+        mut reader: RedisMessageReader<TestEvent>,
         stream: Res<Stream>,
         group: Res<Group>,
         mut collected: ResMut<Collected>,

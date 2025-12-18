@@ -5,6 +5,7 @@ pub mod complex_topology;
 pub mod configuration_tests;
 pub mod consumer_group_semantics;
 pub mod consumer_lag_tests;
+pub mod delivery_failure;
 pub mod dual_writer_bridge;
 pub mod exactly_once_delivery;
 pub mod frame_limits;

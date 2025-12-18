@@ -8,7 +8,7 @@ use bevy_event_bus::config::kafka::{
     KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
     KafkaTopicSpec,
 };
-use bevy_event_bus::{EventBusPlugins, KafkaEventReader, KafkaEventWriter};
+use bevy_event_bus::{EventBusPlugins, KafkaMessageReader, KafkaMessageWriter};
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{
     run_app_updates, unique_consumer_group, unique_topic, update_two_apps_until,
@@ -142,7 +142,7 @@ fn complex_topology_routing() {
     let writer_messages = message_catalog.clone();
     writer_app.add_systems(
         Update,
-        move |mut writer: KafkaEventWriter, mut state: Local<WriterDispatchState>| {
+        move |mut writer: KafkaMessageWriter, mut state: Local<WriterDispatchState>| {
             if state.dispatched {
                 return;
             }
@@ -154,7 +154,7 @@ fn complex_topology_routing() {
 
             for (topic, event) in &writer_messages {
                 let config = KafkaProducerConfig::new([topic.clone()]);
-                writer.write(&config, event.clone());
+                writer.write(&config, event.clone(), None);
             }
 
             state.dispatched = true;
@@ -188,7 +188,7 @@ fn complex_topology_routing() {
     reader_app.add_systems(Update, {
         let group_topics = group_topics.clone();
         let expected_groups = expected_groups.clone();
-        move |mut reader: KafkaEventReader<TestEvent>, mut collected: ResMut<Collected>| {
+        move |mut reader: KafkaMessageReader<TestEvent>, mut collected: ResMut<Collected>| {
             for (group, topics) in &group_topics {
                 let config = KafkaConsumerConfig::new(group.clone(), topics.clone())
                     .auto_offset_reset("earliest");

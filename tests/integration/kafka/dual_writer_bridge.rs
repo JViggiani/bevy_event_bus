@@ -3,7 +3,7 @@ use bevy_event_bus::config::kafka::{
     KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
     KafkaTopicSpec,
 };
-use bevy_event_bus::{EventBusPlugins, EventWrapper, KafkaEventReader, KafkaEventWriter};
+use bevy_event_bus::{EventBusPlugins, KafkaMessageReader, KafkaMessageWriter, MessageWrapper};
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{
     run_app_updates, unique_consumer_group, unique_topic, wait_for_events,
@@ -19,8 +19,8 @@ struct WriterState {
 }
 
 fn dual_writer_emitter(
-    mut standard_writer: EventWriter<TestEvent>,
-    mut bus_writer: KafkaEventWriter,
+    mut standard_messages: ResMut<Messages<TestEvent>>,
+    mut bus_writer: KafkaMessageWriter,
     mut state: ResMut<WriterState>,
 ) {
     if state.dispatched {
@@ -33,14 +33,14 @@ fn dual_writer_emitter(
         message: "standard-writer".to_string(),
         value: 1,
     };
-    standard_writer.write(bridge_event.clone());
+    standard_messages.write(bridge_event.clone());
 
     let bus_event = TestEvent {
         message: "event-bus-writer".to_string(),
         value: 2,
     };
     let config = KafkaProducerConfig::new([state.topic.clone()]);
-    bus_writer.write(&config, bus_event);
+    bus_writer.write(&config, bus_event, None);
 
     info!(topic = %state.topic, "Dispatched events via both writers");
 }
@@ -52,10 +52,10 @@ struct ReaderState {
 }
 
 #[derive(Resource, Default)]
-struct CapturedEvents(Vec<EventWrapper<TestEvent>>);
+struct CapturedEvents(Vec<MessageWrapper<TestEvent>>);
 
 fn capture_wrapped_events(
-    mut reader: KafkaEventReader<TestEvent>,
+    mut reader: KafkaMessageReader<TestEvent>,
     state: Res<ReaderState>,
     mut captured: ResMut<CapturedEvents>,
 ) {

@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
-use bevy_event_bus::{EventBusPlugins, RedisEventReader, RedisEventWriter};
+use bevy_event_bus::{EventBusPlugins, RedisMessageReader, RedisMessageWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
     unique_consumer_group, unique_consumer_group_member, unique_consumer_group_membership,
@@ -57,7 +57,7 @@ fn per_stream_order_preserved() {
     let group_for_reader = consumer_group.clone();
     reader.add_systems(
         Update,
-        move |mut reader: RedisEventReader<TestEvent>, mut collected: ResMut<Collected>| {
+        move |mut reader: RedisMessageReader<TestEvent>, mut collected: ResMut<Collected>| {
             let config =
                 RedisConsumerConfig::new(group_for_reader.clone(), [stream_for_reader.clone()]);
             for wrapper in reader.read(&config) {
@@ -69,7 +69,7 @@ fn per_stream_order_preserved() {
     let stream_for_writer = stream.clone();
     writer.add_systems(
         Update,
-        move |mut writer: RedisEventWriter, mut started: Local<bool>, mut counter: Local<u32>| {
+        move |mut writer: RedisMessageWriter, mut started: Local<bool>, mut counter: Local<u32>| {
             if !*started {
                 *started = true;
                 return;
@@ -86,6 +86,7 @@ fn per_stream_order_preserved() {
                     message: format!("msg-{}", *counter),
                     value: *counter as i32,
                 },
+                None,
             );
             *counter += 1;
         },
@@ -164,7 +165,7 @@ fn cross_stream_interleave_each_ordered() {
     let group_for_reader = consumer_group.clone();
     reader.add_systems(
         Update,
-        move |mut reader: RedisEventReader<TestEvent>, mut collected: ResMut<Collected>| {
+        move |mut reader: RedisMessageReader<TestEvent>, mut collected: ResMut<Collected>| {
             let config1 =
                 RedisConsumerConfig::new(group_for_reader.clone(), [stream1_for_reader.clone()]);
             for wrapper in reader.read(&config1) {
@@ -183,7 +184,7 @@ fn cross_stream_interleave_each_ordered() {
     let stream2_for_writer = stream2.clone();
     writer.add_systems(
         Update,
-        move |mut writer: RedisEventWriter, mut started: Local<bool>, mut counter: Local<u32>| {
+        move |mut writer: RedisMessageWriter, mut started: Local<bool>, mut counter: Local<u32>| {
             if !*started {
                 *started = true;
                 return;
@@ -202,6 +203,7 @@ fn cross_stream_interleave_each_ordered() {
                     message: format!("s1-{}", *counter),
                     value: *counter as i32,
                 },
+                None,
             );
             writer.write(
                 &config2,
@@ -209,6 +211,7 @@ fn cross_stream_interleave_each_ordered() {
                     message: format!("s2-{}", *counter),
                     value: *counter as i32,
                 },
+                None,
             );
             *counter += 1;
         },

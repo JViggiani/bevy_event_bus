@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bevy_event_bus::BusEvent;
-use bevy_event_bus::resources::EventMetadata;
+use bevy_event_bus::resources::MessageMetadata;
 use serde::{Deserialize, Serialize};
 
 /// Types of errors that can occur in the event bus
@@ -23,7 +23,7 @@ pub enum EventBusErrorType {
 ///
 /// This replaces both the old Result-based error handling and EventBusDeliveryFailure.
 /// All errors, whether immediate (serialization) or async (delivery), are sent as events.
-#[derive(Event, Debug, Clone)]
+#[derive(Message, Debug, Clone)]
 pub struct EventBusError<T: BusEvent> {
     /// The topic the event was being sent to
     pub topic: String,
@@ -38,7 +38,7 @@ pub struct EventBusError<T: BusEvent> {
     /// The backend that failed (e.g., "kafka")
     pub backend: Option<String>,
     /// Optional metadata for the event (contains backend-specific details like partition/offset)
-    pub metadata: Option<EventMetadata>,
+    pub metadata: Option<MessageMetadata>,
 }
 
 impl<T: BusEvent> EventBusError<T> {
@@ -65,7 +65,7 @@ impl<T: BusEvent> EventBusError<T> {
         topic: String,
         error_message: String,
         backend: Option<String>,
-        metadata: Option<EventMetadata>,
+        metadata: Option<MessageMetadata>,
     ) -> Self {
         Self {
             topic,
@@ -83,7 +83,7 @@ impl<T: BusEvent> EventBusError<T> {
 ///
 /// This is a non-generic error event for cases where we cannot create EventBusError<T>
 /// because the deserialization failed and we don't have a T instance.
-#[derive(Event, Debug, Clone)]
+#[derive(Message, Debug, Clone)]
 pub struct EventBusDecodeError {
     /// The topic the message was received from
     pub topic: String,
@@ -96,7 +96,7 @@ pub struct EventBusDecodeError {
     /// The decoder name that failed
     pub decoder_name: String,
     /// Optional metadata for the message (contains backend-specific details like partition/offset)
-    pub metadata: Option<EventMetadata>,
+    pub metadata: Option<MessageMetadata>,
 }
 
 impl EventBusDecodeError {
@@ -106,7 +106,7 @@ impl EventBusDecodeError {
         error_message: String,
         raw_payload: Vec<u8>,
         decoder_name: String,
-        metadata: Option<EventMetadata>,
+        metadata: Option<MessageMetadata>,
     ) -> Self {
         Self {
             topic,

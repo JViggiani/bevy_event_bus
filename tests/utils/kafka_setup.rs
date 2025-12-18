@@ -156,6 +156,18 @@ fn ensure_container() -> Option<String> {
             state.id = Some(id);
             state.bootstrap = Some("localhost:9092".into());
             state.launched = true; // treat as launched for lifetime mgmt (won't remove if not --rm?)
+            let _ = Command::new("docker")
+                .args([
+                    "exec",
+                    state.id.as_ref().map(String::as_str).unwrap_or(CONTAINER_NAME),
+                    "rpk",
+                    "cluster",
+                    "config",
+                    "set",
+                    "auto_create_topics_enabled",
+                    "false",
+                ])
+                .status();
             return state.bootstrap.clone();
         }
     }
@@ -197,6 +209,8 @@ fn ensure_container() -> Option<String> {
                 "PLAINTEXT://0.0.0.0:9092",
                 "--advertise-kafka-addr",
                 "PLAINTEXT://localhost:9092",
+                "--set",
+                "redpanda.auto_create_topics_enabled=false",
             ])
             .output()
             .ok()
@@ -215,6 +229,18 @@ fn ensure_container() -> Option<String> {
             state.bootstrap = Some("localhost:9092".into());
             state.launched = true;
             state.image = Some(DEFAULT_IMAGE.to_string());
+            let _ = Command::new("docker")
+                .args([
+                    "exec",
+                    state.id.as_ref().map(String::as_str).unwrap_or(CONTAINER_NAME),
+                    "rpk",
+                    "cluster",
+                    "config",
+                    "set",
+                    "auto_create_topics_enabled",
+                    "false",
+                ])
+                .status();
             return state.bootstrap.clone();
         }
     }
@@ -331,6 +357,7 @@ where
     } = options;
 
     let container_bootstrap = ensure_container();
+    let container_from_docker = container_bootstrap.is_some();
     let bootstrap = container_bootstrap.unwrap_or_else(|| {
         std::env::var("KAFKA_BOOTSTRAP_SERVERS").unwrap_or_else(|_| "localhost:9092".into())
     });
@@ -342,6 +369,23 @@ where
             "Kafka not TCP ready at {}. Ensure docker is running or set KAFKA_BOOTSTRAP_SERVERS.",
             bootstrap
         );
+    }
+
+    if container_from_docker {
+        if let Some(id) = CONTAINER_STATE.lock().unwrap().id.clone() {
+            let _ = Command::new("docker")
+                .args([
+                    "exec",
+                    id.as_str(),
+                    "rpk",
+                    "cluster",
+                    "config",
+                    "set",
+                    "auto_create_topics_enabled",
+                    "false",
+                ])
+                .status();
+        }
     }
 
     // Require metadata readiness once per test process; subsequent setup calls skip wait.

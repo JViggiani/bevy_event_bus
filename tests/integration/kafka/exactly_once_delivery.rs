@@ -3,7 +3,7 @@ use bevy_event_bus::config::kafka::{
     KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
     KafkaTopicSpec,
 };
-use bevy_event_bus::{EventBusPlugins, KafkaEventReader, KafkaEventWriter};
+use bevy_event_bus::{EventBusPlugins, KafkaMessageReader, KafkaMessageWriter};
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{unique_consumer_group, unique_topic, update_until};
 use integration_tests::utils::kafka_setup;
@@ -70,10 +70,10 @@ fn no_event_duplication_exactly_once_delivery() {
 
     writer.insert_resource(ToSend(expected_events.clone(), topic.clone()));
 
-    fn writer_system(mut w: KafkaEventWriter, data: Res<ToSend>) {
+    fn writer_system(mut w: KafkaMessageWriter, data: Res<ToSend>) {
         let config = KafkaProducerConfig::new([data.1.clone()]);
         for event in &data.0 {
-            w.write(&config, event.clone());
+            w.write(&config, event.clone(), None);
         }
     }
     writer.add_systems(Update, writer_system);
@@ -94,7 +94,7 @@ fn no_event_duplication_exactly_once_delivery() {
     reader.insert_resource(ConsumerGroup(consumer_group));
 
     fn reader_system(
-        mut r: KafkaEventReader<TestEvent>,
+        mut r: KafkaMessageReader<TestEvent>,
         topic: Res<Topic>,
         group: Res<ConsumerGroup>,
         mut collected: ResMut<Collected>,

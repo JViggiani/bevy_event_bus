@@ -5,14 +5,16 @@ use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
 use bevy_event_bus::{
-    EventBusErrorQueue, EventBusPlugins, RedisAckWorkerStats, RedisEventReader, RedisEventWriter,
+    EventBusPlugins, RedisAckWorkerStats, RedisMessageReader, RedisMessageWriter,
 };
+use bevy_event_bus::{BusErrorCallback, BusErrorContext};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
     ConsumerGroupMembership, run_app_updates, unique_consumer_group_membership, unique_topic,
     update_until,
 };
 use integration_tests::utils::redis_setup;
+use std::sync::{Arc, Mutex};
 
 #[derive(Resource, Clone)]
 struct Topic(String);
@@ -40,17 +42,28 @@ struct WriterBatchPayload {
     dispatched: usize,
 }
 
-fn redis_writer_emit_once(mut writer: RedisEventWriter, mut payload: ResMut<WriterPayload>) {
+#[derive(Resource, Clone)]
+struct WriterErrorCallback(pub BusErrorCallback);
+
+fn redis_writer_emit_once(
+    mut writer: RedisMessageWriter,
+    mut payload: ResMut<WriterPayload>,
+    callback: Res<WriterErrorCallback>,
+) {
     if payload.dispatched {
         return;
     }
 
     let config = RedisProducerConfig::new(payload.topic.clone());
-    writer.write(&config, payload.event.clone());
+    writer.write(&config, payload.event.clone(), Some(callback.0.clone()));
     payload.dispatched = true;
 }
 
-fn redis_writer_emit_batch(mut writer: RedisEventWriter, mut payload: ResMut<WriterBatchPayload>) {
+fn redis_writer_emit_batch(
+    mut writer: RedisMessageWriter,
+    mut payload: ResMut<WriterBatchPayload>,
+    callback: Res<WriterErrorCallback>,
+) {
     if payload.dispatched >= payload.events.len() {
         return;
     }
@@ -62,14 +75,14 @@ fn redis_writer_emit_batch(mut writer: RedisEventWriter, mut payload: ResMut<Wri
     let end = start + batch;
 
     for event in payload.events[start..end].iter().cloned() {
-        writer.write(&config, event);
+        writer.write(&config, event, Some(callback.0.clone()));
     }
 
     payload.dispatched = end;
 }
 
 fn redis_reader_ack_system(
-    mut reader: RedisEventReader<TestEvent>,
+    mut reader: RedisMessageReader<TestEvent>,
     topic: Res<Topic>,
     membership: Res<ConsumerMembership>,
     mut received: ResMut<Received>,
@@ -133,6 +146,14 @@ fn manual_ack_clears_messages_and_tracks_success() {
     // writer-only responsibilities do not steal the shared message queue.
     let mut writer_app = App::new();
     writer_app.add_plugins(EventBusPlugins(writer_backend));
+    let writer_errors: Arc<Mutex<Vec<BusErrorContext>>> = Arc::new(Mutex::new(Vec::new()));
+    let writer_callback: BusErrorCallback = {
+        let sink: Arc<Mutex<Vec<BusErrorContext>>> = Arc::clone(&writer_errors);
+        Arc::new(move |ctx| {
+            sink.lock().unwrap().push(ctx);
+        })
+    };
+    writer_app.insert_resource(WriterErrorCallback(writer_callback));
     writer_app.insert_resource(WriterPayload {
         event: TestEvent {
             message: "redis-manual-ack".to_string(),
@@ -144,14 +165,9 @@ fn manual_ack_clears_messages_and_tracks_success() {
     writer_app.add_systems(Update, redis_writer_emit_once);
     run_app_updates(&mut writer_app, 2);
 
-    let pending_errors = {
-        let queue = writer_app.world_mut().resource::<EventBusErrorQueue>();
-        queue.drain_pending()
-    };
     assert!(
-        pending_errors.is_empty(),
-        "redis writer emitted {} errors",
-        pending_errors.len()
+        writer_errors.lock().unwrap().is_empty(),
+        "redis writer emitted errors"
     );
 
     // Spin frames until we receive at least one event, then allow a few extra frames for acking.
@@ -226,6 +242,14 @@ fn manual_ack_batches_multiple_messages() {
 
     let mut writer_app = App::new();
     writer_app.add_plugins(EventBusPlugins(writer_backend));
+    let writer_errors: Arc<Mutex<Vec<BusErrorContext>>> = Arc::new(Mutex::new(Vec::new()));
+    let writer_callback: BusErrorCallback = {
+        let sink: Arc<Mutex<Vec<BusErrorContext>>> = Arc::clone(&writer_errors);
+        Arc::new(move |ctx| {
+            sink.lock().unwrap().push(ctx);
+        })
+    };
+    writer_app.insert_resource(WriterErrorCallback(writer_callback));
     writer_app.insert_resource(WriterBatchPayload {
         events: (0..TOTAL_MESSAGES)
             .map(|value| TestEvent {
@@ -248,14 +272,9 @@ fn manual_ack_batches_multiple_messages() {
     }
     run_app_updates(&mut writer_app, 6);
 
-    let pending_errors = {
-        let queue = writer_app.world_mut().resource::<EventBusErrorQueue>();
-        queue.drain_pending()
-    };
     assert!(
-        pending_errors.is_empty(),
-        "redis writer emitted {} errors",
-        pending_errors.len()
+        writer_errors.lock().unwrap().is_empty(),
+        "redis writer emitted errors"
     );
 
     let (received_all, _) = update_until(&mut reader_app, 15_000, |app| {

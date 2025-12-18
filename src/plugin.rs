@@ -6,20 +6,19 @@ use bevy_event_bus::backends::event_bus_backend::{LagReportingDescriptor, Manual
 use bevy_event_bus::backends::{EventBusBackend, EventBusBackendResource};
 use bevy_event_bus::decoder::DecoderRegistry;
 use bevy_event_bus::resources::{
-    ConsumerMetrics, DecodedEventBuffer, DrainMetricsEvent, DrainedTopicMetadata,
-    EventBusConsumerConfig, EventMetadata, IncomingMessage, MessageQueue, ProcessedMessage,
+    ConsumerMetrics, DecodedEventBuffer, DrainMetricsMessage, DrainedTopicMetadata,
+    EventBusConsumerConfig, IncomingMessage, MessageMetadata, MessageQueue, ProcessedMessage,
     ProvisionedTopology,
 };
 use bevy_event_bus::runtime::{block_on, ensure_runtime};
-use bevy_event_bus::writers::EventBusErrorQueue;
 
-/// Plugin for integrating with external event brokers
+/// Plugin for integrating with external message brokers
 pub struct EventBusPlugin;
 
 impl Plugin for EventBusPlugin {
     fn build(&self, app: &mut App) {
-        // Register core error events
-        app.add_event::<bevy_event_bus::EventBusDecodeError>();
+        // Register core decode error message (will be removed when callbacks replace decode events)
+        app.add_message::<bevy_event_bus::EventBusDecodeError>();
     }
 }
 
@@ -27,16 +26,16 @@ impl Plugin for EventBusPlugin {
 pub struct EventBusPlugins<B: EventBusBackend>(pub B);
 
 // -----------------------------------------------------------------------------
-// Backend lifecycle events
+// Backend lifecycle messages
 // -----------------------------------------------------------------------------
-#[derive(Event, Debug, Clone)]
-pub struct BackendReadyEvent {
+#[derive(Message, Debug, Clone)]
+pub struct BackendReadyMessage {
     pub backend: String,
     pub topics: Vec<String>,
 }
 
-#[derive(Event, Debug, Clone)]
-pub struct BackendDownEvent {
+#[derive(Message, Debug, Clone)]
+pub struct BackendDownMessage {
     pub backend: String,
     pub reason: String,
 }
@@ -97,7 +96,6 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
         // Create and add the backend as a resource
         let boxed = self.0.clone_box();
         app.insert_resource(EventBusBackendResource::from_box(boxed));
-        app.insert_resource(EventBusErrorQueue::default());
         app.init_resource::<ProvisionedTopology>();
         self.0.apply_event_bindings(app);
         bevy_event_bus::writers::outbound_bridge::activate_registered_bridges(app);
@@ -171,8 +169,8 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
         app.init_resource::<DecoderRegistry>();
         app.init_resource::<ConsumerMetrics>();
         app.init_resource::<EventBusConsumerConfig>();
-        app.add_event::<DrainMetricsEvent>();
-        app.add_event::<BackendReadyEvent>();
+        app.add_message::<DrainMetricsMessage>();
+        app.add_message::<BackendReadyMessage>();
         // MessageQueue will be inserted lazily once backend spawns sender & channel
 
         // Drain system with multi-decoder pipeline
@@ -180,7 +178,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
             backend: Option<Res<EventBusBackendResource>>,
             resources: DrainSystemResources,
             maybe_queue: Option<Res<MessageQueue>>,
-            mut drain_events: EventWriter<DrainMetricsEvent>,
+            mut drain_events: MessageWriter<DrainMetricsMessage>,
         ) {
             let DrainSystemResources {
                 metadata_buffers,
@@ -242,8 +240,12 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                             let topic_str = topic.as_str();
                             tracing::debug!(topic=%topic_str, "Processing message with multi-decoder pipeline");
 
-                            let metadata =
-                                EventMetadata::new(topic.clone(), timestamp, key, backend_metadata);
+                            let metadata = MessageMetadata::new(
+                                topic.clone(),
+                                timestamp,
+                                key,
+                                backend_metadata,
+                            );
 
                             // Attempt multi-decode using registered decoders
                             let decoded_events = decoder_registry.decode_all(topic_str, &payload);
@@ -301,8 +303,8 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                                         .push(type_erased);
                                 }
 
-                                // Also add the original message to DrainedTopicMetadata for BusEventReader compatibility
-                                // This allows existing BusEventReader<T> to find the events by deserializing the original payload
+                                // Also add the original message to DrainedTopicMetadata for BusMessageReader compatibility
+                                // This allows existing BusMessageReader<T> to find the events by deserializing the original payload
                                 let processed_msg = ProcessedMessage {
                                     payload,
                                     metadata: metadata.clone(),
@@ -377,7 +379,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
             }
 
             // Emit metrics snapshot every frame for observability
-            drain_events.write(DrainMetricsEvent {
+            drain_events.write(DrainMetricsMessage {
                 drained: metrics.drained_last_frame,
                 remaining: metrics.remaining_channel_after_drain,
                 total_drained: metrics.total_drained,
@@ -388,33 +390,18 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
         app.add_systems(PreUpdate, drain_system);
         app.add_systems(PreUpdate, decode_error_dispatch_system.after(drain_system));
 
-        // Error queue flush system - runs in PostUpdate to ensure all BusEventWriter operations complete first
-        fn error_queue_flush_system(world: &mut World) {
-            // Extract the pending errors first
-            let pending_errors = {
-                let error_queue = world.resource::<EventBusErrorQueue>();
-                error_queue.drain_pending()
-            };
-
-            // Then flush them
-            for error_fn in pending_errors {
-                error_fn(world);
-            }
-        }
-        app.add_systems(PostUpdate, error_queue_flush_system);
-
         // Producer progress now handled entirely by backend background task; sender_system removed since sends are now direct.
 
-        // Lifecycle drain system converts internal channel messages to Bevy events
+        // Lifecycle drain system converts internal channel messages to Bevy messages
         fn lifecycle_system(
             maybe_channel: Option<Res<BackendLifecycleChannel>>,
-            mut ready_writer: EventWriter<BackendReadyEvent>,
+            mut ready_writer: MessageWriter<BackendReadyMessage>,
         ) {
             if let Some(ch) = maybe_channel {
                 while let Ok(msg) = ch.0.try_recv() {
                     match msg {
                         LifecycleMessage::Ready { backend, topics } => {
-                            ready_writer.write(BackendReadyEvent {
+                            ready_writer.write(BackendReadyMessage {
                                 backend: backend.clone(),
                                 topics: topics.clone(),
                             });
@@ -425,10 +412,10 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
         }
         app.add_systems(PreUpdate, lifecycle_system);
 
-        // System to update BackendStatus from events
+        // System to update BackendStatus from messages
         fn backend_status_update(
             status: Option<ResMut<BackendStatus>>,
-            mut ready_events: EventReader<BackendReadyEvent>,
+            mut ready_events: MessageReader<BackendReadyMessage>,
         ) {
             if let Some(mut s) = status {
                 for _ev in ready_events.read() {
@@ -441,7 +428,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
         // Decode error dispatch system - sends EventBusDecodeError events
         fn decode_error_dispatch_system(
             mut drained_metadata: ResMut<DrainedTopicMetadata>,
-            mut decode_error_writer: EventWriter<bevy_event_bus::EventBusDecodeError>,
+            mut decode_error_writer: MessageWriter<bevy_event_bus::EventBusDecodeError>,
         ) {
             // Dispatch all accumulated decode errors as events
             for decode_error in drained_metadata.decode_errors.drain(..) {

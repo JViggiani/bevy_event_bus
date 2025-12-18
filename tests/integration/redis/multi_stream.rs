@@ -66,11 +66,11 @@ async fn test_multi_stream_isolation() {
     let serialized2 = to_vec(&event_stream2).expect("Serialization should succeed for stream2");
 
     assert!(
-        backend.try_send_serialized(&serialized1, &stream1, SendOptions::default()),
+        backend.try_send_serialized(&serialized1, &stream1, SendOptions::default(), None),
         "Failed to send message to stream 1",
     );
     assert!(
-        backend.try_send_serialized(&serialized2, &stream2, SendOptions::default()),
+        backend.try_send_serialized(&serialized2, &stream2, SendOptions::default(), None),
         "Failed to send message to stream 2",
     );
     backend

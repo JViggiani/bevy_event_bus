@@ -98,7 +98,7 @@ async fn test_receive_serialized_with_group() {
 
     let serialized = to_vec(&test_event).expect("Serialization should succeed");
     assert!(
-        backend.try_send_serialized(&serialized, &stream, SendOptions::default()),
+        backend.try_send_serialized(&serialized, &stream, SendOptions::default(), None),
         "Failed to send serialized message",
     );
     backend
@@ -166,7 +166,7 @@ async fn test_multiple_consumer_groups_independence() {
 
     let serialized = to_vec(&test_event).expect("Serialization should succeed");
     assert!(
-        backend.try_send_serialized(&serialized, &stream, SendOptions::default()),
+        backend.try_send_serialized(&serialized, &stream, SendOptions::default(), None),
         "Failed to send test message",
     );
     backend
@@ -247,11 +247,11 @@ async fn test_consumer_group_with_multiple_streams() {
     let serialized2 = to_vec(&event_stream2).expect("Serialization should succeed for stream2");
 
     assert!(
-        backend.try_send_serialized(&serialized1, &stream1, SendOptions::default()),
+        backend.try_send_serialized(&serialized1, &stream1, SendOptions::default(), None),
         "Failed to send message to stream 1",
     );
     assert!(
-        backend.try_send_serialized(&serialized2, &stream2, SendOptions::default()),
+        backend.try_send_serialized(&serialized2, &stream2, SendOptions::default(), None),
         "Failed to send message to stream 2",
     );
     backend
