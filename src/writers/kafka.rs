@@ -4,9 +4,7 @@ use bevy::prelude::*;
 
 use bevy_event_bus::backends::{
     EventBusBackendResource, KafkaEventBusBackend,
-    event_bus_backend::{
-        BackendSpecificSendOptions, DeliveryFailureCallback, SendOptions,
-    },
+    event_bus_backend::{BackendSpecificSendOptions, DeliveryFailureCallback, SendOptions},
 };
 use bevy_event_bus::config::{EventBusConfig, kafka::KafkaProducerConfig};
 use bevy_event_bus::errors::{BusErrorCallback, BusErrorContext, BusErrorKind};
@@ -98,12 +96,7 @@ impl<'w> KafkaMessageWriter<'w> {
                             })) as Arc<DeliveryFailureCallback>
                         });
 
-                        if !backend.try_send_serialized(
-                            &serialized,
-                            topic,
-                            options,
-                            delivery_cb,
-                        ) {
+                        if !backend.try_send_serialized(&serialized, topic, options, delivery_cb) {
                             Self::emit_error(
                                 callback_ref,
                                 "kafka",
@@ -201,7 +194,7 @@ impl<'w> KafkaMessageWriter<'w> {
                 payload,
             ));
         } else {
-            tracing::warn!(backend = backend, topic = %topic, error = ?kind, "Unhandled writer error: {message}");
+            bevy::log::warn!(backend = backend, topic = %topic, error = ?kind, "Unhandled writer error: {message}");
         }
     }
 
@@ -238,12 +231,7 @@ where
         KafkaMessageWriter::write(self, config, event, error_callback);
     }
 
-    fn write_batch<C, I>(
-        &mut self,
-        config: &C,
-        events: I,
-        error_callback: Option<BusErrorCallback>,
-    )
+    fn write_batch<C, I>(&mut self, config: &C, events: I, error_callback: Option<BusErrorCallback>)
     where
         C: EventBusConfig + Any,
         I: IntoIterator<Item = T>,

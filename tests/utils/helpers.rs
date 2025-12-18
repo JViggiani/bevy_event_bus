@@ -128,7 +128,7 @@ pub fn wait_for_events<T>(
         let items = fetch(app);
         let len = items.len();
         if len != last_len {
-            tracing::info!(topic=%topic_desc, len, target, "wait_for_events progress");
+            bevy::log::info!(topic=%topic_desc, len, target, "wait_for_events progress");
             last_len = len;
         }
         if len >= target {
@@ -214,7 +214,7 @@ where
         let count = messages.len();
 
         if count != last_count {
-            tracing::info!(
+            bevy::log::info!(
                 topic,
                 group_id,
                 count,

@@ -238,7 +238,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
 
                             let topic = source;
                             let topic_str = topic.as_str();
-                            tracing::debug!(topic=%topic_str, "Processing message with multi-decoder pipeline");
+                            bevy::log::debug!(topic=%topic_str, "Processing message with multi-decoder pipeline");
 
                             let metadata = MessageMetadata::new(
                                 topic.clone(),
@@ -259,7 +259,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                                 // No decoder succeeded - fire decode error event
                                 topic_buffer.decode_failures += 1;
                                 let decoder_count = decoder_registry.decoder_count(topic_str);
-                                tracing::debug!(
+                                bevy::log::debug!(
                                     topic = %topic_str,
                                     decoders_tried = decoder_count,
                                     "No decoder succeeded for message"
@@ -282,7 +282,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                             } else {
                                 // At least one decoder succeeded
                                 for decoded_event in decoded_events {
-                                    tracing::trace!(
+                                    bevy::log::trace!(
                                         topic = %topic_str,
                                         decoder = %decoded_event.decoder_name,
                                         "Successfully decoded event"
@@ -348,7 +348,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                 let after_count = metadata_buffers.topics.len();
 
                 if before_count > after_count {
-                    tracing::debug!(
+                    bevy::log::debug!(
                         cleaned_topics = before_count - after_count,
                         remaining_topics = after_count,
                         "Cleaned up empty topic metadata buffers"
@@ -363,7 +363,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                 let after_decoded = decoded_buffer.topics.len();
 
                 if before_decoded > after_decoded {
-                    tracing::debug!(
+                    bevy::log::debug!(
                         cleaned_decoded_topics = before_decoded - after_decoded,
                         remaining_decoded_topics = after_decoded,
                         "Cleaned up empty decoded event buffers"

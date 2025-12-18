@@ -110,7 +110,7 @@ impl<'w, 's, T: BusEvent + Message> RedisMessageReader<'w, 's, T> {
                                         event,
                                         processed_msg.metadata.clone(),
                                     )),
-                                    Err(_) => tracing::warn!(
+                                    Err(_) => bevy::log::warn!(
                                         "Failed to deserialize event from stream {}",
                                         topic
                                     ),
@@ -242,7 +242,7 @@ impl<'w, 's, T: BusEvent + Message> RedisMessageReader<'w, 's, T> {
                 metadata: None,
             };
             self.error_writer.write(error);
-            tracing::warn!(
+            bevy::log::warn!(
                 backend = "redis",
                 consumer_group = group.unwrap_or("ungrouped"),
                 stream = %stream,

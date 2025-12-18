@@ -13,10 +13,12 @@
 
 use bevy::prelude::*;
 use bevy_event_bus::config::kafka::{KafkaProducerConfig, KafkaTopologyEventBinding};
-use bevy_event_bus::{BusErrorCallback, BusErrorContext, BusErrorKind, EventBusPlugins, KafkaMessageWriter};
+use bevy_event_bus::{
+    BusErrorCallback, BusErrorContext, BusErrorKind, EventBusPlugins, KafkaMessageWriter,
+};
 use integration_tests::utils::MockEventBusBackend;
 use integration_tests::utils::helpers::unique_topic;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
@@ -118,7 +120,9 @@ fn test_delivery_error_handling() {
     // System to write events that will fail due to simulated backend issues
     app.add_systems(
         Update,
-        move |mut state: ResMut<ErrorTestState>, mut writer: KafkaMessageWriter, errors: Res<ErrorStoreResource>| {
+        move |mut state: ResMut<ErrorTestState>,
+              mut writer: KafkaMessageWriter,
+              errors: Res<ErrorStoreResource>| {
             if !state.test_completed {
                 let config = KafkaProducerConfig::new([topic_clone.clone()]);
                 for i in 0..3 {
@@ -152,16 +156,32 @@ fn test_delivery_error_handling() {
     );
 
     // With mock backend configured to fail, we should get errors for all messages
-    assert_eq!(errors_collected.len(), 3, "Should receive exactly 3 errors. Got: {} errors", errors_collected.len());
+    assert_eq!(
+        errors_collected.len(),
+        3,
+        "Should receive exactly 3 errors. Got: {} errors",
+        errors_collected.len()
+    );
 
     // Verify error details
     for (i, error) in errors_collected.iter().enumerate() {
-        assert_eq!(error.topic, topic, "Error {} should contain correct topic", i);
+        assert_eq!(
+            error.topic, topic,
+            "Error {} should contain correct topic",
+            i
+        );
         assert_eq!(error.kind, BusErrorKind::DeliveryFailure);
-        assert!(error.original_bytes.is_some(), "Error {} should include serialized payload", i);
+        assert!(
+            error.original_bytes.is_some(),
+            "Error {} should include serialized payload",
+            i
+        );
         // best-effort check the payload encodes the id we sent
         let payload_text = String::from_utf8_lossy(error.original_bytes.as_ref().unwrap());
-        assert!(payload_text.contains(&format!("{}", i)), "Payload should contain event id {i}");
+        assert!(
+            payload_text.contains(&format!("{}", i)),
+            "Payload should contain event id {i}"
+        );
     }
 }
 
@@ -202,7 +222,7 @@ fn test_multiple_event_types_error_handling() {
     // System to write events to all topics
     app.add_systems(
         Update,
-          move |mut state: ResMut<MultiEventTestState>,
+        move |mut state: ResMut<MultiEventTestState>,
               mut player_writer: KafkaMessageWriter,
               mut combat_writer: KafkaMessageWriter,
               mut analytics_writer: KafkaMessageWriter,
@@ -317,7 +337,9 @@ fn test_centralized_error_handling() {
     // System to send events to both topics
     app.add_systems(
         Update,
-        move |mut state: ResMut<CentralizedErrorTestState>, mut writer: KafkaMessageWriter, errors: Res<ErrorStoreResource>| {
+        move |mut state: ResMut<CentralizedErrorTestState>,
+              mut writer: KafkaMessageWriter,
+              errors: Res<ErrorStoreResource>| {
             if !state.test_completed {
                 let working_config = KafkaProducerConfig::new([working_topic_clone.clone()]);
                 let failing_config = KafkaProducerConfig::new([failing_topic_clone.clone()]);
@@ -365,14 +387,27 @@ fn test_centralized_error_handling() {
         .filter(|e| e.topic == working_topic && e.kind == BusErrorKind::DeliveryFailure)
         .collect();
 
-    assert_eq!(failing_errors.len(), 3, "Should have 3 errors from failing topic");
-    assert!(working_errors.is_empty(), "Working topic should not produce errors");
+    assert_eq!(
+        failing_errors.len(),
+        3,
+        "Should have 3 errors from failing topic"
+    );
+    assert!(
+        working_errors.is_empty(),
+        "Working topic should not produce errors"
+    );
 
     // All errors should be from failing topic with correct event data
     for error in &failing_errors {
-        assert_eq!(error.topic, failing_topic_assert, "All errors should be from failing topic");
+        assert_eq!(
+            error.topic, failing_topic_assert,
+            "All errors should be from failing topic"
+        );
         let original: TestEvent = decode_event(error).expect("Should decode original event");
-        assert!(original.id >= 100, "Original event should have failing topic ID range");
+        assert!(
+            original.id >= 100,
+            "Original event should have failing topic ID range"
+        );
         assert!(
             original.message.contains("Failing event"),
             "Original event should have failing message"
@@ -409,7 +444,9 @@ fn test_batch_operation_error_handling() {
     // System to send events in batches
     app.add_systems(
         Update,
-        move |mut state: ResMut<BatchTestState>, mut writer: KafkaMessageWriter, errors: Res<ErrorStoreResource>| {
+        move |mut state: ResMut<BatchTestState>,
+              mut writer: KafkaMessageWriter,
+              errors: Res<ErrorStoreResource>| {
             if !state.test_completed {
                 let events_per_batch = 5;
                 let num_batches = 3;
@@ -467,7 +504,11 @@ fn test_batch_operation_error_handling() {
     for (i, error) in collected.iter().enumerate() {
         assert_eq!(error.topic, topic, "Error {} should have correct topic", i);
         let original: TestEvent = decode_event(error).expect("Error should decode event");
-        assert_eq!(original.id, i as u32, "Error {} should preserve event ID", i);
+        assert_eq!(
+            original.id, i as u32,
+            "Error {} should preserve event ID",
+            i
+        );
         assert!(
             original.message.contains("Batch"),
             "Error {} should preserve batch message",
@@ -512,7 +553,9 @@ fn test_error_retry_mechanism() {
     // System to send initial events
     app.add_systems(
         Update,
-        move |mut state: ResMut<RetryTestState>, mut writer: KafkaMessageWriter, errors: Res<ErrorStoreResource>| {
+        move |mut state: ResMut<RetryTestState>,
+              mut writer: KafkaMessageWriter,
+              errors: Res<ErrorStoreResource>| {
             if !state.initial_send_complete {
                 // Send initial events
                 let config = KafkaProducerConfig::new([topic_clone1.clone()]);
@@ -555,11 +598,7 @@ fn test_error_retry_mechanism() {
                             ),
                         };
 
-                        writer.write(
-                            &retry_config,
-                            retry_event,
-                            Some(errors.0.callback.clone()),
-                        );
+                        writer.write(&retry_config, retry_event, Some(errors.0.callback.clone()));
                     }
                 }
             }
@@ -597,12 +636,20 @@ fn test_error_retry_mechanism() {
     let initial_errors: Vec<_> = state
         .errors_received
         .iter()
-        .filter(|e| decode_event::<TestEvent>(e).map(|ev| !ev.message.contains("retry")).unwrap_or(false))
+        .filter(|e| {
+            decode_event::<TestEvent>(e)
+                .map(|ev| !ev.message.contains("retry"))
+                .unwrap_or(false)
+        })
         .collect();
     let retry_errors: Vec<_> = state
         .errors_received
         .iter()
-        .filter(|e| decode_event::<TestEvent>(e).map(|ev| ev.message.contains("retry")).unwrap_or(false))
+        .filter(|e| {
+            decode_event::<TestEvent>(e)
+                .map(|ev| ev.message.contains("retry"))
+                .unwrap_or(false)
+        })
         .collect();
 
     assert_eq!(initial_errors.len(), 3, "Should have 3 initial errors");
@@ -611,6 +658,9 @@ fn test_error_retry_mechanism() {
     // Verify retry events have correct format
     for retry_error in retry_errors {
         let original: TestEvent = decode_event(retry_error).expect("retry event should decode");
-        assert!(original.message.contains("retry"), "Retry error should contain retry message");
+        assert!(
+            original.message.contains("retry"),
+            "Retry error should contain retry message"
+        );
     }
 }

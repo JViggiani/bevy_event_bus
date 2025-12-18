@@ -4,10 +4,10 @@ use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
+use bevy_event_bus::{BusErrorCallback, BusErrorContext};
 use bevy_event_bus::{
     EventBusPlugins, RedisAckWorkerStats, RedisMessageReader, RedisMessageWriter,
 };
-use bevy_event_bus::{BusErrorCallback, BusErrorContext};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
     ConsumerGroupMembership, run_app_updates, unique_consumer_group_membership, unique_topic,

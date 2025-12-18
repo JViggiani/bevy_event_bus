@@ -4,7 +4,9 @@ use bevy::prelude::*;
 
 use bevy_event_bus::backends::{
     EventBusBackendResource, RedisEventBusBackend,
-    event_bus_backend::{DeliveryFailureCallback, EventBusBackend, SendOptions, StreamTrimStrategy},
+    event_bus_backend::{
+        DeliveryFailureCallback, EventBusBackend, SendOptions, StreamTrimStrategy,
+    },
 };
 use bevy_event_bus::config::{EventBusConfig, redis::RedisProducerConfig, redis::TrimStrategy};
 use bevy_event_bus::errors::{BusErrorCallback, BusErrorContext, BusErrorKind};
@@ -233,7 +235,7 @@ impl<'w> RedisMessageWriter<'w> {
                 payload,
             ));
         } else {
-            tracing::warn!(backend = "redis", stream = %stream, error = ?kind, "Unhandled writer error: {message}");
+            bevy::log::warn!(backend = "redis", stream = %stream, error = ?kind, "Unhandled writer error: {message}");
         }
     }
 }
@@ -249,12 +251,7 @@ where
         RedisMessageWriter::write(self, config, event, error_callback);
     }
 
-    fn write_batch<C, I>(
-        &mut self,
-        config: &C,
-        events: I,
-        error_callback: Option<BusErrorCallback>,
-    )
+    fn write_batch<C, I>(&mut self, config: &C, events: I, error_callback: Option<BusErrorCallback>)
     where
         C: EventBusConfig + Any,
         I: IntoIterator<Item = T>,

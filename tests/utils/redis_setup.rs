@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, anyhow};
+use bevy::log::{debug, info, info_span};
 use bevy::prelude::App;
 use bevy_event_bus::EventBusPlugins;
 use bevy_event_bus::backends::RedisEventBusBackend;
@@ -14,7 +15,6 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
-use tracing::{debug, info, info_span};
 
 const REDIS_IMAGE: &str = "redis:5.0";
 const CONTAINER_NAME: &str = "bevy_event_bus_test_redis";

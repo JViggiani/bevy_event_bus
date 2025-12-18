@@ -3,6 +3,7 @@
 //! These helpers manage a lightweight Kafka container (when docker is available) and
 //! construct ready-to-use backends with sane defaults for the test suite.
 
+use bevy::log::{debug, info, info_span, warn};
 use bevy_event_bus::{
     KafkaBackendConfig, KafkaConnectionConfig, KafkaEventBusBackend,
     config::kafka::KafkaTopologyBuilder,
@@ -19,7 +20,6 @@ use std::process::Command;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
-use tracing::{debug, info, info_span, warn};
 
 const DEFAULT_IMAGE: &str = "redpandadata/redpanda:v23.3.16";
 const CONTAINER_NAME: &str = "bevy_event_bus_test_kafka";
@@ -159,7 +159,11 @@ fn ensure_container() -> Option<String> {
             let _ = Command::new("docker")
                 .args([
                     "exec",
-                    state.id.as_ref().map(String::as_str).unwrap_or(CONTAINER_NAME),
+                    state
+                        .id
+                        .as_ref()
+                        .map(String::as_str)
+                        .unwrap_or(CONTAINER_NAME),
                     "rpk",
                     "cluster",
                     "config",
@@ -232,7 +236,11 @@ fn ensure_container() -> Option<String> {
             let _ = Command::new("docker")
                 .args([
                     "exec",
-                    state.id.as_ref().map(String::as_str).unwrap_or(CONTAINER_NAME),
+                    state
+                        .id
+                        .as_ref()
+                        .map(String::as_str)
+                        .unwrap_or(CONTAINER_NAME),
                     "rpk",
                     "cluster",
                     "config",
@@ -476,11 +484,11 @@ pub fn ensure_topic(bootstrap: &str, topic: &str, partitions: i32) {
         if let Err(e) = bevy_event_bus::block_on(fut) {
             let msg = e.to_string();
             if !msg.contains("TopicAlreadyExists") {
-                tracing::warn!(topic=%topic, err=%msg, "ensure_topic create failed");
+                bevy::log::warn!(topic=%topic, err=%msg, "ensure_topic create failed");
             }
         }
     } else {
-        tracing::warn!(topic=%topic, "ensure_topic could not build admin client");
+        bevy::log::warn!(topic=%topic, "ensure_topic could not build admin client");
     }
 }
 
