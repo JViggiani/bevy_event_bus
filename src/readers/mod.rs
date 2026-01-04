@@ -1,7 +1,6 @@
-use bevy::prelude::Message;
-use bevy_event_bus::BusEvent;
-use bevy_event_bus::config::EventBusConfig;
-use bevy_event_bus::resources::MessageWrapper;
+mod bus_message_reader;
+
+pub use bus_message_reader::BusMessageReader;
 
 #[cfg(feature = "kafka")]
 pub mod kafka;
@@ -13,9 +12,3 @@ pub use kafka::{KafkaMessageReader, KafkaReaderError};
 pub mod redis;
 #[cfg(feature = "redis")]
 pub use redis::{RedisMessageReader, RedisReaderError};
-
-/// Common capabilities shared by all bus message readers.
-pub trait BusMessageReader<T: BusEvent + Message> {
-    /// Drain the buffered messages for the supplied configuration.
-    fn read<C: EventBusConfig>(&mut self, config: &C) -> Vec<MessageWrapper<T>>;
-}

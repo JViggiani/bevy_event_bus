@@ -63,6 +63,19 @@ pub struct RedisMessageReader<'w, 's, T: BusEvent + Message> {
 impl<'w, 's, T: BusEvent + Message> RedisMessageReader<'w, 's, T> {
     /// Read all messages for the supplied Redis configuration.
     pub fn read<C: EventBusConfig>(&mut self, config: &C) -> Vec<MessageWrapper<T>> {
+        self.read_bounded(config, usize::MAX)
+    }
+
+    /// Read up to `max_messages` across all streams, leaving remaining events buffered.
+    pub fn read_bounded<C: EventBusConfig>(
+        &mut self,
+        config: &C,
+        max_messages: usize,
+    ) -> Vec<MessageWrapper<T>> {
+        if max_messages == 0 {
+            return Vec::new();
+        }
+
         let redis_config = config
             .as_any()
             .downcast_ref::<bevy_event_bus::config::redis::RedisConsumerConfig>();
@@ -75,21 +88,28 @@ impl<'w, 's, T: BusEvent + Message> RedisMessageReader<'w, 's, T> {
 
         let required_consumer_group = redis_config.and_then(|cfg| cfg.consumer_group());
 
+        let mut remaining = max_messages;
         let mut all_events = Vec::new();
         let topics = config.topics();
 
         for topic in topics {
+            if remaining == 0 {
+                break;
+            }
+
             self.wrapped_events.clear();
 
             if let Some(metadata_drained) = &mut self.metadata_drained {
                 if let Some(messages) = metadata_drained.topics.get(topic) {
                     let start = *self.metadata_offsets.get(topic).unwrap_or(&0);
                     if start < messages.len() {
-                        for processed_msg in messages.iter().skip(start) {
+                        let available = messages.len().saturating_sub(start);
+                        let take = available.min(remaining);
+
+                        for processed_msg in messages.iter().skip(start).take(take) {
                             // Filter by consumer group if specified
                             let message_matches_group = match required_consumer_group {
                                 Some(required_group) => {
-                                    // Check if message is from the required consumer group
                                     let message_group = processed_msg
                                         .metadata
                                         .backend_specific
@@ -117,7 +137,10 @@ impl<'w, 's, T: BusEvent + Message> RedisMessageReader<'w, 's, T> {
                                 }
                             }
                         }
-                        self.metadata_offsets.insert(topic.clone(), messages.len());
+
+                        self.metadata_offsets
+                            .insert(topic.clone(), start.saturating_add(take));
+                        remaining = remaining.saturating_sub(take);
                     }
                 }
             }
@@ -256,5 +279,13 @@ impl<'w, 's, T: BusEvent + Message> RedisMessageReader<'w, 's, T> {
 impl<'w, 's, T: BusEvent + Message> BusMessageReader<T> for RedisMessageReader<'w, 's, T> {
     fn read<C: EventBusConfig>(&mut self, config: &C) -> Vec<MessageWrapper<T>> {
         RedisMessageReader::read(self, config)
+    }
+
+    fn read_bounded<C: EventBusConfig>(
+        &mut self,
+        config: &C,
+        max_messages: usize,
+    ) -> Vec<MessageWrapper<T>> {
+        RedisMessageReader::read_bounded(self, config, max_messages)
     }
 }

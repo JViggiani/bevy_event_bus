@@ -1,4 +1,5 @@
 pub mod background_queue_tests;
+pub mod bounded_read;
 pub mod basic;
 pub mod complex_topology;
 pub mod configuration_tests;

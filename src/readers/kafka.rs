@@ -82,23 +82,46 @@ impl<'w, 's, T: BusEvent + Message> KafkaMessageReader<'w, 's, T> {
     /// (auto commit disabled) the reader ensures the backend has manual commit mode enabled
     /// for the consumer group before returning events.
     pub fn read<C: EventBusConfig>(&mut self, config: &C) -> Vec<MessageWrapper<T>> {
+        self.read_bounded(config, usize::MAX)
+    }
+
+    /// Read up to `max_messages` across all topics, leaving remaining events buffered for
+    /// subsequent reads. This prevents eagerly draining large bursts when the caller has limited
+    /// capacity to process messages immediately.
+    pub fn read_bounded<C: EventBusConfig>(
+        &mut self,
+        config: &C,
+        max_messages: usize,
+    ) -> Vec<MessageWrapper<T>> {
+        if max_messages == 0 {
+            return Vec::new();
+        }
+
         if let Some(kafka_config) = config.as_any().downcast_ref::<KafkaConsumerConfig>() {
             if !self.validate_configuration(kafka_config) {
                 return Vec::new();
             }
         }
 
+        let mut remaining = max_messages;
         let mut all_events = Vec::new();
         let topics = config.topics();
 
         for topic in topics {
+            if remaining == 0 {
+                break;
+            }
+
             self.wrapped_events.clear();
 
             if let Some(metadata_drained) = &mut self.metadata_drained {
                 if let Some(messages) = metadata_drained.topics.get(topic) {
                     let start = *self.metadata_offsets.get(topic).unwrap_or(&0);
                     if start < messages.len() {
-                        for processed_msg in messages.iter().skip(start) {
+                        let available = messages.len().saturating_sub(start);
+                        let take = available.min(remaining);
+
+                        for processed_msg in messages.iter().skip(start).take(take) {
                             match serde_json::from_slice::<T>(&processed_msg.payload) {
                                 Ok(event) => self.wrapped_events.push(MessageWrapper::new(
                                     event,
@@ -110,7 +133,11 @@ impl<'w, 's, T: BusEvent + Message> KafkaMessageReader<'w, 's, T> {
                                 ),
                             }
                         }
-                        self.metadata_offsets.insert(topic.clone(), messages.len());
+
+                        // Only advance the offset by the number of messages we actually return.
+                        self.metadata_offsets
+                            .insert(topic.clone(), start.saturating_add(take));
+                        remaining = remaining.saturating_sub(take);
                     }
                 }
             }
@@ -276,5 +303,13 @@ impl<'w, 's, T: BusEvent + Message> KafkaMessageReader<'w, 's, T> {
 impl<'w, 's, T: BusEvent + Message> BusMessageReader<T> for KafkaMessageReader<'w, 's, T> {
     fn read<C: EventBusConfig>(&mut self, config: &C) -> Vec<MessageWrapper<T>> {
         KafkaMessageReader::read(self, config)
+    }
+
+    fn read_bounded<C: EventBusConfig>(
+        &mut self,
+        config: &C,
+        max_messages: usize,
+    ) -> Vec<MessageWrapper<T>> {
+        KafkaMessageReader::read_bounded(self, config, max_messages)
     }
 }
