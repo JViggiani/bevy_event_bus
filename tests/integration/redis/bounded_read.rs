@@ -53,7 +53,7 @@ fn read_bounded_limits_stream_drain() {
     .expect("Reader Redis backend setup successful");
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(backend_writer));
+    writer.add_plugins(EventBusPlugins { backend: backend_writer });
 
     let sclone = stream.clone();
     writer.add_systems(Update, move |mut w: RedisMessageWriter| {
@@ -72,7 +72,7 @@ fn read_bounded_limits_stream_drain() {
     writer.update();
 
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(backend_reader));
+    reader.add_plugins(EventBusPlugins { backend: backend_reader });
     reader.insert_resource(Collected::default());
 
     let stream_for_system = stream.clone();

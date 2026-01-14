@@ -47,11 +47,11 @@ fn test_topology_setup_principle() {
 
     // Setup apps
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(backend.clone()));
+    reader.add_plugins(EventBusPlugins { backend: backend.clone() });
     reader.insert_resource(EventCollector::default());
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(backend));
+    writer.add_plugins(EventBusPlugins { backend: backend });
 
     println!("=== CHEAP OPERATIONS AT RUNTIME ===");
 

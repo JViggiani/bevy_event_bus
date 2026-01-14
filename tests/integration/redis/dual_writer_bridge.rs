@@ -124,7 +124,7 @@ fn external_bus_events_flow_from_both_writers() {
     .expect("Redis reader backend setup successful");
 
     let mut writer_app = App::new();
-    writer_app.add_plugins(EventBusPlugins(writer_backend));
+    writer_app.add_plugins(EventBusPlugins { backend: writer_backend });
     writer_app.insert_resource(BridgeWriterState {
         stream: stream.clone(),
         primed: false,
@@ -143,7 +143,7 @@ fn external_bus_events_flow_from_both_writers() {
     run_app_updates(&mut writer_app, 4);
 
     let mut reader_app = App::new();
-    reader_app.add_plugins(EventBusPlugins(reader_backend));
+    reader_app.add_plugins(EventBusPlugins { backend: reader_backend });
     reader_app.insert_resource(ReaderState {
         stream: stream.clone(),
         consumer_group: membership.group.clone(),
@@ -242,7 +242,7 @@ fn external_bus_events_independent_operation() {
 
     // Two separate writer apps with independent backends
     let mut writer1 = App::new();
-    writer1.add_plugins(EventBusPlugins(writer1_backend));
+    writer1.add_plugins(EventBusPlugins { backend: writer1_backend });
     writer1.insert_resource(WriterDispatch {
         stream: stream.clone(),
         payload: TestEvent {
@@ -255,7 +255,7 @@ fn external_bus_events_independent_operation() {
     writer1.add_systems(Update, dispatch_single_backend_writer);
 
     let mut writer2 = App::new();
-    writer2.add_plugins(EventBusPlugins(writer2_backend));
+    writer2.add_plugins(EventBusPlugins { backend: writer2_backend });
     writer2.insert_resource(WriterDispatch {
         stream: stream.clone(),
         payload: TestEvent {
@@ -269,7 +269,7 @@ fn external_bus_events_independent_operation() {
 
     // Reader app with its own backend
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(reader_backend));
+    reader.add_plugins(EventBusPlugins { backend: reader_backend });
     reader.insert_resource(ReaderState {
         stream: stream.clone(),
         consumer_group: consumer_group.clone(),

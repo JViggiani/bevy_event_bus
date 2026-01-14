@@ -44,9 +44,9 @@ fn single_topic_multiple_types_same_frame() {
     }));
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(backend_w));
+    writer.add_plugins(EventBusPlugins { backend: backend_w });
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(backend_r));
+    reader.add_plugins(EventBusPlugins { backend: backend_r });
 
     #[derive(Resource, Default)]
     struct CollectedTests(Vec<TestEvent>);
@@ -159,9 +159,9 @@ fn single_topic_multiple_types_interleaved_frames() {
     }));
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(backend_w));
+    writer.add_plugins(EventBusPlugins { backend: backend_w });
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(backend_r));
+    reader.add_plugins(EventBusPlugins { backend: backend_r });
 
     #[derive(Resource, Default)]
     struct CollectedTests(Vec<TestEvent>);

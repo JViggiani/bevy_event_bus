@@ -25,4 +25,6 @@ impl RedisAckRequest {
 
 /// Channel resource used by Redis readers to enqueue acknowledgement requests.
 #[derive(Resource, Clone)]
-pub struct RedisAckQueue(pub Sender<RedisAckRequest>);
+pub struct RedisAckQueue {
+    pub sender: Sender<RedisAckRequest>,
+}

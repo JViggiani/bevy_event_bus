@@ -165,7 +165,7 @@ where
 {
     let (backend, _) = prepare_backend(|_| {}).expect("Redis backend setup");
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins(backend));
+    app.add_plugins(EventBusPlugins { backend: backend });
     customize(&mut app);
     app
 }

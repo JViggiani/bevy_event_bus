@@ -110,7 +110,7 @@ fn external_bus_events_flow_from_both_writers() {
 
     // Writer app configuration
     let mut writer_app = App::new();
-    writer_app.add_plugins(EventBusPlugins(backend_writer));
+    writer_app.add_plugins(EventBusPlugins { backend: backend_writer });
     writer_app.insert_resource(WriterState {
         topic: topic.clone(),
         dispatched: false,
@@ -122,7 +122,7 @@ fn external_bus_events_flow_from_both_writers() {
 
     // Reader app configuration
     let mut reader_app = App::new();
-    reader_app.add_plugins(EventBusPlugins(backend_reader));
+    reader_app.add_plugins(EventBusPlugins { backend: backend_reader });
     reader_app.insert_resource(ReaderState {
         topic: topic.clone(),
         consumer_group,

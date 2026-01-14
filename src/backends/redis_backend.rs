@@ -80,7 +80,9 @@ impl RedisManualAckHandle {
 
 impl ManualCommitHandle for RedisManualAckHandle {
     fn register_resources(&self, world: &mut World) {
-        world.insert_resource(RedisAckQueue(self.sender.clone()));
+        world.insert_resource(RedisAckQueue {
+            sender: self.sender.clone(),
+        });
         world.insert_resource(RedisAckWorkerStats {
             counters: self.counters.clone(),
         });

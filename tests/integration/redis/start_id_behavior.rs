@@ -59,7 +59,7 @@ fn test_start_id_from_beginning() {
 
     // First, send some events with separate writer backend
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(writer_backend));
+    writer.add_plugins(EventBusPlugins { backend: writer_backend });
 
     let stream_for_writer = stream.clone();
     writer.add_systems(
@@ -83,7 +83,7 @@ fn test_start_id_from_beginning() {
 
     // Now create reader with separate backend that won't see events from writer
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(reader_backend));
+    reader.add_plugins(EventBusPlugins { backend: reader_backend });
     reader.insert_resource(EventCollector::default());
 
     let s = stream.clone();
@@ -156,7 +156,7 @@ fn test_start_id_from_end() {
 
     // First, send some events with separate writer backend
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(writer_backend));
+    writer.add_plugins(EventBusPlugins { backend: writer_backend });
 
     let stream_for_writer = stream.clone();
     writer.add_systems(
@@ -180,7 +180,7 @@ fn test_start_id_from_end() {
 
     // Now create reader with separate backend that won't see events from writer
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(reader_backend));
+    reader.add_plugins(EventBusPlugins { backend: reader_backend });
     reader.insert_resource(EventCollector::default());
 
     let s = stream.clone();

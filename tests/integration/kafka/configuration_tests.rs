@@ -54,7 +54,7 @@ fn configuration_with_readers_writers_works() {
     // Consumer app
     let mut consumer_app = {
         let mut app = App::new();
-        app.add_plugins(EventBusPlugins(backend_reader));
+        app.add_plugins(EventBusPlugins { backend: backend_reader });
 
         // Consumer system using configuration
         let topic_clone = topic.clone();
@@ -77,7 +77,7 @@ fn configuration_with_readers_writers_works() {
     // Producer app
     let mut producer_app = {
         let mut app = App::new();
-        app.add_plugins(EventBusPlugins(backend_writer));
+        app.add_plugins(EventBusPlugins { backend: backend_writer });
 
         // Producer system using configuration
         let topic_clone = topic.clone();
@@ -157,7 +157,7 @@ fn kafka_specific_methods_work() {
     ))
     .expect("Kafka backend initialization failed for configuration test");
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins(backend));
+    app.add_plugins(EventBusPlugins { backend: backend });
 
     let kafka_producer_config = KafkaProducerConfig::new(Vec::<String>::new())
         .compression_type("none")

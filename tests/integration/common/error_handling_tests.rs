@@ -102,7 +102,7 @@ fn test_delivery_error_handling() {
     mock_backend.simulate_delivery_failure_for_topic(&topic);
 
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins(mock_backend));
+    app.add_plugins(EventBusPlugins { backend: mock_backend });
 
     // Register event bindings for the mock backend scenario
     KafkaTopologyEventBinding::new::<TestErrorEvent>(vec![topic.clone()]).apply(&mut app);
@@ -203,7 +203,7 @@ fn test_multiple_event_types_error_handling() {
     mock_backend.simulate_delivery_failure_for_topic(&analytics_topic);
 
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins(mock_backend));
+    app.add_plugins(EventBusPlugins { backend: mock_backend });
 
     // Register all event types through topology bindings (includes error events)
     KafkaTopologyEventBinding::new::<PlayerEvent>(vec![player_topic.clone()]).apply(&mut app);
@@ -318,7 +318,7 @@ fn test_centralized_error_handling() {
     // working_topic is not configured to fail, so it should succeed
 
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins(mock_backend));
+    app.add_plugins(EventBusPlugins { backend: mock_backend });
 
     // Register the event bindings for both topics
     KafkaTopologyEventBinding::new::<TestEvent>(vec![working_topic.clone()]).apply(&mut app);
@@ -426,7 +426,7 @@ fn test_batch_operation_error_handling() {
     mock_backend.simulate_delivery_failure_for_topic(&topic);
 
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins(mock_backend));
+    app.add_plugins(EventBusPlugins { backend: mock_backend });
 
     KafkaTopologyEventBinding::new::<TestEvent>(vec![topic.clone()]).apply(&mut app);
 
@@ -529,7 +529,7 @@ fn test_error_retry_mechanism() {
     mock_backend.simulate_delivery_failure_for_topic(&topic);
 
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins(mock_backend));
+    app.add_plugins(EventBusPlugins { backend: mock_backend });
 
     KafkaTopologyEventBinding::new::<TestEvent>(vec![topic.clone()]).apply(&mut app);
 

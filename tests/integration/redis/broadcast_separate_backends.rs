@@ -63,7 +63,7 @@ fn test_broadcast_with_separate_backends() {
 
     // Setup reader1 app with backend1
     let mut reader1 = App::new();
-    reader1.add_plugins(EventBusPlugins(backend1));
+    reader1.add_plugins(EventBusPlugins { backend: backend1 });
     reader1.insert_resource(EventCollector::default());
 
     let s1 = stream.clone();
@@ -84,7 +84,7 @@ fn test_broadcast_with_separate_backends() {
 
     // Setup reader2 app with backend2
     let mut reader2 = App::new();
-    reader2.add_plugins(EventBusPlugins(backend2));
+    reader2.add_plugins(EventBusPlugins { backend: backend2 });
     reader2.insert_resource(EventCollector::default());
 
     let s2 = stream.clone();
@@ -105,7 +105,7 @@ fn test_broadcast_with_separate_backends() {
 
     // Setup writer app with writer backend
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(writer_backend));
+    writer.add_plugins(EventBusPlugins { backend: writer_backend });
 
     let stream_for_writer = stream.clone();
     writer.add_systems(
@@ -196,7 +196,7 @@ fn test_single_backend_consumer_group_round_robin() {
     .expect("Redis backend setup successful");
 
     let mut reader1 = App::new();
-    reader1.add_plugins(EventBusPlugins(backend.clone()));
+    reader1.add_plugins(EventBusPlugins { backend: backend.clone() });
     reader1.insert_resource(EventCollector::default());
 
     let reader_stream = stream.clone();
@@ -212,7 +212,7 @@ fn test_single_backend_consumer_group_round_robin() {
     );
 
     let mut reader2 = App::new();
-    reader2.add_plugins(EventBusPlugins(backend.clone()));
+    reader2.add_plugins(EventBusPlugins { backend: backend.clone() });
     reader2.insert_resource(EventCollector::default());
 
     let reader_stream = stream.clone();
@@ -228,7 +228,7 @@ fn test_single_backend_consumer_group_round_robin() {
     );
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(backend));
+    writer.add_plugins(EventBusPlugins { backend: backend });
 
     let writer_stream = stream.clone();
     writer.add_systems(

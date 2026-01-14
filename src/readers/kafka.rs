@@ -182,7 +182,7 @@ impl<'w, 's, T: BusEvent + Message> KafkaMessageReader<'w, 's, T> {
             consumer_group,
         };
 
-        match queue.0.try_send(request) {
+        match queue.sender.try_send(request) {
             Ok(_) => Ok(()),
             Err(TrySendError::Full(_)) => Err(KafkaReaderError::CommitQueueFull),
             Err(TrySendError::Disconnected(_)) => Err(KafkaReaderError::CommitQueueUnavailable),
@@ -199,7 +199,7 @@ impl<'w, 's, T: BusEvent + Message> KafkaMessageReader<'w, 's, T> {
             .as_ref()
             .ok_or(KafkaReaderError::LagDataUnavailable)?;
 
-        let snapshot = lag_cache.0.snapshot_for_group(config.get_consumer_group());
+        let snapshot = lag_cache.cache.snapshot_for_group(config.get_consumer_group());
 
         if snapshot.is_empty() {
             return Err(KafkaReaderError::LagDataUnavailable);

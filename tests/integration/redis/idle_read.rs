@@ -36,7 +36,7 @@ fn idle_empty_stream_poll_does_not_block() {
     let (backend, _context) = redis_setup::setup(request).expect("Redis backend setup successful");
 
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins(backend));
+    app.add_plugins(EventBusPlugins { backend });
 
     #[derive(Resource, Default)]
     struct Ticks(u32);

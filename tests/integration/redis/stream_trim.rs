@@ -66,7 +66,7 @@ fn writer_trim_stream_enforces_max_length() {
 
     // Execute the trim operation through the event writer.
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins(writer_backend));
+    app.add_plugins(EventBusPlugins { backend: writer_backend });
     app.insert_resource(TrimRequest {
         stream: stream.clone(),
         max_len: 1,

@@ -188,9 +188,9 @@ fn unlimited_buffer_separate_backends() {
     .expect("Writer Redis backend setup successful");
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(writer_backend));
+    writer.add_plugins(EventBusPlugins { backend: writer_backend });
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(reader_backend));
+    reader.add_plugins(EventBusPlugins { backend: reader_backend });
 
     reader.insert_resource(BackgroundStats::default());
 
@@ -292,9 +292,9 @@ fn drain_metrics_separate_backends() {
     .expect("Writer Redis backend setup successful");
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(writer_backend));
+    writer.add_plugins(EventBusPlugins { backend: writer_backend });
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(reader_backend));
+    reader.add_plugins(EventBusPlugins { backend: reader_backend });
 
     reader.insert_resource(BackgroundStats::default());
 
@@ -392,7 +392,7 @@ fn drain_empty_separate_backends() {
     .expect("Redis backend setup successful");
 
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(backend));
+    reader.add_plugins(EventBusPlugins { backend });
 
     reader.insert_resource(BackgroundStats::default());
     // Configure frame limiting
@@ -469,9 +469,9 @@ fn frame_limit_separate_backends() {
     .expect("Writer Redis backend setup successful");
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(writer_backend));
+    writer.add_plugins(EventBusPlugins { backend: writer_backend });
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(reader_backend));
+    reader.add_plugins(EventBusPlugins { backend: reader_backend });
 
     #[derive(Resource, Default)]
     struct FrameLimiter {

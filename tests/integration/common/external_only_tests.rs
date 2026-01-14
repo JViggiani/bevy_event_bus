@@ -18,7 +18,9 @@ struct InternalSeen(usize);
 fn writer_does_not_emit_bevy_events() {
     let mut app = App::new();
 
-    app.add_plugins(EventBusPlugins(MockEventBusBackend::new()));
+    app.add_plugins(EventBusPlugins {
+        backend: MockEventBusBackend::new(),
+    });
 
     let topic = unique_topic("external_only");
     KafkaTopologyEventBinding::new::<TestEvent>(vec![topic.clone()]).apply(&mut app);

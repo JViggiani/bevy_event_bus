@@ -6,34 +6,40 @@ use crate::runtime;
 
 /// Resource wrapper for EventBusBackend
 #[derive(Resource, Clone)]
-pub struct EventBusBackendResource(pub Arc<RwLock<Box<dyn EventBusBackend>>>);
+pub struct EventBusBackendResource {
+    pub backend: Arc<RwLock<Box<dyn EventBusBackend>>>,
+}
 
 impl EventBusBackendResource {
     pub fn new<B: EventBusBackend>(backend: B) -> Self {
-        Self(Arc::new(RwLock::new(Box::new(backend))))
+        Self {
+            backend: Arc::new(RwLock::new(Box::new(backend))),
+        }
     }
     pub fn from_box(boxed: Box<dyn EventBusBackend>) -> Self {
-        Self(Arc::new(RwLock::new(boxed)))
+        Self {
+            backend: Arc::new(RwLock::new(boxed)),
+        }
     }
 }
 
 // Provide explicit helpers instead of Deref for clarity
 impl EventBusBackendResource {
     pub fn read(&self) -> std::sync::RwLockReadGuard<'_, Box<dyn EventBusBackend>> {
-        self.0.read().unwrap()
+        self.backend.read().unwrap()
     }
     pub fn write(&self) -> std::sync::RwLockWriteGuard<'_, Box<dyn EventBusBackend>> {
-        self.0.write().unwrap()
+        self.backend.write().unwrap()
     }
 }
 
 impl Drop for EventBusBackendResource {
     fn drop(&mut self) {
-        if Arc::strong_count(&self.0) != 1 {
+        if Arc::strong_count(&self.backend) != 1 {
             return;
         }
 
-        if let Ok(mut backend) = self.0.write() {
+        if let Ok(mut backend) = self.backend.write() {
             let _ = runtime::block_on(backend.disconnect());
         }
     }

@@ -171,7 +171,7 @@ impl<'w, 's, T: BusEvent + Message> RedisMessageReader<'w, 's, T> {
 
         let request = RedisAckRequest::new(&metadata.stream, &metadata.entry_id, consumer_group);
 
-        match queue.0.try_send(request) {
+        match queue.sender.try_send(request) {
             Ok(_) => Ok(()),
             Err(TrySendError::Full(_)) => Err(RedisReaderError::AckQueueFull),
             Err(TrySendError::Disconnected(_)) => Err(RedisReaderError::AckQueueUnavailable),

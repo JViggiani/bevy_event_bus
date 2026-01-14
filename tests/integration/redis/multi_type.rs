@@ -44,10 +44,10 @@ fn single_topic_multiple_types_same_frame() {
     .expect("Redis reader backend setup successful");
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(backend_writer));
+    writer.add_plugins(EventBusPlugins { backend: backend_writer });
 
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(backend_reader));
+    reader.add_plugins(EventBusPlugins { backend: backend_reader });
 
     #[derive(Resource, Default)]
     struct CollectedTests(Vec<TestEvent>);
@@ -174,10 +174,10 @@ fn single_topic_multiple_types_interleaved_frames() {
     .expect("Redis reader backend setup successful");
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(backend_writer));
+    writer.add_plugins(EventBusPlugins { backend: backend_writer });
 
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(backend_reader));
+    reader.add_plugins(EventBusPlugins { backend: backend_reader });
 
     #[derive(Resource, Default)]
     struct CollectedTests(Vec<TestEvent>);

@@ -48,7 +48,7 @@ fn configuration_with_readers_writers_works() {
     // Consumer app styled after Kafka configuration test
     let mut reader_app = {
         let mut app = App::new();
-        app.add_plugins(EventBusPlugins(backend_reader));
+        app.add_plugins(EventBusPlugins { backend: backend_reader });
 
         let stream_clone = stream.clone();
         let consumer_group_clone = consumer_group.clone();
@@ -70,7 +70,7 @@ fn configuration_with_readers_writers_works() {
     // Producer app styled after Kafka configuration test
     let mut writer_app = {
         let mut app = App::new();
-        app.add_plugins(EventBusPlugins(backend_writer));
+        app.add_plugins(EventBusPlugins { backend: backend_writer });
 
         let stream_clone = stream.clone();
         let event_payload = TestEvent {
@@ -139,7 +139,7 @@ fn redis_specific_methods_work() {
     .expect("Redis backend setup successful");
 
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins(backend));
+    app.add_plugins(EventBusPlugins { backend: backend });
 
     let redis_producer_config = RedisProducerConfig::new(stream.clone());
     let redis_consumer_config = RedisConsumerConfig::new(consumer_group.clone(), [stream.clone()]);

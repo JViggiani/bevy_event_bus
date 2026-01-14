@@ -52,7 +52,7 @@ fn frame_limit_spreads_drain() {
     .expect("Reader Redis backend setup successful");
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(backend_writer));
+    writer.add_plugins(EventBusPlugins { backend: backend_writer });
 
     #[derive(Resource, Clone)]
     struct Payload(Vec<TestEvent>, String);
@@ -81,7 +81,7 @@ fn frame_limit_spreads_drain() {
     writer.update();
 
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(backend_reader));
+    reader.add_plugins(EventBusPlugins { backend: backend_reader });
     reader.insert_resource(EventBusConsumerConfig {
         max_events_per_frame: Some(5),
         max_drain_millis: None,

@@ -5,7 +5,9 @@ use bevy::prelude::*;
 
 /// Channel used by `KafkaMessageReader` to enqueue manual commit requests handled in the background.
 #[derive(Resource, Clone)]
-pub struct KafkaCommitQueue(pub Sender<KafkaCommitRequest>);
+pub struct KafkaCommitQueue {
+    pub sender: Sender<KafkaCommitRequest>,
+}
 
 /// Channel delivering results of commit attempts back to the main thread for event dispatching.
 #[derive(Resource)]
@@ -15,4 +17,6 @@ pub struct KafkaCommitResultChannel {
 
 /// Shared cache containing the latest per-topic consumer lag measurements.
 #[derive(Resource, Clone)]
-pub struct KafkaLagCacheResource(pub KafkaLagCache);
+pub struct KafkaLagCacheResource {
+    pub cache: KafkaLagCache,
+}

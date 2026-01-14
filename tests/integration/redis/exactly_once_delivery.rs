@@ -45,7 +45,7 @@ fn no_event_duplication_exactly_once_delivery() {
     .expect("reader Redis backend setup successful");
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(writer_backend));
+    writer.add_plugins(EventBusPlugins { backend: writer_backend });
 
     #[derive(Resource, Clone)]
     struct ToSend(Vec<TestEvent>, String);
@@ -69,7 +69,7 @@ fn no_event_duplication_exactly_once_delivery() {
     writer.add_systems(Update, writer_system);
 
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(reader_backend));
+    reader.add_plugins(EventBusPlugins { backend: reader_backend });
     #[derive(Resource, Default)]
     struct Collected(Vec<TestEvent>);
     reader.insert_resource(Collected::default());

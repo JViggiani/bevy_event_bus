@@ -75,7 +75,7 @@ fn test_multi_decoder() {
         builder.add_event::<GameStateUpdate>([topic_game_cfg.clone(), topic_analytics_cfg.clone()]);
     }));
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins(backend));
+    app.add_plugins(EventBusPlugins { backend: backend });
 
     // Initialize the app
     app.update();

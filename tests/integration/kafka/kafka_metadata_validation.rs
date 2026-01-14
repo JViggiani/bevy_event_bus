@@ -57,10 +57,10 @@ fn kafka_metadata_end_to_end_validation() {
 
     // Writer app
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(backend_w));
+    writer.add_plugins(EventBusPlugins { backend: backend_w });
     // Reader app - receives events and validates metadata
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(backend_r));
+    reader.add_plugins(EventBusPlugins { backend: backend_r });
 
     #[derive(Resource, Default)]
     struct ReceivedEventsWithMetadata(Vec<MessageWrapper<TestEvent>>);
@@ -299,11 +299,11 @@ fn kafka_metadata_topic_isolation() {
 
     // Writer app
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(backend_w));
+    writer.add_plugins(EventBusPlugins { backend: backend_w });
 
     // Reader app
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(backend_r));
+    reader.add_plugins(EventBusPlugins { backend: backend_r });
 
     #[derive(Resource, Default)]
     struct ReceivedEvents {
@@ -485,11 +485,11 @@ fn kafka_metadata_consistency_under_load() {
 
     // Writer app
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(backend_w));
+    writer.add_plugins(EventBusPlugins { backend: backend_w });
 
     // Reader app
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(backend_r));
+    reader.add_plugins(EventBusPlugins { backend: backend_r });
 
     #[derive(Resource, Default)]
     struct ReceivedEventsWithMetadata(Vec<MessageWrapper<TestEvent>>);

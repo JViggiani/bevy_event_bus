@@ -42,10 +42,10 @@ fn per_topic_order_preserved() {
     }));
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(backend_w));
+    writer.add_plugins(EventBusPlugins { backend: backend_w });
 
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(backend_r));
+    reader.add_plugins(EventBusPlugins { backend: backend_r });
 
     #[derive(Resource, Default)]
     struct Collected(Vec<TestEvent>);
@@ -155,8 +155,8 @@ fn cross_topic_interleave_each_ordered() {
     bevy_event_bus::runtime();
     let mut writer = App::new();
     let mut reader = App::new();
-    writer.add_plugins(EventBusPlugins(backend_w));
-    reader.add_plugins(EventBusPlugins(backend_r));
+    writer.add_plugins(EventBusPlugins { backend: backend_w });
+    reader.add_plugins(EventBusPlugins { backend: backend_r });
     let t1c = t1.clone();
     let t2c = t2.clone();
     // Single send frame like earlier test

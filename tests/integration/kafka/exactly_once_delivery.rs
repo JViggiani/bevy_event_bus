@@ -55,7 +55,7 @@ fn no_event_duplication_exactly_once_delivery() {
 
     // Writer app
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(backend_writer));
+    writer.add_plugins(EventBusPlugins { backend: backend_writer });
 
     // Send exactly 10 unique events (as a resource to avoid closure issues)
     #[derive(Resource, Clone)]
@@ -80,7 +80,7 @@ fn no_event_duplication_exactly_once_delivery() {
 
     // Reader app with separate backend
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(backend_reader));
+    reader.add_plugins(EventBusPlugins { backend: backend_reader });
 
     #[derive(Resource, Default)]
     struct Collected(Vec<TestEvent>);

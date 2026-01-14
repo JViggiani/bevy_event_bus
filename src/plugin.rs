@@ -23,7 +23,9 @@ impl Plugin for EventBusPlugin {
 }
 
 /// Plugin bundle that configures everything needed for the event bus
-pub struct EventBusPlugins<B: EventBusBackend>(pub B);
+pub struct EventBusPlugins<B: EventBusBackend> {
+    pub backend: B,
+}
 
 // -----------------------------------------------------------------------------
 // Backend lifecycle messages
@@ -49,7 +51,9 @@ enum LifecycleMessage {
 }
 
 #[derive(Resource)]
-struct BackendLifecycleChannel(crossbeam_channel::Receiver<LifecycleMessage>);
+struct BackendLifecycleChannel {
+    receiver: crossbeam_channel::Receiver<LifecycleMessage>,
+}
 
 // Resource tracking backend readiness state
 #[derive(Resource, Debug, Clone, Copy)]
@@ -92,12 +96,12 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
         app.add_plugins(EventBusPlugin);
         ensure_runtime(app);
 
-        self.0.configure_plugin(app);
+        self.backend.configure_plugin(app);
         // Create and add the backend as a resource
-        let boxed = self.0.clone_box();
+        let boxed = self.backend.clone_box();
         app.insert_resource(EventBusBackendResource::from_box(boxed));
         app.init_resource::<ProvisionedTopology>();
-        self.0.apply_event_bindings(app);
+        self.backend.apply_event_bindings(app);
         bevy_event_bus::writers::outbound_bridge::activate_registered_bridges(app);
         // Connect backend and capture runtime resources (message queue, commit channels, lag cache).
         if let Some(backend_res) = app
@@ -156,7 +160,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
                 topics: ready_topics.clone(),
             });
             app.world_mut()
-                .insert_resource(BackendLifecycleChannel(rx_life));
+                .insert_resource(BackendLifecycleChannel { receiver: rx_life });
             app.world_mut()
                 .insert_resource(BackendStatus { ready: false });
             app.world_mut().insert_resource(capabilities);
@@ -398,7 +402,7 @@ impl<B: EventBusBackend> Plugin for EventBusPlugins<B> {
             mut ready_writer: MessageWriter<BackendReadyMessage>,
         ) {
             if let Some(ch) = maybe_channel {
-                while let Ok(msg) = ch.0.try_recv() {
+                while let Ok(msg) = ch.receiver.try_recv() {
                     match msg {
                         LifecycleMessage::Ready { backend, topics } => {
                             ready_writer.write(BackendReadyMessage {

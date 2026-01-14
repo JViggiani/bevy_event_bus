@@ -43,10 +43,10 @@ fn per_stream_order_preserved() {
     .expect("Redis reader backend setup successful");
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(backend_writer));
+    writer.add_plugins(EventBusPlugins { backend: backend_writer });
 
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(backend_reader));
+    reader.add_plugins(EventBusPlugins { backend: backend_reader });
 
     #[derive(Resource, Default)]
     struct Collected(Vec<TestEvent>);
@@ -147,10 +147,10 @@ fn cross_stream_interleave_each_ordered() {
     .expect("Redis reader backend setup successful");
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(backend_writer));
+    writer.add_plugins(EventBusPlugins { backend: backend_writer });
 
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(backend_reader));
+    reader.add_plugins(EventBusPlugins { backend: backend_reader });
 
     #[derive(Resource, Default)]
     struct Collected {

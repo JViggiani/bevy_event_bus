@@ -49,7 +49,7 @@ fn read_bounded_limits_message_drain() {
     ));
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins(backend_writer));
+    writer.add_plugins(EventBusPlugins { backend: backend_writer });
 
     let tclone = topic.clone();
     writer.add_systems(Update, move |mut w: KafkaMessageWriter| {
@@ -68,7 +68,7 @@ fn read_bounded_limits_message_drain() {
     writer.update();
 
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins(backend_reader));
+    reader.add_plugins(EventBusPlugins { backend: backend_reader });
     reader.insert_resource(Collected::default());
 
     let topic_for_system = topic.clone();

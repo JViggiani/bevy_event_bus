@@ -137,7 +137,7 @@ fn complex_topology_routing() {
     .collect();
 
     let mut writer_app = App::new();
-    writer_app.add_plugins(EventBusPlugins(writer_backend));
+    writer_app.add_plugins(EventBusPlugins { backend: writer_backend });
 
     let writer_messages = message_catalog.clone();
     writer_app.add_systems(
@@ -162,7 +162,7 @@ fn complex_topology_routing() {
     );
 
     let mut reader_app = App::new();
-    reader_app.add_plugins(EventBusPlugins(reader_backend));
+    reader_app.add_plugins(EventBusPlugins { backend: reader_backend });
     reader_app.insert_resource(Collected::default());
 
     let group_topics: Vec<(String, Vec<String>)> = vec![

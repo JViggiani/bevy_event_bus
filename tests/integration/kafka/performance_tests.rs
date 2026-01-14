@@ -176,7 +176,7 @@ fn run_throughput_test(
     payload_size: usize,
 ) {
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins(backend));
+    app.add_plugins(EventBusPlugins { backend: backend });
 
     #[derive(Resource)]
     struct PerformanceTestState {

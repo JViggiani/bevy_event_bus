@@ -116,7 +116,9 @@ impl KafkaManualCommitHandle {
 
 impl ManualCommitHandle for KafkaManualCommitHandle {
     fn register_resources(&self, world: &mut World) {
-        world.insert_resource(KafkaCommitQueue(self.sender.clone()));
+        world.insert_resource(KafkaCommitQueue {
+            sender: self.sender.clone(),
+        });
         if let Some(receiver) = self.results.lock().unwrap().take() {
             world.insert_resource(KafkaCommitResultChannel { receiver });
         }
@@ -142,7 +144,9 @@ impl KafkaLagHandle {
 
 impl LagReportingHandle for KafkaLagHandle {
     fn register_resources(&self, world: &mut World) {
-        world.insert_resource(KafkaLagCacheResource(self.cache.clone()));
+        world.insert_resource(KafkaLagCacheResource {
+            cache: self.cache.clone(),
+        });
     }
 
     fn descriptor(&self) -> LagReportingDescriptor {

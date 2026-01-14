@@ -10,7 +10,9 @@ use bevy_event_bus::resources::MessageMetadata;
 
 /// Optional error callback used by the outbound bridge.
 #[derive(Resource, Clone)]
-pub struct OutboundErrorCallback(pub BusErrorCallback);
+pub struct OutboundErrorCallback {
+    pub callback: BusErrorCallback,
+}
 
 /// Tracks event types that need an outbound bridge and the systems used to service them.
 #[derive(Resource, Default)]
@@ -76,7 +78,7 @@ fn outbound_bridge_system<T: BusEvent + Message>(
         return;
     }
 
-    let callback_ref = error_callback.as_ref().map(|cb| &cb.0);
+    let callback_ref = error_callback.as_ref().map(|cb| &cb.callback);
 
     let emit_error = |topic: &str,
                       kind: BusErrorKind,

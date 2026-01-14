@@ -30,7 +30,7 @@ fn idle_empty_topic_poll_does_not_block() {
             .add_event_single::<TestEvent>(topic_for_backend.clone());
     }));
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins(backend));
+    app.add_plugins(EventBusPlugins { backend });
     #[derive(Resource, Default)]
     struct Ticks(u32);
     app.insert_resource(Ticks::default());

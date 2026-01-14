@@ -23,7 +23,7 @@ fn kafka_producer_emits_delivery_failure_error_for_missing_topic() {
         kafka_setup::prepare_backend(kafka_setup::build_request(options, |_| {}));
 
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins(backend));
+    app.add_plugins(EventBusPlugins { backend: backend });
 
     // Ensure event type is registered for the test payload.
     app.add_message::<TestEvent>();
