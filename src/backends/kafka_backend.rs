@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use bevy::log::{debug, warn};
 use crossbeam_channel::{
-    Receiver, RecvTimeoutError, SendTimeoutError, Sender, TryRecvError, TrySendError, bounded,
+    Receiver, RecvTimeoutError, Sender, TryRecvError, TrySendError, bounded,
 };
 use rdkafka::{
     ClientContext, Offset, TopicPartitionList,
@@ -371,7 +371,7 @@ impl KafkaEventBusBackend {
 
         let (incoming_tx, incoming_rx) = bounded(capacities.message);
         let (commit_tx, commit_rx) = bounded(capacities.commit);
-        let (result_tx, result_rx) = bounded(capacities.result);
+        let (result_tx, result_rx) = bounded(capacities.commit);
 
         let state = KafkaBackendState {
             config,
@@ -531,14 +531,8 @@ impl KafkaEventBusBackend {
             let producer_clone = producer.clone();
             let dropped_clone = dropped.clone();
             let handle = runtime::runtime().spawn(async move {
-                consumer_loop(
-                    runtime,
-                    tx_clone,
-                    running_clone,
-                    producer_clone,
-                    dropped_clone,
-                )
-                .await;
+                consumer_loop(runtime, tx_clone, running_clone, producer_clone, dropped_clone)
+                    .await;
             });
             handles.push(handle);
         }
@@ -1225,9 +1219,69 @@ async fn consumer_loop(
     producer: Arc<BaseProducer<EventBusProducerContext>>,
     dropped: Arc<AtomicUsize>,
 ) {
+    let mut buffered_messages: VecDeque<IncomingMessage> = VecDeque::new();
+
+    let pause_partitions = |consumer: &BaseConsumer, group_id: &str| {
+        match consumer.assignment() {
+            Ok(assignment) => {
+                if let Err(err) = consumer.pause(&assignment) {
+                    warn!(error = %err, consumer_group = %group_id, "Failed to pause Kafka consumer");
+                }
+            }
+            Err(err) => {
+                warn!(error = %err, consumer_group = %group_id, "Failed to fetch Kafka assignment for pause");
+            }
+        }
+    };
+
+    let resume_partitions = |consumer: &BaseConsumer, group_id: &str| {
+        match consumer.assignment() {
+            Ok(assignment) => {
+                if let Err(err) = consumer.resume(&assignment) {
+                    warn!(error = %err, consumer_group = %group_id, "Failed to resume Kafka consumer");
+                }
+            }
+            Err(err) => {
+                warn!(error = %err, consumer_group = %group_id, "Failed to fetch Kafka assignment for resume");
+            }
+        }
+    };
+
     while running.load(Ordering::Relaxed) {
         producer.poll(Duration::from_millis(0));
-        match runtime.consumer.poll(Duration::from_millis(50)) {
+
+        let mut sent_any = false;
+        while let Some(message) = buffered_messages.pop_front() {
+            match tx.try_send(message) {
+                Ok(()) => {
+                    sent_any = true;
+                }
+                Err(TrySendError::Full(returned)) => {
+                    buffered_messages.push_front(returned);
+                    break;
+                }
+                Err(TrySendError::Disconnected(_returned)) => {
+                    dropped.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+            }
+        }
+
+        let mut backpressured = !buffered_messages.is_empty();
+        if backpressured {
+            pause_partitions(&runtime.consumer, &runtime.group_id);
+        } else {
+            resume_partitions(&runtime.consumer, &runtime.group_id);
+        }
+
+        match runtime
+            .consumer
+            .poll(if backpressured {
+                Duration::from_millis(0)
+            } else {
+                Duration::from_millis(50)
+            })
+        {
             Some(Ok(message)) => {
                 let payload = match message.payload() {
                     Some(payload) => payload.to_vec(),
@@ -1264,38 +1318,16 @@ async fn consumer_loop(
                     Some(Box::new(kafka_metadata)),
                 );
 
-                let mut pending = msg;
-
-                loop {
-                    match tx.try_send(pending) {
-                        Ok(_) => break,
-                        Err(TrySendError::Full(returned)) => {
-                            if !running.load(Ordering::Relaxed) {
-                                dropped.fetch_add(1, Ordering::Relaxed);
-                                break;
-                            }
-                            match tokio::task::block_in_place(|| {
-                                tx.send_timeout(returned, Duration::from_millis(50))
-                            }) {
-                                Ok(()) => break,
-                                Err(SendTimeoutError::Timeout(returned_again)) => {
-                                    if !running.load(Ordering::Relaxed) {
-                                        dropped.fetch_add(1, Ordering::Relaxed);
-                                        break;
-                                    }
-                                    pending = returned_again;
-                                }
-                                Err(SendTimeoutError::Disconnected(_returned)) => {
-                                    dropped.fetch_add(1, Ordering::Relaxed);
-                                    break;
-                                }
-                            }
-                        }
-                        Err(TrySendError::Disconnected(returned)) => {
-                            let _ = returned;
-                            dropped.fetch_add(1, Ordering::Relaxed);
-                            break;
-                        }
+                match tx.try_send(msg) {
+                    Ok(()) => {}
+                    Err(TrySendError::Full(returned)) => {
+                        buffered_messages.push_back(returned);
+                        backpressured = true;
+                        pause_partitions(&runtime.consumer, &runtime.group_id);
+                    }
+                    Err(TrySendError::Disconnected(_returned)) => {
+                        dropped.fetch_add(1, Ordering::Relaxed);
+                        return;
                     }
                 }
             }
@@ -1303,6 +1335,10 @@ async fn consumer_loop(
                 warn!("Kafka consumer poll error: {err}");
             }
             None => {}
+        }
+
+        if backpressured && !sent_any {
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
     }
 }

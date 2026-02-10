@@ -15,16 +15,11 @@ use std::time::Duration;
 pub struct KafkaChannelCapacities {
     pub message: usize,
     pub commit: usize,
-    pub result: usize,
 }
 
 impl KafkaChannelCapacities {
-    pub fn new(message: usize, commit: usize, result: usize) -> Self {
-        Self {
-            message,
-            commit,
-            result,
-        }
+    pub fn new(message: usize, commit: usize) -> Self {
+        Self { message, commit }
     }
 
     pub fn message_capacity(mut self, capacity: usize) -> Self {
@@ -36,19 +31,13 @@ impl KafkaChannelCapacities {
         self.commit = capacity;
         self
     }
-
-    pub fn result_capacity(mut self, capacity: usize) -> Self {
-        self.result = capacity;
-        self
-    }
 }
 
 impl Default for KafkaChannelCapacities {
     fn default() -> Self {
         Self {
-            message: 10_000,
-            commit: 2_048,
-            result: 1_024,
+            message: 256,
+            commit: 256,
         }
     }
 }
@@ -779,5 +768,17 @@ impl<T> std::ops::Deref for UncommittedEvent<T> {
 
     fn deref(&self) -> &Self::Target {
         &self.event
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::KafkaChannelCapacities;
+
+    #[test]
+    fn kafka_channel_capacities_defaults_are_bounded() {
+        let defaults = KafkaChannelCapacities::default();
+        assert_eq!(defaults.message, 256);
+        assert_eq!(defaults.commit, 256);
     }
 }
