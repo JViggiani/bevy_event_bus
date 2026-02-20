@@ -9,7 +9,7 @@ use rdkafka::{
     client::DefaultClientContext,
     config::ClientConfig,
     consumer::{BaseConsumer, CommitMode, Consumer},
-    error::KafkaError,
+    error::{KafkaError, RDKafkaErrorCode},
     message::{Header, Headers, Message, OwnedHeaders},
     producer::{BaseProducer, BaseRecord, DeliveryResult, Producer, ProducerContext},
 };
@@ -530,9 +530,8 @@ impl KafkaEventBusBackend {
             let running_clone = running.clone();
             let producer_clone = producer.clone();
             let dropped_clone = dropped.clone();
-            let handle = runtime::runtime().spawn(async move {
-                consumer_loop(runtime, tx_clone, running_clone, producer_clone, dropped_clone)
-                    .await;
+            let handle = runtime::runtime().spawn_blocking(move || {
+                consumer_loop(runtime, tx_clone, running_clone, producer_clone, dropped_clone);
             });
             handles.push(handle);
         }
@@ -597,34 +596,86 @@ impl KafkaEventBusBackend {
         let consumers = self.state.consumers.clone();
         let lag_cache = self.state.lag_cache.clone();
         let poll_interval = self.state.config.consumer_lag_poll_interval;
+        let connection = self.state.config.connection.clone();
+
+        // How many consecutive BrokerTransportFailure results to tolerate quietly
+        // (logged at debug) before escalating to warn. This covers the normal
+        // window where rdkafka is still bootstrapping its broker connection on
+        // startup without requiring any hardcoded sleep.
+        const TRANSPORT_WARN_THRESHOLD: u32 = 3;
 
         let handle = runtime::runtime().spawn(async move {
+            // consecutive transport failure counts, keyed by (group_id, topic)
+            let mut transport_failures: HashMap<(String, String), u32> = HashMap::new();
+
             let mut ticker = tokio::time::interval(poll_interval);
             while running.load(Ordering::Relaxed) {
                 ticker.tick().await;
                 let snapshot = consumers.lock().unwrap().clone();
                 for runtime in snapshot.values() {
                     for topic in &runtime.topics {
-                        match compute_consumer_lag(runtime, topic) {
-                            Ok(lag) => {
+                        let group_id = runtime.group_id.clone();
+                        let topic = topic.clone();
+                        let connection_for_lag = connection.clone();
+                        let group_id_for_lag = group_id.clone();
+                        let topic_for_compute = topic.clone();
+
+                        let measurement = tokio::task::spawn_blocking(move || {
+                            compute_consumer_lag(&connection_for_lag, &group_id_for_lag, &topic_for_compute)
+                        })
+                        .await;
+
+                        let key = (group_id.clone(), topic.clone());
+                        match measurement {
+                            Ok(Ok(lag)) => {
+                                transport_failures.remove(&key);
                                 lag_cache.update(
-                                    &runtime.group_id,
-                                    topic,
+                                    &group_id,
+                                    &topic,
                                     KafkaLagMeasurement {
                                         lag,
                                         last_updated: Instant::now(),
                                     },
                                 );
                             }
-                            Err(err) => {
+                            Ok(Err(KafkaError::MetadataFetch(RDKafkaErrorCode::BrokerTransportFailure))) => {
+                                let count = transport_failures.entry(key).or_insert(0);
+                                *count += 1;
+                                if *count <= TRANSPORT_WARN_THRESHOLD {
+                                    debug!(
+                                        consumer_group = %group_id,
+                                        topic = %topic,
+                                        attempt = *count,
+                                        "Broker transport not yet ready; will retry consumer lag"
+                                    );
+                                } else {
+                                    warn!(
+                                        consumer_group = %group_id,
+                                        topic = %topic,
+                                        consecutive_failures = *count,
+                                        "Failed to refresh consumer lag: broker transport failure"
+                                    );
+                                }
+                            }
+                            Ok(Err(err)) => {
+                                transport_failures.remove(&key);
                                 warn!(
-                                    consumer_group = %runtime.group_id,
+                                    consumer_group = %group_id,
                                     topic = %topic,
                                     error = %err,
                                     "Failed to refresh consumer lag"
                                 );
                             }
-                        }
+                            Err(err) => {
+                                transport_failures.remove(&key);
+                                warn!(
+                                    consumer_group = %group_id,
+                                    topic = %topic,
+                                    error = %err,
+                                    "Failed to refresh consumer lag"
+                                );
+                            }
+                        };
                     }
                 }
             }
@@ -891,12 +942,15 @@ impl ManualCommitController for KafkaEventBusBackend {
 #[async_trait]
 impl LagReportingBackend for KafkaEventBusBackend {
     async fn get_consumer_lag(&self, topic: &str, group_id: &str) -> Result<i64, String> {
-        let consumers = self.state.consumers.lock().unwrap();
-        if let Some(runtime) = consumers.get(group_id) {
-            compute_consumer_lag(runtime, topic)
-        } else {
-            Err(format!("Consumer group '{}' not found", group_id))
-        }
+        let connection = self.state.config.connection.clone();
+        let group_id = group_id.to_string();
+        let topic = topic.to_string();
+        tokio::task::spawn_blocking(move || {
+            compute_consumer_lag(&connection, &group_id, &topic)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
     }
 }
 
@@ -1212,7 +1266,7 @@ fn build_consumer(
     cfg.create()
 }
 
-async fn consumer_loop(
+fn consumer_loop(
     runtime: ConsumerRuntime,
     tx: Sender<IncomingMessage>,
     running: Arc<AtomicBool>,
@@ -1338,7 +1392,7 @@ async fn consumer_loop(
         }
 
         if backpressured && !sent_any {
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            std::thread::sleep(Duration::from_millis(5));
         }
     }
 }
@@ -1361,18 +1415,27 @@ fn commit_offset_sync(runtime: &ConsumerRuntime, req: &KafkaCommitRequest) -> Re
         .map_err(|err| err.to_string())
 }
 
-fn compute_consumer_lag(runtime: &ConsumerRuntime, topic: &str) -> Result<i64, String> {
-    let consumer = &runtime.consumer;
+fn compute_consumer_lag(connection: &KafkaConnectionConfig, group_id: &str, topic: &str) -> Result<i64, KafkaError> {
+    // Build a fresh, short-lived consumer for each measurement. The long-lived
+    // consuming BaseConsumer can get its transport stuck in a failed state after
+    // a broker restart while still delivering messages via poll(). A fresh client
+    // always reflects the current broker reachability, matching the behaviour of
+    // the health check's AdminClient.
+    let mut cfg = ClientConfig::new();
+    apply_connection_settings(&mut cfg, connection);
+    cfg.set("group.id", group_id);
+    cfg.set("enable.auto.commit", "false");
+    cfg.set("session.timeout.ms", "6000");
+    let consumer: BaseConsumer = cfg.create()?;
 
     let metadata = consumer
-        .fetch_metadata(Some(topic), Duration::from_secs(5))
-        .map_err(|err| err.to_string())?;
+        .fetch_metadata(Some(topic), Duration::from_secs(5))?;
 
     let topic_metadata = metadata
         .topics()
         .iter()
         .find(|t| t.name() == topic)
-        .ok_or_else(|| format!("Topic '{topic}' not found in metadata"))?;
+        .ok_or(KafkaError::MetadataFetch(RDKafkaErrorCode::UnknownTopicOrPartition))?;
 
     let mut total_lag = 0i64;
 
@@ -1380,16 +1443,13 @@ fn compute_consumer_lag(runtime: &ConsumerRuntime, topic: &str) -> Result<i64, S
         let partition_id = partition.id();
 
         let (low, high) = consumer
-            .fetch_watermarks(topic, partition_id, Duration::from_secs(5))
-            .map_err(|err| err.to_string())?;
+            .fetch_watermarks(topic, partition_id, Duration::from_secs(5))?;
 
         let mut tpl = TopicPartitionList::new();
-        tpl.add_partition_offset(topic, partition_id, Offset::Invalid)
-            .map_err(|err| err.to_string())?;
+        tpl.add_partition_offset(topic, partition_id, Offset::Invalid)?;
 
         let committed = consumer
-            .committed_offsets(tpl, Duration::from_secs(5))
-            .map_err(|err| err.to_string())?;
+            .committed_offsets(tpl, Duration::from_secs(5))?;
 
         if let Some(elem) = committed.elements().first() {
             match elem.offset() {
@@ -1418,3 +1478,4 @@ mod tests {
         assert_eq!(std::mem::size_of_val(&context), 0);
     }
 }
+// sync-test 1771243362
