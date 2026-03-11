@@ -52,7 +52,9 @@ struct ReaderState {
 }
 
 #[derive(Resource, Default)]
-struct CapturedEvents(Vec<MessageWrapper<TestEvent>>);
+struct CapturedEvents {
+    events: Vec<MessageWrapper<TestEvent>>,
+}
 
 fn capture_wrapped_events(
     mut reader: KafkaMessageReader<TestEvent>,
@@ -61,7 +63,7 @@ fn capture_wrapped_events(
 ) {
     let config = KafkaConsumerConfig::new(state.consumer_group.clone(), [&state.topic]);
     for wrapper in reader.read(&config) {
-        captured.0.push(wrapper.clone());
+        captured.events.push(wrapper.clone());
     }
 }
 
@@ -131,7 +133,7 @@ fn external_bus_events_flow_from_both_writers() {
     reader_app.add_systems(Update, capture_wrapped_events);
 
     let received = wait_for_events(&mut reader_app, &topic, 12_000, 2, |app| {
-        app.world().resource::<CapturedEvents>().0.clone()
+        app.world().resource::<CapturedEvents>().events.clone()
     });
 
     assert_eq!(

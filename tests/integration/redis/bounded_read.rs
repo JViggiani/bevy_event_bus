@@ -12,7 +12,9 @@ use integration_tests::utils::helpers::{
 use integration_tests::utils::redis_setup;
 
 #[derive(Resource, Default)]
-struct Collected(Vec<TestEvent>);
+struct Collected {
+    events: Vec<TestEvent>,
+}
 
 #[test]
 fn read_bounded_limits_stream_drain() {
@@ -84,25 +86,25 @@ fn read_bounded_limits_stream_drain() {
             for wrapper in r.read_bounded(&config, 2) {
                 r.acknowledge(&wrapper)
                     .expect("Redis acknowledge should succeed for bounded read test");
-                collected.0.push(wrapper.event().clone());
+                collected.events.push(wrapper.event().clone());
             }
         },
     );
 
     let (received_initial, _frames) = update_until(&mut reader, 5_000, |app| {
-        let len = app.world().resource::<Collected>().0.len();
+        let len = app.world().resource::<Collected>().events.len();
         len > 0
     });
     assert!(received_initial, "Timed out waiting for first bounded batch");
-    let first_batch = reader.world().resource::<Collected>().0.len();
+    let first_batch = reader.world().resource::<Collected>().events.len();
     assert_eq!(first_batch, 2, "first bounded read should return exactly 2 events");
 
     let (ok, _frames) = update_until(&mut reader, 5_000, |app| {
         let collected = app.world().resource::<Collected>();
-        collected.0.len() >= 4
+        collected.events.len() >= 4
     });
     assert!(ok, "Timed out waiting for second bounded drain");
 
     let collected = reader.world().resource::<Collected>();
-    assert_eq!(collected.0.len(), 4);
+    assert_eq!(collected.events.len(), 4);
 }

@@ -48,7 +48,10 @@ fn no_event_duplication_exactly_once_delivery() {
     writer.add_plugins(EventBusPlugins { backend: writer_backend });
 
     #[derive(Resource, Clone)]
-    struct ToSend(Vec<TestEvent>, String);
+    struct ToSend {
+        events: Vec<TestEvent>,
+        stream: String,
+    }
 
     let expected_events: Vec<TestEvent> = (0..10)
         .map(|i| TestEvent {
@@ -57,11 +60,14 @@ fn no_event_duplication_exactly_once_delivery() {
         })
         .collect();
 
-    writer.insert_resource(ToSend(expected_events.clone(), stream.clone()));
+    writer.insert_resource(ToSend {
+        events: expected_events.clone(),
+        stream: stream.clone(),
+    });
 
     fn writer_system(mut writer: RedisMessageWriter, data: Res<ToSend>) {
-        let config = RedisProducerConfig::new(data.1.clone());
-        for event in &data.0 {
+        let config = RedisProducerConfig::new(data.stream.clone());
+        for event in &data.events {
             writer.write(&config, event.clone(), None);
         }
     }
@@ -71,16 +77,22 @@ fn no_event_duplication_exactly_once_delivery() {
     let mut reader = App::new();
     reader.add_plugins(EventBusPlugins { backend: reader_backend });
     #[derive(Resource, Default)]
-    struct Collected(Vec<TestEvent>);
+    struct Collected {
+        events: Vec<TestEvent>,
+    }
     reader.insert_resource(Collected::default());
 
     #[derive(Resource, Clone)]
-    struct Stream(String);
+    struct Stream {
+        name: String,
+    }
     #[derive(Resource, Clone)]
-    struct Group(String);
+    struct Group {
+        name: String,
+    }
 
-    reader.insert_resource(Stream(stream.clone()));
-    reader.insert_resource(Group(consumer_group));
+    reader.insert_resource(Stream { name: stream.clone() });
+    reader.insert_resource(Group { name: consumer_group });
 
     fn reader_system(
         mut reader: RedisMessageReader<TestEvent>,
@@ -88,12 +100,12 @@ fn no_event_duplication_exactly_once_delivery() {
         group: Res<Group>,
         mut collected: ResMut<Collected>,
     ) {
-        let config = RedisConsumerConfig::new(group.0.clone(), [stream.0.clone()]);
+        let config = RedisConsumerConfig::new(group.name.clone(), [stream.name.clone()]);
         for wrapper in reader.read(&config) {
             reader
                 .acknowledge(&wrapper)
                 .expect("Redis acknowledge should succeed for exactly-once test");
-            collected.0.push(wrapper.event().clone());
+            collected.events.push(wrapper.event().clone());
         }
     }
 
@@ -103,7 +115,7 @@ fn no_event_duplication_exactly_once_delivery() {
 
     let (ok, _frames) = update_until(&mut reader, 5_000, |app| {
         let collected = app.world().resource::<Collected>();
-        collected.0.len() >= 10
+        collected.events.len() >= 10
     });
 
     let collected = reader.world().resource::<Collected>();
@@ -111,19 +123,19 @@ fn no_event_duplication_exactly_once_delivery() {
     assert!(
         ok,
         "Timed out waiting for events. Got {} events",
-        collected.0.len()
+        collected.events.len()
     );
 
     assert_eq!(
-        collected.0.len(),
+        collected.events.len(),
         10,
         "Expected exactly 10 events, got {}",
-        collected.0.len()
+        collected.events.len()
     );
 
     for expected in &expected_events {
         let count = collected
-            .0
+            .events
             .iter()
             .filter(|event| event.message == expected.message && event.value == expected.value)
             .count();
@@ -138,9 +150,9 @@ fn no_event_duplication_exactly_once_delivery() {
 
     let collected_after_wait = reader.world().resource::<Collected>();
     assert_eq!(
-        collected_after_wait.0.len(),
+        collected_after_wait.events.len(),
         10,
         "Additional events appeared after waiting: expected 10, got {}",
-        collected_after_wait.0.len()
+        collected_after_wait.events.len()
     );
 }

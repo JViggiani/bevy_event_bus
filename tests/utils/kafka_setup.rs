@@ -21,7 +21,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
 
-const DEFAULT_IMAGE: &str = "redpandadata/redpanda:v23.3.16";
+const DEFAULT_IMAGE: &str = "apache/kafka:4.0.0";
 const CONTAINER_NAME: &str = "bevy_event_bus_test_kafka";
 const DEFAULT_OFFSET: &str = "latest";
 
@@ -154,24 +154,8 @@ fn ensure_container() -> Option<String> {
             let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
             info!(existing_id = %id, took_ms = detect_start.elapsed().as_millis(), "Found existing Kafka container");
             state.id = Some(id);
-            state.bootstrap = Some("localhost:9092".into());
+            state.bootstrap = Some("localhost:19092".into());
             state.launched = true; // treat as launched for lifetime mgmt (won't remove if not --rm?)
-            let _ = Command::new("docker")
-                .args([
-                    "exec",
-                    state
-                        .id
-                        .as_ref()
-                        .map(String::as_str)
-                        .unwrap_or(CONTAINER_NAME),
-                    "rpk",
-                    "cluster",
-                    "config",
-                    "set",
-                    "auto_create_topics_enabled",
-                    "false",
-                ])
-                .status();
             return state.bootstrap.clone();
         }
     }
@@ -183,6 +167,11 @@ fn ensure_container() -> Option<String> {
             .args(["pull", DEFAULT_IMAGE])
             .status();
     }
+
+    // Remove any stopped container with the same name before launching.
+    let _ = Command::new("docker")
+        .args(["rm", CONTAINER_NAME])
+        .output();
 
     let run_span = info_span!("kafka_container.run", image = DEFAULT_IMAGE);
     let run_start = Instant::now();
@@ -196,25 +185,26 @@ fn ensure_container() -> Option<String> {
                 "--name",
                 CONTAINER_NAME,
                 "-p",
-                "9092:9092",
+                "19092:9092",
+                "-e",
+                "KAFKA_NODE_ID=1",
+                "-e",
+                "KAFKA_PROCESS_ROLES=broker,controller",
+                "-e",
+                "KAFKA_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093",
+                "-e",
+                "KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:19092",
+                "-e",
+                "KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER",
+                "-e",
+                "KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT",
+                "-e",
+                "KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093",
+                "-e",
+                "KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1",
+                "-e",
+                "KAFKA_AUTO_CREATE_TOPICS_ENABLE=false",
                 DEFAULT_IMAGE,
-                "start",
-                "--smp",
-                "1",
-                "--memory",
-                "1G",
-                "--reserve-memory",
-                "0M",
-                "--overprovisioned",
-                "--node-id",
-                "0",
-                "--check=false",
-                "--kafka-addr",
-                "PLAINTEXT://0.0.0.0:9092",
-                "--advertise-kafka-addr",
-                "PLAINTEXT://localhost:9092",
-                "--set",
-                "redpanda.auto_create_topics_enabled=false",
             ])
             .output()
             .ok()
@@ -230,30 +220,14 @@ fn ensure_container() -> Option<String> {
                 "Started Kafka-compatible container"
             );
             state.id = Some(id);
-            state.bootstrap = Some("localhost:9092".into());
+            state.bootstrap = Some("localhost:19092".into());
             state.launched = true;
             state.image = Some(DEFAULT_IMAGE.to_string());
-            let _ = Command::new("docker")
-                .args([
-                    "exec",
-                    state
-                        .id
-                        .as_ref()
-                        .map(String::as_str)
-                        .unwrap_or(CONTAINER_NAME),
-                    "rpk",
-                    "cluster",
-                    "config",
-                    "set",
-                    "auto_create_topics_enabled",
-                    "false",
-                ])
-                .status();
             return state.bootstrap.clone();
         }
     }
 
-    info!("Failed to start Kafka test container; falling back to external localhost:9092");
+    info!("Failed to start Kafka test container; falling back to external localhost:19092");
     None
 }
 
@@ -261,8 +235,8 @@ fn wait_ready(bootstrap: &str) -> bool {
     let span = info_span!("kafka_container.wait_ready", bootstrap = bootstrap);
     let _g = span.enter();
     let start = Instant::now();
-    // Reduce timeout from 40s -> 8s for faster feedback
-    let timeout = Duration::from_secs(8);
+    // Reduce timeout from 40s -> 20s; Apache Kafka 4.0 KRaft typically ready in ~10s
+    let timeout = Duration::from_secs(20);
     let mut attempts = 0u32;
     while start.elapsed() < timeout {
         attempts += 1;
@@ -365,7 +339,6 @@ where
     } = options;
 
     let container_bootstrap = ensure_container();
-    let container_from_docker = container_bootstrap.is_some();
     let bootstrap = container_bootstrap.unwrap_or_else(|| {
         std::env::var("KAFKA_BOOTSTRAP_SERVERS").unwrap_or_else(|_| "localhost:9092".into())
     });
@@ -377,23 +350,6 @@ where
             "Kafka not TCP ready at {}. Ensure docker is running or set KAFKA_BOOTSTRAP_SERVERS.",
             bootstrap
         );
-    }
-
-    if container_from_docker {
-        if let Some(id) = CONTAINER_STATE.lock().unwrap().id.clone() {
-            let _ = Command::new("docker")
-                .args([
-                    "exec",
-                    id.as_str(),
-                    "rpk",
-                    "cluster",
-                    "config",
-                    "set",
-                    "auto_create_topics_enabled",
-                    "false",
-                ])
-                .status();
-        }
     }
 
     // Require metadata readiness once per test process; subsequent setup calls skip wait.

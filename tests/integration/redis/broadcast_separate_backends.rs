@@ -13,7 +13,9 @@ use integration_tests::utils::helpers::{
 use integration_tests::utils::redis_setup;
 
 #[derive(Resource, Default)]
-struct EventCollector(Vec<TestEvent>);
+struct EventCollector {
+    events: Vec<TestEvent>,
+}
 
 /// Test that readers in DIFFERENT consumer groups each receive ALL messages (broadcast behavior)
 /// Uses separate backends per consumer group to ensure proper isolation
@@ -72,12 +74,12 @@ fn test_broadcast_with_separate_backends() {
         Update,
         move |mut r: RedisMessageReader<TestEvent>, mut c: ResMut<EventCollector>| {
             let config = RedisConsumerConfig::new(g1.clone(), [s1.clone()]);
-            let initial_count = c.0.len();
+            let initial_count = c.events.len();
             for wrapper in r.read(&config) {
-                c.0.push(wrapper.event().clone());
+                c.events.push(wrapper.event().clone());
             }
-            if c.0.len() > initial_count {
-                println!("Reader1 (group1) total events: {}", c.0.len());
+            if c.events.len() > initial_count {
+                println!("Reader1 (group1) total events: {}", c.events.len());
             }
         },
     );
@@ -93,12 +95,12 @@ fn test_broadcast_with_separate_backends() {
         Update,
         move |mut r: RedisMessageReader<TestEvent>, mut c: ResMut<EventCollector>| {
             let config = RedisConsumerConfig::new(g2.clone(), [s2.clone()]);
-            let initial_count = c.0.len();
+            let initial_count = c.events.len();
             for wrapper in r.read(&config) {
-                c.0.push(wrapper.event().clone());
+                c.events.push(wrapper.event().clone());
             }
-            if c.0.len() > initial_count {
-                println!("Reader2 (group2) total events: {}", c.0.len());
+            if c.events.len() > initial_count {
+                println!("Reader2 (group2) total events: {}", c.events.len());
             }
         },
     );
@@ -143,12 +145,12 @@ fn test_broadcast_with_separate_backends() {
     // Wait for message distribution
     let (_received1, _) = update_until(&mut reader1, 5000, |app| {
         let collected = app.world().resource::<EventCollector>();
-        collected.0.len() >= 4 // Expect all messages
+        collected.events.len() >= 4 // Expect all messages
     });
 
     let (_received2, _) = update_until(&mut reader2, 5000, |app| {
         let collected = app.world().resource::<EventCollector>();
-        collected.0.len() >= 4 // Expect all messages
+        collected.events.len() >= 4 // Expect all messages
     });
 
     let collected1 = reader1.world().resource::<EventCollector>();
@@ -156,18 +158,18 @@ fn test_broadcast_with_separate_backends() {
 
     println!(
         "Test result: Reader1 (group1) got {} events, Reader2 (group2) got {} events",
-        collected1.0.len(),
-        collected2.0.len()
+        collected1.events.len(),
+        collected2.events.len()
     );
 
     // Separate consumer groups on the shared backend should each observe the complete stream.
     assert_eq!(
-        collected1.0.len(),
+        collected1.events.len(),
         4,
         "Reader1 should receive all broadcast events"
     );
     assert_eq!(
-        collected2.0.len(),
+        collected2.events.len(),
         4,
         "Reader2 should receive all broadcast events"
     );
@@ -206,7 +208,7 @@ fn test_single_backend_consumer_group_round_robin() {
         move |mut reader: RedisMessageReader<TestEvent>, mut collected: ResMut<EventCollector>| {
             let config = RedisConsumerConfig::new(reader_group.clone(), [reader_stream.clone()]);
             for wrapper in reader.read(&config) {
-                collected.0.push(wrapper.event().clone());
+                collected.events.push(wrapper.event().clone());
             }
         },
     );
@@ -222,7 +224,7 @@ fn test_single_backend_consumer_group_round_robin() {
         move |mut reader: RedisMessageReader<TestEvent>, mut collected: ResMut<EventCollector>| {
             let config = RedisConsumerConfig::new(reader_group.clone(), [reader_stream.clone()]);
             for wrapper in reader.read(&config) {
-                collected.0.push(wrapper.event().clone());
+                collected.events.push(wrapper.event().clone());
             }
         },
     );
@@ -255,16 +257,16 @@ fn test_single_backend_consumer_group_round_robin() {
 
     let (received1, _) = update_until(&mut reader1, 5_000, |app| {
         let collected = app.world().resource::<EventCollector>();
-        !collected.0.is_empty()
+        !collected.events.is_empty()
     });
     let (received2, _) = update_until(&mut reader2, 5_000, |app| {
         let collected = app.world().resource::<EventCollector>();
-        !collected.0.is_empty()
+        !collected.events.is_empty()
     });
 
     let collected1 = reader1.world().resource::<EventCollector>();
     let collected2 = reader2.world().resource::<EventCollector>();
-    let total_events = collected1.0.len() + collected2.0.len();
+    let total_events = collected1.events.len() + collected2.events.len();
 
     assert!(
         received1 || received2,

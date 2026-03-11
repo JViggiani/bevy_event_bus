@@ -49,14 +49,22 @@ fn kafka_single_direction_writer_reader_flow() {
     reader_app.add_plugins(EventBusPlugins { backend: backend_reader });
 
     #[derive(Resource, Default)]
-    struct Collected(Vec<TestEvent>);
+    struct Collected {
+        events: Vec<TestEvent>,
+    }
     reader_app.insert_resource(Collected::default());
     #[derive(Resource, Clone)]
-    struct Topic(String);
+    struct Topic {
+        name: String,
+    }
     #[derive(Resource, Clone)]
-    struct ConsumerGroup(String);
-    reader_app.insert_resource(Topic(topic.clone()));
-    reader_app.insert_resource(ConsumerGroup(consumer_group.clone()));
+    struct ConsumerGroup {
+        name: String,
+    }
+    reader_app.insert_resource(Topic { name: topic.clone() });
+    reader_app.insert_resource(ConsumerGroup {
+        name: consumer_group.clone(),
+    });
 
     fn reader_system(
         mut reader: KafkaMessageReader<TestEvent>,
@@ -64,9 +72,9 @@ fn kafka_single_direction_writer_reader_flow() {
         group: Res<ConsumerGroup>,
         mut collected: ResMut<Collected>,
     ) {
-        let config = KafkaConsumerConfig::new(group.0.clone(), [topic.0.clone()]);
+        let config = KafkaConsumerConfig::new(group.name.clone(), [topic.name.clone()]);
         for wrapper in reader.read(&config) {
-            collected.0.push(wrapper.event().clone());
+            collected.events.push(wrapper.event().clone());
         }
     }
     reader_app.add_systems(Update, reader_system);
@@ -75,20 +83,26 @@ fn kafka_single_direction_writer_reader_flow() {
     writer_app.add_plugins(EventBusPlugins { backend: backend_writer });
 
     #[derive(Resource, Clone)]
-    struct Outgoing(TestEvent, String);
+    struct Outgoing {
+        event: TestEvent,
+        topic: String,
+    }
 
     let event_to_send = TestEvent {
         message: "From Kafka Writer".into(),
         value: 100,
     };
-    writer_app.insert_resource(Outgoing(event_to_send.clone(), topic.clone()));
+    writer_app.insert_resource(Outgoing {
+        event: event_to_send.clone(),
+        topic: topic.clone(),
+    });
 
     fn writer_system(mut writer: KafkaMessageWriter, data: Res<Outgoing>, mut sent: Local<bool>) {
         if *sent {
             return;
         }
-        let config = KafkaProducerConfig::new([data.1.clone()]);
-        writer.write(&config, data.0.clone(), None);
+        let config = KafkaProducerConfig::new([data.topic.clone()]);
+        writer.write(&config, data.event.clone(), None);
         *sent = true;
     }
     writer_app.add_systems(Update, writer_system);
@@ -98,7 +112,7 @@ fn kafka_single_direction_writer_reader_flow() {
     let expected_event = event_to_send.clone();
     let (received, _) = update_until(&mut reader_app, 8_000, move |app| {
         let collected = app.world().resource::<Collected>();
-        collected.0.iter().any(|event| event == &expected_event)
+        collected.events.iter().any(|event| event == &expected_event)
     });
 
     assert!(received, "Expected reader to observe the writer's event");
@@ -147,13 +161,19 @@ fn kafka_bidirectional_apps_exchange_events() {
         }));
 
     #[derive(Resource, Default)]
-    struct Received(Vec<TestEvent>);
+    struct Received {
+        events: Vec<TestEvent>,
+    }
 
     #[derive(Resource, Clone)]
-    struct TopicName(String);
+    struct TopicName {
+        name: String,
+    }
 
     #[derive(Resource, Clone)]
-    struct GroupName(String);
+    struct GroupName {
+        name: String,
+    }
 
     #[derive(Resource, Clone)]
     struct OutgoingEvents {
@@ -168,9 +188,9 @@ fn kafka_bidirectional_apps_exchange_events() {
         group: Res<GroupName>,
         mut received: ResMut<Received>,
     ) {
-        let config = KafkaConsumerConfig::new(group.0.clone(), [topic.0.clone()]);
+        let config = KafkaConsumerConfig::new(group.name.clone(), [topic.name.clone()]);
         for wrapper in reader.read(&config) {
-            received.0.push(wrapper.event().clone());
+            received.events.push(wrapper.event().clone());
         }
     }
 
@@ -192,8 +212,8 @@ fn kafka_bidirectional_apps_exchange_events() {
         value: 1,
     };
     app_a.insert_resource(Received::default());
-    app_a.insert_resource(TopicName(topic.clone()));
-    app_a.insert_resource(GroupName(group_a));
+    app_a.insert_resource(TopicName { name: topic.clone() });
+    app_a.insert_resource(GroupName { name: group_a });
     app_a.insert_resource(OutgoingEvents {
         topic: topic.clone(),
         events: vec![event_from_a.clone()],
@@ -208,8 +228,8 @@ fn kafka_bidirectional_apps_exchange_events() {
         value: 2,
     };
     app_b.insert_resource(Received::default());
-    app_b.insert_resource(TopicName(topic.clone()));
-    app_b.insert_resource(GroupName(group_b));
+    app_b.insert_resource(TopicName { name: topic.clone() });
+    app_b.insert_resource(GroupName { name: group_b });
     app_b.insert_resource(OutgoingEvents {
         topic,
         events: vec![event_from_b.clone()],
@@ -225,7 +245,7 @@ fn kafka_bidirectional_apps_exchange_events() {
             let received_a = world_a.resource::<Received>();
             expected_events
                 .iter()
-                .all(|event| received_a.0.iter().any(|seen| seen == event))
+                .all(|event| received_a.events.iter().any(|seen| seen == event))
         };
 
         let app_b_has_all = {
@@ -233,7 +253,7 @@ fn kafka_bidirectional_apps_exchange_events() {
             let received_b = world_b.resource::<Received>();
             expected_events
                 .iter()
-                .all(|event| received_b.0.iter().any(|seen| seen == event))
+                .all(|event| received_b.events.iter().any(|seen| seen == event))
         };
 
         app_a_has_all && app_b_has_all

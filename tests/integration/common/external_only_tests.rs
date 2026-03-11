@@ -12,7 +12,9 @@ use integration_tests::utils::mock_backend::MockEventBusBackend;
 use std::sync::{Arc, Mutex};
 
 #[derive(Resource, Default)]
-struct InternalSeen(usize);
+struct InternalSeen {
+    count: usize,
+}
 
 #[test]
 fn writer_does_not_emit_bevy_events() {
@@ -48,7 +50,7 @@ fn writer_does_not_emit_bevy_events() {
     app.add_systems(
         Update,
         |mut reader: MessageReader<TestEvent>, mut seen: ResMut<InternalSeen>| {
-            seen.0 += reader.read().count();
+            seen.count += reader.read().count();
         },
     );
 
@@ -59,7 +61,7 @@ fn writer_does_not_emit_bevy_events() {
 
     let seen = app.world().resource::<InternalSeen>();
     assert_eq!(
-        seen.0, 0,
+        seen.count, 0,
         "KafkaMessageWriter should not emit additional Bevy events for the same payload",
     );
 }

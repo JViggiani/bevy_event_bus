@@ -49,9 +49,13 @@ fn single_topic_multiple_types_same_frame() {
     reader.add_plugins(EventBusPlugins { backend: backend_r });
 
     #[derive(Resource, Default)]
-    struct CollectedTests(Vec<TestEvent>);
+    struct CollectedTests {
+        events: Vec<TestEvent>,
+    }
     #[derive(Resource, Default)]
-    struct CollectedLogins(Vec<UserLoginEvent>);
+    struct CollectedLogins {
+        events: Vec<UserLoginEvent>,
+    }
     reader.insert_resource(CollectedTests::default());
     reader.insert_resource(CollectedLogins::default());
     let tr_a = topic.clone();
@@ -62,7 +66,7 @@ fn single_topic_multiple_types_same_frame() {
         move |mut reader: KafkaMessageReader<TestEvent>, mut collected: ResMut<CollectedTests>| {
             let config = KafkaConsumerConfig::new(consumer_group_for_test.as_str(), [&tr_a]);
             for wrapper in reader.read(&config) {
-                collected.0.push(wrapper.event().clone());
+                collected.events.push(wrapper.event().clone());
             }
         },
     );
@@ -73,7 +77,7 @@ fn single_topic_multiple_types_same_frame() {
               mut collected: ResMut<CollectedLogins>| {
             let config = KafkaConsumerConfig::new(consumer_group_for_login.as_str(), [&tr_b]);
             for wrapper in reader.read(&config) {
-                collected.0.push(wrapper.event().clone());
+                collected.events.push(wrapper.event().clone());
             }
         },
     );
@@ -112,15 +116,15 @@ fn single_topic_multiple_types_same_frame() {
     let (ok, _frames) = update_until(&mut reader, 5000, |app| {
         let a = app.world().resource::<CollectedTests>();
         let b = app.world().resource::<CollectedLogins>();
-        !a.0.is_empty() && !b.0.is_empty()
+        !a.events.is_empty() && !b.events.is_empty()
     });
 
     assert!(ok, "Timed out waiting for both event types within timeout");
 
     let a = reader.world().resource::<CollectedTests>();
     let b = reader.world().resource::<CollectedLogins>();
-    assert_eq!(a.0.len(), 1, "Expected 1 TestEvent, got {}", a.0.len());
-    assert_eq!(b.0.len(), 1, "Expected 1 UserLoginEvent, got {}", b.0.len());
+    assert_eq!(a.events.len(), 1, "Expected 1 TestEvent, got {}", a.events.len());
+    assert_eq!(b.events.len(), 1, "Expected 1 UserLoginEvent, got {}", b.events.len());
 }
 
 #[test]
@@ -164,9 +168,13 @@ fn single_topic_multiple_types_interleaved_frames() {
     reader.add_plugins(EventBusPlugins { backend: backend_r });
 
     #[derive(Resource, Default)]
-    struct CollectedTests(Vec<TestEvent>);
+    struct CollectedTests {
+        events: Vec<TestEvent>,
+    }
     #[derive(Resource, Default)]
-    struct CollectedLogins(Vec<UserLoginEvent>);
+    struct CollectedLogins {
+        events: Vec<UserLoginEvent>,
+    }
     reader.insert_resource(CollectedTests::default());
     reader.insert_resource(CollectedLogins::default());
     let tr_a2 = topic.clone();
@@ -177,7 +185,7 @@ fn single_topic_multiple_types_interleaved_frames() {
         move |mut reader: KafkaMessageReader<TestEvent>, mut collected: ResMut<CollectedTests>| {
             let config = KafkaConsumerConfig::new(consumer_group2_for_test.as_str(), [&tr_a2]);
             for wrapper in reader.read(&config) {
-                collected.0.push(wrapper.event().clone());
+                collected.events.push(wrapper.event().clone());
             }
         },
     );
@@ -188,7 +196,7 @@ fn single_topic_multiple_types_interleaved_frames() {
               mut collected: ResMut<CollectedLogins>| {
             let config = KafkaConsumerConfig::new(consumer_group2_for_login.as_str(), [&tr_b2]);
             for wrapper in reader.read(&config) {
-                collected.0.push(wrapper.event().clone());
+                collected.events.push(wrapper.event().clone());
             }
         },
     );
@@ -232,7 +240,7 @@ fn single_topic_multiple_types_interleaved_frames() {
     let (ok, _frames) = update_until(&mut reader, 12000, |app| {
         let a = app.world().resource::<CollectedTests>();
         let b = app.world().resource::<CollectedLogins>();
-        a.0.len() >= 3 && b.0.len() >= 3
+        a.events.len() >= 3 && b.events.len() >= 3
     });
 
     assert!(
@@ -241,6 +249,6 @@ fn single_topic_multiple_types_interleaved_frames() {
     );
     let a = reader.world().resource::<CollectedTests>();
     let b = reader.world().resource::<CollectedLogins>();
-    assert!(a.0.len() >= 3);
-    assert!(b.0.len() >= 3);
+    assert!(a.events.len() >= 3);
+    assert!(b.events.len() >= 3);
 }

@@ -32,7 +32,9 @@ fn idle_empty_topic_poll_does_not_block() {
     let mut app = App::new();
     app.add_plugins(EventBusPlugins { backend });
     #[derive(Resource, Default)]
-    struct Ticks(u32);
+    struct Ticks {
+        count: u32,
+    }
     app.insert_resource(Ticks::default());
     let topic_read = topic.clone();
     app.add_systems(
@@ -41,7 +43,7 @@ fn idle_empty_topic_poll_does_not_block() {
             // Try reading every frame; should be instant (reader fallback/drained path fast)
             let config = KafkaConsumerConfig::new(consumer_group.as_str(), [&topic_read]);
             for _ in r.read(&config) { /* none expected */ }
-            ticks.0 += 1;
+            ticks.count += 1;
         },
     );
     // Run many frames; total wall time should stay small if non-blocking
@@ -50,7 +52,7 @@ fn idle_empty_topic_poll_does_not_block() {
         app.update();
     }
     let elapsed_ms = start.elapsed().as_millis();
-    let ticks = app.world().resource::<Ticks>().0;
+    let ticks = app.world().resource::<Ticks>().count;
     assert_eq!(ticks, 200, "All frames should execute (ticks={ticks})");
     // Heuristic: 200 empty frames should complete quickly (<1500ms even on CI)
     assert!(

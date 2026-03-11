@@ -27,7 +27,9 @@ pub fn block_on<F: std::future::Future>(fut: F) -> F::Output {
 
 /// Bevy resource wrapper for a shared Tokio runtime (Arc for cheap clone into async tasks)
 #[derive(Resource, Clone)]
-pub struct SharedRuntime(pub Arc<Runtime>);
+pub struct SharedRuntime {
+    pub runtime: Arc<Runtime>,
+}
 
 /// Ensure a SharedRuntime resource exists in the provided app.
 pub fn ensure_runtime(app: &mut App) {
@@ -35,5 +37,5 @@ pub fn ensure_runtime(app: &mut App) {
         return;
     }
     let arc = RUNTIME.get_or_init(init_runtime).clone();
-    app.insert_resource(SharedRuntime(arc));
+    app.insert_resource(SharedRuntime { runtime: arc });
 }

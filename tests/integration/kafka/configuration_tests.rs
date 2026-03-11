@@ -14,7 +14,9 @@ use integration_tests::utils::helpers::{
 use integration_tests::utils::kafka_setup;
 
 #[derive(Resource, Default)]
-struct Collected(Vec<TestEvent>);
+struct Collected {
+    events: Vec<TestEvent>,
+}
 
 /// Test that configurations work with readers and writers
 #[test]
@@ -65,7 +67,7 @@ fn configuration_with_readers_writers_works() {
                 let config = KafkaConsumerConfig::new(consumer_group_clone.clone(), [&topic_clone]);
                 let events = reader.read(&config);
                 for wrapper in events {
-                    collected.0.push(wrapper.event().clone());
+                    collected.events.push(wrapper.event().clone());
                 }
             };
 
@@ -107,7 +109,7 @@ fn configuration_with_readers_writers_works() {
         10000, // 10 second timeout
         |app| {
             let collected = app.world().get_resource::<Collected>().unwrap();
-            !collected.0.is_empty()
+            !collected.events.is_empty()
         },
     );
 
@@ -118,11 +120,11 @@ fn configuration_with_readers_writers_works() {
 
     let collected = consumer_app.world().get_resource::<Collected>().unwrap();
     assert!(
-        !collected.0.is_empty(),
+        !collected.events.is_empty(),
         "Should have received at least one event"
     );
 
-    let event = &collected.0[0];
+    let event = &collected.events[0];
     assert_eq!(event.message, "config_test");
     assert_eq!(event.value, 42);
 }
@@ -275,6 +277,38 @@ fn kafka_topic_validation_detects_missing_topic() {
     assert!(
         result.is_err(),
         "Validation should fail for a missing Kafka topic"
+    );
+}
+
+/// Verifies that Provision mode (the default) creates missing topics at backend
+/// initialization without requiring them to be pre-created externally.
+///
+/// This is the regression test for startup failures caused by using
+/// `TopologyMode::Validate` for engine-owned topics: some users must be able to
+/// provision their own topics rather than depending on an external actor (e.g. a Strimzi
+/// operator) to create them first.
+#[test]
+fn kafka_provision_mode_creates_missing_topic() {
+    let topic = unique_topic("provision_autocreate");
+    let (_bootstrap_backend, bootstrap) = kafka_setup::prepare_backend(kafka_setup::latest(|_| {}));
+
+    // Deliberately do NOT pre-create the topic — Provision mode must handle it.
+    let result = KafkaEventBusBackend::new(kafka_backend_config_for_tests(
+        &bootstrap,
+        None,
+        |builder| {
+            builder.add_topic(
+                KafkaTopicSpec::new(topic.clone())
+                    .partitions(1)
+                    .replication(1),
+            );
+        },
+    ));
+
+    assert!(
+        result.is_ok(),
+        "Provision mode must create missing topics automatically: {:?}",
+        result.err()
     );
 }
 

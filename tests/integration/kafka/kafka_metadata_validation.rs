@@ -63,16 +63,22 @@ fn kafka_metadata_end_to_end_validation() {
     reader.add_plugins(EventBusPlugins { backend: backend_r });
 
     #[derive(Resource, Default)]
-    struct ReceivedEventsWithMetadata(Vec<MessageWrapper<TestEvent>>);
+    struct ReceivedEventsWithMetadata {
+        events: Vec<MessageWrapper<TestEvent>>,
+    }
 
     #[derive(Resource, Clone)]
-    struct Topic(String);
+    struct Topic {
+        name: String,
+    }
     #[derive(Resource, Clone)]
-    struct ConsumerGroup(String);
+    struct ConsumerGroup {
+        name: String,
+    }
 
     reader.insert_resource(ReceivedEventsWithMetadata::default());
-    reader.insert_resource(Topic(topic.clone()));
-    reader.insert_resource(ConsumerGroup(consumer_group));
+    reader.insert_resource(Topic { name: topic.clone() });
+    reader.insert_resource(ConsumerGroup { name: consumer_group });
 
     fn reader_system(
         mut r: KafkaMessageReader<TestEvent>,
@@ -80,9 +86,9 @@ fn kafka_metadata_end_to_end_validation() {
         group: Res<ConsumerGroup>,
         mut events: ResMut<ReceivedEventsWithMetadata>,
     ) {
-        let config = KafkaConsumerConfig::new(group.0.clone(), [&topic.0]);
+        let config = KafkaConsumerConfig::new(group.name.clone(), [topic.name.clone()]);
         for event_wrapper in r.read(&config) {
-            events.0.push(event_wrapper.clone());
+            events.events.push(event_wrapper.clone());
         }
     }
 
@@ -141,7 +147,7 @@ fn kafka_metadata_end_to_end_validation() {
     let topic_copy = topic.clone();
     let received_events = wait_for_events(&mut reader, &topic_copy, 10000, 3, |app| {
         let events = app.world().resource::<ReceivedEventsWithMetadata>();
-        events.0.clone()
+        events.events.clone()
     });
 
     // Record test end time for timestamp validation
@@ -318,14 +324,16 @@ fn kafka_metadata_topic_isolation() {
     }
 
     #[derive(Resource, Clone)]
-    struct ConsumerGroup(String);
+    struct ConsumerGroup {
+        name: String,
+    }
 
     reader.insert_resource(ReceivedEvents::default());
     reader.insert_resource(Topics {
         topic_a: topic_a.clone(),
         topic_b: topic_b.clone(),
     });
-    reader.insert_resource(ConsumerGroup(consumer_group));
+    reader.insert_resource(ConsumerGroup { name: consumer_group });
 
     fn reader_system_isolation(
         mut r: KafkaMessageReader<TestEvent>,
@@ -334,13 +342,13 @@ fn kafka_metadata_topic_isolation() {
         mut events: ResMut<ReceivedEvents>,
     ) {
         // Read from topic A
-        let config_a = KafkaConsumerConfig::new(group.0.clone(), [&topics.topic_a]);
+        let config_a = KafkaConsumerConfig::new(group.name.clone(), [&topics.topic_a]);
         for event_wrapper in r.read(&config_a) {
             events.topic_a.push(event_wrapper.clone());
         }
 
         // Read from topic B
-        let config_b = KafkaConsumerConfig::new(group.0.clone(), [&topics.topic_b]);
+        let config_b = KafkaConsumerConfig::new(group.name.clone(), [&topics.topic_b]);
         for event_wrapper in r.read(&config_b) {
             events.topic_b.push(event_wrapper.clone());
         }
@@ -492,16 +500,22 @@ fn kafka_metadata_consistency_under_load() {
     reader.add_plugins(EventBusPlugins { backend: backend_r });
 
     #[derive(Resource, Default)]
-    struct ReceivedEventsWithMetadata(Vec<MessageWrapper<TestEvent>>);
+    struct ReceivedEventsWithMetadata {
+        events: Vec<MessageWrapper<TestEvent>>,
+    }
 
     #[derive(Resource, Clone)]
-    struct Topic(String);
+    struct Topic {
+        name: String,
+    }
     #[derive(Resource, Clone)]
-    struct ConsumerGroup(String);
+    struct ConsumerGroup {
+        name: String,
+    }
 
     reader.insert_resource(ReceivedEventsWithMetadata::default());
-    reader.insert_resource(Topic(topic.clone()));
-    reader.insert_resource(ConsumerGroup(consumer_group));
+    reader.insert_resource(Topic { name: topic.clone() });
+    reader.insert_resource(ConsumerGroup { name: consumer_group });
 
     fn reader_system_consistency(
         mut r: KafkaMessageReader<TestEvent>,
@@ -509,9 +523,9 @@ fn kafka_metadata_consistency_under_load() {
         group: Res<ConsumerGroup>,
         mut events: ResMut<ReceivedEventsWithMetadata>,
     ) {
-        let config = KafkaConsumerConfig::new(group.0.clone(), [&topic.0]);
+        let config = KafkaConsumerConfig::new(group.name.clone(), [topic.name.clone()]);
         for event_wrapper in r.read(&config) {
-            events.0.push(event_wrapper.clone());
+            events.events.push(event_wrapper.clone());
         }
     }
 
@@ -571,7 +585,7 @@ fn kafka_metadata_consistency_under_load() {
         BATCH_SIZE * NUM_BATCHES,
         |app| {
             let events = app.world().resource::<ReceivedEventsWithMetadata>();
-            events.0.clone()
+            events.events.clone()
         },
     );
 

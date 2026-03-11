@@ -48,35 +48,34 @@ fn per_topic_order_preserved() {
     reader.add_plugins(EventBusPlugins { backend: backend_r });
 
     #[derive(Resource, Default)]
-    struct Collected(Vec<TestEvent>);
+    struct Collected {
+        events: Vec<TestEvent>,
+    }
+
     reader.insert_resource(Collected::default());
 
-    let tr = topic.clone();
+    let read_topic = topic.clone();
+    let read_group = consumer_group.clone();
     reader.add_systems(
         Update,
         move |mut r: KafkaMessageReader<TestEvent>, mut c: ResMut<Collected>| {
-            let config = KafkaConsumerConfig::new(consumer_group.as_str(), [&tr]);
+            let config = KafkaConsumerConfig::new(read_group.clone(), [read_topic.clone()]);
             for wrapper in r.read(&config) {
-                c.0.push(wrapper.event().clone());
+                c.events.push(wrapper.event().clone());
             }
         },
     );
 
-    let tclone = topic.clone();
+    let write_topic = topic.clone();
     writer.add_systems(
         Update,
-        move |mut writer: KafkaMessageWriter, mut started: Local<bool>, mut counter: Local<u32>| {
-            if !*started {
-                *started = true;
-                return;
-            }
-
+        move |mut w: KafkaMessageWriter, mut counter: Local<u32>| {
             if *counter >= 10 {
                 return;
             }
 
-            let config = KafkaProducerConfig::new([tclone.clone()]);
-            writer.write(
+            let config = KafkaProducerConfig::new([write_topic.clone()]);
+            w.write(
                 &config,
                 TestEvent {
                     message: format!("msg-{}", *counter),
@@ -95,15 +94,16 @@ fn per_topic_order_preserved() {
     // Eventual consistency loop: allow background producer task to deliver.
     let _ = wait_for_events(&mut reader, &topic, 12_000, 10, |app| {
         let c = app.world().resource::<Collected>();
-        c.0.clone()
+        c.events.clone()
     });
-    let c = reader.world().resource::<Collected>(); // still borrow for assertions
+
+    let c = reader.world().resource::<Collected>();
     let mut last = -1;
-    for ev in &c.0 {
+    for ev in &c.events {
         assert!(ev.value > last);
         last = ev.value;
     }
-    assert_eq!(c.0.len(), 10);
+    assert_eq!(c.events.len(), 10);
 }
 
 #[test]
@@ -153,16 +153,18 @@ fn cross_topic_interleave_each_ordered() {
     }));
 
     bevy_event_bus::runtime();
+
     let mut writer = App::new();
-    let mut reader = App::new();
     writer.add_plugins(EventBusPlugins { backend: backend_w });
+
+    let mut reader = App::new();
     reader.add_plugins(EventBusPlugins { backend: backend_r });
-    let t1c = t1.clone();
-    let t2c = t2.clone();
-    // Single send frame like earlier test
+
+    let t1_runtime = t1.clone();
+    let t2_runtime = t2.clone();
     writer.add_systems(
         Update,
-        move |mut writer: KafkaMessageWriter, mut started: Local<bool>, mut counter: Local<u32>| {
+        move |mut w: KafkaMessageWriter, mut started: Local<bool>, mut counter: Local<u32>| {
             if !*started {
                 *started = true;
                 return;
@@ -172,9 +174,9 @@ fn cross_topic_interleave_each_ordered() {
                 return;
             }
 
-            let config_t1 = KafkaProducerConfig::new([t1c.clone()]);
-            let config_t2 = KafkaProducerConfig::new([t2c.clone()]);
-            writer.write(
+            let config_t1 = KafkaProducerConfig::new([t1_runtime.clone()]);
+            let config_t2 = KafkaProducerConfig::new([t2_runtime.clone()]);
+            w.write(
                 &config_t1,
                 TestEvent {
                     message: format!("A{}", *counter),
@@ -182,7 +184,7 @@ fn cross_topic_interleave_each_ordered() {
                 },
                 None,
             );
-            writer.write(
+            w.write(
                 &config_t2,
                 TestEvent {
                     message: format!("B{}", *counter),
@@ -199,40 +201,51 @@ fn cross_topic_interleave_each_ordered() {
     }
 
     #[derive(Resource, Default)]
-    struct CollectedT1(Vec<TestEvent>);
+    struct CollectedT1 {
+        events: Vec<TestEvent>,
+    }
+
     #[derive(Resource, Default)]
-    struct CollectedT2(Vec<TestEvent>);
+    struct CollectedT2 {
+        events: Vec<TestEvent>,
+    }
+
     reader.insert_resource(CollectedT1::default());
     reader.insert_resource(CollectedT2::default());
-    let ta = t1.clone();
-    let tb = t2.clone();
+
+    let read_group = consumer_group.clone();
+    let read_t1 = t1.clone();
+    let read_t2 = t2.clone();
     reader.add_systems(
         Update,
         move |mut r: KafkaMessageReader<TestEvent>,
               mut c1: ResMut<CollectedT1>,
               mut c2: ResMut<CollectedT2>| {
-            let config_a = KafkaConsumerConfig::new(consumer_group.as_str(), [&ta]);
+            let config_a = KafkaConsumerConfig::new(read_group.clone(), [read_t1.clone()]);
             for wrapper in r.read(&config_a) {
-                c1.0.push(wrapper.event().clone());
+                c1.events.push(wrapper.event().clone());
             }
-            let config_b = KafkaConsumerConfig::new(consumer_group.as_str(), [&tb]);
+
+            let config_b = KafkaConsumerConfig::new(read_group.clone(), [read_t2.clone()]);
             for wrapper in r.read(&config_b) {
-                c2.0.push(wrapper.event().clone());
+                c2.events.push(wrapper.event().clone());
             }
         },
     );
 
-    // Wait for exact counts (no duplicates expected). If duplicates appear it's a bug.
     let a_events = wait_for_events(&mut reader, &t1, 15_000, 5, |app| {
         let c1 = app.world().resource::<CollectedT1>();
-        c1.0.clone()
+        c1.events.clone()
     });
-    // Give one extra update tick after first topic completes to reduce chance of asymmetric arrival
+
+    // Give one extra update tick after first topic completes to reduce chance of asymmetric arrival.
     reader.update();
+
     let b_events = wait_for_events(&mut reader, &t2, 15_000, 5, |app| {
         let c2 = app.world().resource::<CollectedT2>();
-        c2.0.clone()
+        c2.events.clone()
     });
+
     assert_eq!(
         a_events.len(),
         5,
@@ -247,6 +260,7 @@ fn cross_topic_interleave_each_ordered() {
         t2,
         b_events.len()
     );
+
     for (i, ev) in a_events.iter().enumerate() {
         assert_eq!(ev.value, i as i32);
         assert!(ev.message.starts_with('A'));

@@ -44,7 +44,9 @@ fn consumer_lag_and_stream_trimming() {
     reader.add_plugins(EventBusPlugins { backend: reader_backend });
 
     #[derive(Resource, Default)]
-    struct Collected(Vec<TestEvent>);
+    struct Collected {
+        events: Vec<TestEvent>,
+    }
     reader.insert_resource(Collected::default());
 
     // Send many events (more than max_length)
@@ -79,7 +81,7 @@ fn consumer_lag_and_stream_trimming() {
         move |mut r: RedisMessageReader<TestEvent>, mut c: ResMut<Collected>| {
             let config = RedisConsumerConfig::ungrouped([s.clone()]);
             for wrapper in r.read(&config) {
-                c.0.push(wrapper.event().clone());
+                c.events.push(wrapper.event().clone());
             }
         },
     );
@@ -92,7 +94,7 @@ fn consumer_lag_and_stream_trimming() {
 
     // With separate backends, no events should be received
     assert_eq!(
-        collected.0.len(),
+        collected.events.len(),
         0,
         "Should not receive events from separate backend"
     );

@@ -49,7 +49,9 @@ fn per_stream_order_preserved() {
     reader.add_plugins(EventBusPlugins { backend: backend_reader });
 
     #[derive(Resource, Default)]
-    struct Collected(Vec<TestEvent>);
+    struct Collected {
+        events: Vec<TestEvent>,
+    }
 
     reader.insert_resource(Collected::default());
 
@@ -61,7 +63,7 @@ fn per_stream_order_preserved() {
             let config =
                 RedisConsumerConfig::new(group_for_reader.clone(), [stream_for_reader.clone()]);
             for wrapper in reader.read(&config) {
-                collected.0.push(wrapper.event().clone());
+                collected.events.push(wrapper.event().clone());
             }
         },
     );
@@ -98,7 +100,7 @@ fn per_stream_order_preserved() {
 
     let collected_events = wait_for_events(&mut reader, &stream, 12_000, 10, |app| {
         let collected = app.world().resource::<Collected>();
-        collected.0.clone()
+        collected.events.clone()
     });
     assert_eq!(collected_events.len(), 10);
     let mut last = -1;
@@ -108,7 +110,7 @@ fn per_stream_order_preserved() {
     }
 
     let collected = reader.world().resource::<Collected>();
-    assert_eq!(collected.0.len(), 10);
+    assert_eq!(collected.events.len(), 10);
 }
 
 #[test]

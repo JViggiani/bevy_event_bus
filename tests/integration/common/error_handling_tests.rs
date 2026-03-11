@@ -56,7 +56,9 @@ fn decode_event<T: DeserializeOwned>(ctx: &BusErrorContext) -> Option<T> {
 }
 
 #[derive(Resource, Clone)]
-struct ErrorStoreResource(ErrorStore);
+struct ErrorStoreResource {
+    store: ErrorStore,
+}
 
 // Event types for various test scenarios
 #[derive(Message, Deserialize, Serialize, Debug, Clone, PartialEq)]
@@ -114,7 +116,9 @@ fn test_delivery_error_handling() {
     }
 
     let errors = ErrorStore::new();
-    app.insert_resource(ErrorStoreResource(errors.clone()));
+    app.insert_resource(ErrorStoreResource {
+        store: errors.clone(),
+    });
     app.insert_resource(ErrorTestState::default());
 
     // System to write events that will fail due to simulated backend issues
@@ -134,7 +138,7 @@ fn test_delivery_error_handling() {
                     state.messages_sent += 1;
 
                     // Fire-and-forget write - delivery failures will appear as error events
-                    writer.write(&config, test_event, Some(errors.0.callback.clone()));
+                    writer.write(&config, test_event, Some(errors.store.callback.clone()));
                 }
 
                 state.test_completed = true;
@@ -216,7 +220,9 @@ fn test_multiple_event_types_error_handling() {
     }
 
     let errors = ErrorStore::new();
-    app.insert_resource(ErrorStoreResource(errors.clone()));
+    app.insert_resource(ErrorStoreResource {
+        store: errors.clone(),
+    });
     app.insert_resource(MultiEventTestState::default());
 
     // System to write events to all topics
@@ -239,7 +245,7 @@ fn test_multiple_event_types_error_handling() {
                 player_writer.write(
                     &player_config,
                     player_event,
-                    Some(errors.0.callback.clone()),
+                    Some(errors.store.callback.clone()),
                 );
 
                 // Combat event
@@ -251,7 +257,7 @@ fn test_multiple_event_types_error_handling() {
                 combat_writer.write(
                     &combat_config,
                     combat_event,
-                    Some(errors.0.callback.clone()),
+                    Some(errors.store.callback.clone()),
                 );
 
                 // Analytics event
@@ -263,7 +269,7 @@ fn test_multiple_event_types_error_handling() {
                 analytics_writer.write(
                     &analytics_config,
                     analytics_event,
-                    Some(errors.0.callback.clone()),
+                    Some(errors.store.callback.clone()),
                 );
 
                 state.test_completed = true;
@@ -331,7 +337,9 @@ fn test_centralized_error_handling() {
     }
 
     let errors = ErrorStore::new();
-    app.insert_resource(ErrorStoreResource(errors.clone()));
+    app.insert_resource(ErrorStoreResource {
+        store: errors.clone(),
+    });
     app.insert_resource(CentralizedErrorTestState::default());
 
     // System to send events to both topics
@@ -350,7 +358,11 @@ fn test_centralized_error_handling() {
                         message: format!("Working event {}", i),
                     };
                     state.events_sent += 1;
-                    writer.write(&working_config, event, Some(errors.0.callback.clone()));
+                    writer.write(
+                        &working_config,
+                        event,
+                        Some(errors.store.callback.clone()),
+                    );
                 }
 
                 // Send to failing topic
@@ -360,7 +372,11 @@ fn test_centralized_error_handling() {
                         message: format!("Failing event {}", i),
                     };
                     state.events_sent += 1;
-                    writer.write(&failing_config, event, Some(errors.0.callback.clone()));
+                    writer.write(
+                        &failing_config,
+                        event,
+                        Some(errors.store.callback.clone()),
+                    );
                 }
 
                 state.test_completed = true;
@@ -438,7 +454,9 @@ fn test_batch_operation_error_handling() {
     }
 
     let errors = ErrorStore::new();
-    app.insert_resource(ErrorStoreResource(errors.clone()));
+    app.insert_resource(ErrorStoreResource {
+        store: errors.clone(),
+    });
     app.insert_resource(BatchTestState::default());
 
     // System to send events in batches
@@ -463,7 +481,7 @@ fn test_batch_operation_error_handling() {
                             id: batch * events_per_batch + event_in_batch,
                             message: format!("Batch {} Event {}", batch, event_in_batch),
                         };
-                        writer.write(&config, event, Some(errors.0.callback.clone()));
+                        writer.write(&config, event, Some(errors.store.callback.clone()));
                     }
                 }
 
@@ -544,7 +562,9 @@ fn test_error_retry_mechanism() {
     }
 
     let errors = ErrorStore::new();
-    app.insert_resource(ErrorStoreResource(errors.clone()));
+    app.insert_resource(ErrorStoreResource {
+        store: errors.clone(),
+    });
     app.insert_resource(RetryTestState {
         max_retries: 3,
         ..Default::default()
@@ -565,7 +585,7 @@ fn test_error_retry_mechanism() {
                         message: format!("Initial event {}", i),
                     };
                     state.initial_events_sent += 1;
-                    writer.write(&config, event, Some(errors.0.callback.clone()));
+                    writer.write(&config, event, Some(errors.store.callback.clone()));
                 }
                 state.initial_send_complete = true;
             }
@@ -579,7 +599,7 @@ fn test_error_retry_mechanism() {
               mut state: ResMut<RetryTestState>,
               mut writer: KafkaMessageWriter| {
             let retry_config = KafkaProducerConfig::new([topic_clone2.clone()]);
-            for error in errors.0.drain() {
+			for error in errors.store.drain() {
                 state.errors_received.push(error.clone());
 
                 if let Some(original_event) = decode_event::<TestEvent>(&error) {
@@ -597,8 +617,11 @@ fn test_error_retry_mechanism() {
                                 original_event.message, state.retry_attempts
                             ),
                         };
-
-                        writer.write(&retry_config, retry_event, Some(errors.0.callback.clone()));
+                        writer.write(
+                            &retry_config,
+                            retry_event,
+                            Some(errors.store.callback.clone()),
+                        );
                     }
                 }
             }

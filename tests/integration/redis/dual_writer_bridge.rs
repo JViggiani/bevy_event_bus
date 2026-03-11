@@ -35,7 +35,9 @@ struct ReaderState {
 }
 
 #[derive(Resource, Default)]
-struct CapturedEvents(Vec<MessageWrapper<TestEvent>>);
+struct CapturedEvents {
+    events: Vec<MessageWrapper<TestEvent>>,
+}
 
 fn dual_writer_bridge_emitter(
     mut standard_messages: ResMut<Messages<TestEvent>>,
@@ -84,7 +86,7 @@ fn capture_wrapped_events(
 ) {
     let config = RedisConsumerConfig::new(state.consumer_group.clone(), [state.stream.clone()]);
     for wrapper in reader.read(&config) {
-        captured.0.push(wrapper.clone());
+        captured.events.push(wrapper.clone());
     }
 }
 
@@ -152,7 +154,7 @@ fn external_bus_events_flow_from_both_writers() {
     reader_app.add_systems(Update, capture_wrapped_events);
 
     let received = wait_for_events(&mut reader_app, &stream, 12_000, 2, |app| {
-        app.world().resource::<CapturedEvents>().0.clone()
+        app.world().resource::<CapturedEvents>().events.clone()
     });
 
     assert_eq!(
@@ -287,7 +289,7 @@ fn external_bus_events_independent_operation() {
     // With separate backends, reader cannot receive events from writers (different Redis instances)
     let (received, _) = update_until(&mut reader, 1_000, |app| {
         let collected = app.world().resource::<CapturedEvents>();
-        !collected.0.is_empty()
+        !collected.events.is_empty()
     });
 
     assert!(
@@ -298,7 +300,7 @@ fn external_bus_events_independent_operation() {
     // Verify the expected behavior with separate backends
     let collected = reader.world().resource::<CapturedEvents>();
     assert_eq!(
-        collected.0.len(),
+        collected.events.len(),
         0,
         "Reader should receive 0 events (separate Redis instances)"
     );

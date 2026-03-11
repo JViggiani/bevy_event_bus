@@ -43,7 +43,9 @@ fn configuration_with_readers_writers_works() {
     .expect("Reader Redis backend setup successful");
 
     #[derive(Resource, Default)]
-    struct Collected(Vec<TestEvent>);
+    struct Collected {
+        events: Vec<TestEvent>,
+    }
 
     // Consumer app styled after Kafka configuration test
     let mut reader_app = {
@@ -58,7 +60,7 @@ fn configuration_with_readers_writers_works() {
                     RedisConsumerConfig::new(consumer_group_clone.clone(), [stream_clone.clone()]);
                 let events = reader.read(&config);
                 for wrapper in events {
-                    collected.0.push(wrapper.event().clone());
+                    collected.events.push(wrapper.event().clone());
                 }
             };
 
@@ -93,7 +95,7 @@ fn configuration_with_readers_writers_works() {
     // Then run consumer and verify
     let (success, _frames) = update_until(&mut reader_app, 10_000, |app| {
         let collected = app.world().get_resource::<Collected>().unwrap();
-        !collected.0.is_empty()
+        !collected.events.is_empty()
     });
 
     assert!(
@@ -106,11 +108,11 @@ fn configuration_with_readers_writers_works() {
         .get_resource::<Collected>()
         .expect("Collected resource should exist");
     assert!(
-        !collected.0.is_empty(),
+        !collected.events.is_empty(),
         "Should have received at least one event"
     );
 
-    let event = &collected.0[0];
+    let event = &collected.events[0];
     assert_eq!(event.message, "config_test");
     assert_eq!(event.value, 42);
 }

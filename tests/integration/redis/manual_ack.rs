@@ -17,10 +17,14 @@ use integration_tests::utils::redis_setup;
 use std::sync::{Arc, Mutex};
 
 #[derive(Resource, Clone)]
-struct Topic(String);
+struct Topic {
+    name: String,
+}
 
 #[derive(Resource, Clone)]
-struct ConsumerMembership(Option<ConsumerGroupMembership>);
+struct ConsumerMembership {
+    membership: Option<ConsumerGroupMembership>,
+}
 
 #[derive(Resource, Default)]
 struct Received {
@@ -43,7 +47,9 @@ struct WriterBatchPayload {
 }
 
 #[derive(Resource, Clone)]
-struct WriterErrorCallback(pub BusErrorCallback);
+struct WriterErrorCallback {
+    callback: BusErrorCallback,
+}
 
 fn redis_writer_emit_once(
     mut writer: RedisMessageWriter,
@@ -55,7 +61,7 @@ fn redis_writer_emit_once(
     }
 
     let config = RedisProducerConfig::new(payload.topic.clone());
-    writer.write(&config, payload.event.clone(), Some(callback.0.clone()));
+    writer.write(&config, payload.event.clone(), Some(callback.callback.clone()));
     payload.dispatched = true;
 }
 
@@ -75,7 +81,7 @@ fn redis_writer_emit_batch(
     let end = start + batch;
 
     for event in payload.events[start..end].iter().cloned() {
-        writer.write(&config, event, Some(callback.0.clone()));
+        writer.write(&config, event, Some(callback.callback.clone()));
     }
 
     payload.dispatched = end;
@@ -87,11 +93,11 @@ fn redis_reader_ack_system(
     membership: Res<ConsumerMembership>,
     mut received: ResMut<Received>,
 ) {
-    let config = match membership.0.as_ref() {
+    let config = match membership.membership.as_ref() {
         Some(group_membership) => {
-            RedisConsumerConfig::new(group_membership.group.clone(), [topic.0.clone()])
+            RedisConsumerConfig::new(group_membership.group.clone(), [topic.name.clone()])
         }
-        None => RedisConsumerConfig::ungrouped([topic.0.clone()]),
+        None => RedisConsumerConfig::ungrouped([topic.name.clone()]),
     };
 
     for wrapper in reader.read(&config) {
@@ -137,8 +143,10 @@ fn manual_ack_clears_messages_and_tracks_success() {
     // so that the message stream and manual acknowledgement resources bind to the reader app.
     let mut reader_app = App::new();
     reader_app.add_plugins(EventBusPlugins { backend: reader_backend });
-    reader_app.insert_resource(Topic(topic.clone()));
-    reader_app.insert_resource(ConsumerMembership(Some(membership.clone())));
+    reader_app.insert_resource(Topic { name: topic.clone() });
+    reader_app.insert_resource(ConsumerMembership {
+        membership: Some(membership.clone()),
+    });
     reader_app.insert_resource(Received::default());
     reader_app.add_systems(Update, redis_reader_ack_system);
 
@@ -153,7 +161,9 @@ fn manual_ack_clears_messages_and_tracks_success() {
             sink.lock().unwrap().push(ctx);
         })
     };
-    writer_app.insert_resource(WriterErrorCallback(writer_callback));
+    writer_app.insert_resource(WriterErrorCallback {
+        callback: writer_callback,
+    });
     writer_app.insert_resource(WriterPayload {
         event: TestEvent {
             message: "redis-manual-ack".to_string(),
@@ -235,8 +245,10 @@ fn manual_ack_batches_multiple_messages() {
 
     let mut reader_app = App::new();
     reader_app.add_plugins(EventBusPlugins { backend: reader_backend });
-    reader_app.insert_resource(Topic(stream.clone()));
-    reader_app.insert_resource(ConsumerMembership(Some(membership.clone())));
+    reader_app.insert_resource(Topic { name: stream.clone() });
+    reader_app.insert_resource(ConsumerMembership {
+        membership: Some(membership.clone()),
+    });
     reader_app.insert_resource(Received::default());
     reader_app.add_systems(Update, redis_reader_ack_system);
 
@@ -249,7 +261,9 @@ fn manual_ack_batches_multiple_messages() {
             sink.lock().unwrap().push(ctx);
         })
     };
-    writer_app.insert_resource(WriterErrorCallback(writer_callback));
+    writer_app.insert_resource(WriterErrorCallback {
+        callback: writer_callback,
+    });
     writer_app.insert_resource(WriterBatchPayload {
         events: (0..TOTAL_MESSAGES)
             .map(|value| TestEvent {

@@ -12,7 +12,9 @@ use integration_tests::utils::helpers::{
 use integration_tests::utils::redis_setup;
 
 #[derive(Resource, Default)]
-struct EventCollector(Vec<TestEvent>);
+struct EventCollector {
+    events: Vec<TestEvent>,
+}
 
 /// Test start_id "0-0" behavior - should read from beginning of stream
 #[test]
@@ -93,7 +95,7 @@ fn test_start_id_from_beginning() {
         move |mut r: RedisMessageReader<TestEvent>, mut c: ResMut<EventCollector>| {
             let config = RedisConsumerConfig::new(g.clone(), [s.clone()]);
             for wrapper in r.read(&config) {
-                c.0.push(wrapper.event().clone());
+                c.events.push(wrapper.event().clone());
             }
         },
     );
@@ -105,7 +107,7 @@ fn test_start_id_from_beginning() {
 
     // With separate backends, no events should be received
     assert_eq!(
-        collected.0.len(),
+        collected.events.len(),
         0,
         "Reader should not receive events from separate backend"
     );
@@ -190,7 +192,7 @@ fn test_start_id_from_end() {
         move |mut r: RedisMessageReader<TestEvent>, mut c: ResMut<EventCollector>| {
             let config = RedisConsumerConfig::new(g.clone(), [s.clone()]);
             for wrapper in r.read(&config) {
-                c.0.push(wrapper.event().clone());
+                c.events.push(wrapper.event().clone());
             }
         },
     );
@@ -228,7 +230,7 @@ fn test_start_id_from_end() {
 
     // With separate backends, no events should be received
     assert_eq!(
-        collected.0.len(),
+        collected.events.len(),
         0,
         "Reader should not receive events from separate backend"
     );

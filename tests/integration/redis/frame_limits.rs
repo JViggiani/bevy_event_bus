@@ -55,7 +55,10 @@ fn frame_limit_spreads_drain() {
     writer.add_plugins(EventBusPlugins { backend: backend_writer });
 
     #[derive(Resource, Clone)]
-    struct Payload(Vec<TestEvent>, String);
+    struct Payload {
+        events: Vec<TestEvent>,
+        stream: String,
+    }
 
     let events_to_send: Vec<TestEvent> = (0..15)
         .map(|i| TestEvent {
@@ -64,15 +67,18 @@ fn frame_limit_spreads_drain() {
         })
         .collect();
 
-    writer.insert_resource(Payload(events_to_send.clone(), stream.clone()));
+    writer.insert_resource(Payload {
+        events: events_to_send.clone(),
+        stream: stream.clone(),
+    });
 
     fn writer_system(mut writer: RedisMessageWriter, payload: Res<Payload>, mut sent: Local<bool>) {
         if *sent {
             return;
         }
         *sent = true;
-        let config = RedisProducerConfig::new(payload.1.clone());
-        for event in &payload.0 {
+        let config = RedisProducerConfig::new(payload.stream.clone());
+        for event in &payload.events {
             writer.write(&config, event.clone(), None);
         }
     }
@@ -88,17 +94,25 @@ fn frame_limit_spreads_drain() {
     });
 
     #[derive(Resource, Default)]
-    struct Collected(Vec<TestEvent>);
+    struct Collected {
+        events: Vec<TestEvent>,
+    }
 
     reader.insert_resource(Collected::default());
 
     #[derive(Resource, Clone)]
-    struct Stream(String);
+    struct Stream {
+        name: String,
+    }
     #[derive(Resource, Clone)]
-    struct Group(String);
+    struct Group {
+        name: String,
+    }
 
-    reader.insert_resource(Stream(stream));
-    reader.insert_resource(Group(membership.group));
+    reader.insert_resource(Stream { name: stream });
+    reader.insert_resource(Group {
+        name: membership.group,
+    });
 
     fn reader_system(
         mut reader: RedisMessageReader<TestEvent>,
@@ -106,12 +120,12 @@ fn frame_limit_spreads_drain() {
         group: Res<Group>,
         mut collected: ResMut<Collected>,
     ) {
-        let config = RedisConsumerConfig::new(group.0.clone(), [stream.0.clone()]);
+        let config = RedisConsumerConfig::new(group.name.clone(), [stream.name.clone()]);
         for wrapper in reader.read(&config) {
             reader
                 .acknowledge(&wrapper)
                 .expect("Redis acknowledge should succeed under frame limit test");
-            collected.0.push(wrapper.event().clone());
+            collected.events.push(wrapper.event().clone());
         }
     }
 
@@ -119,16 +133,16 @@ fn frame_limit_spreads_drain() {
 
     let (ok, _frames) = update_until(&mut reader, 5_000, |app| {
         let collected = app.world().resource::<Collected>();
-        collected.0.len() >= 15
+        collected.events.len() >= 15
     });
 
     assert!(ok, "Timed out waiting for all events under frame limit");
     let collected = reader.world().resource::<Collected>();
-    assert_eq!(collected.0.len(), 15);
+    assert_eq!(collected.events.len(), 15);
 
     for expected in &events_to_send {
         let count = collected
-            .0
+            .events
             .iter()
             .filter(|event| event.message == expected.message && event.value == expected.value)
             .count();

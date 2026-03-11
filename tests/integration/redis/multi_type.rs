@@ -50,10 +50,14 @@ fn single_topic_multiple_types_same_frame() {
     reader.add_plugins(EventBusPlugins { backend: backend_reader });
 
     #[derive(Resource, Default)]
-    struct CollectedTests(Vec<TestEvent>);
+    struct CollectedTests {
+        events: Vec<TestEvent>,
+    }
 
     #[derive(Resource, Default)]
-    struct CollectedLogins(Vec<UserLoginEvent>);
+    struct CollectedLogins {
+        events: Vec<UserLoginEvent>,
+    }
 
     reader.insert_resource(CollectedTests::default());
     reader.insert_resource(CollectedLogins::default());
@@ -66,7 +70,7 @@ fn single_topic_multiple_types_same_frame() {
             let config =
                 RedisConsumerConfig::new(group_for_tests.clone(), [stream_for_tests.clone()]);
             for wrapper in reader.read(&config) {
-                collected.0.push(wrapper.event().clone());
+                collected.events.push(wrapper.event().clone());
             }
         },
     );
@@ -80,7 +84,7 @@ fn single_topic_multiple_types_same_frame() {
             let config =
                 RedisConsumerConfig::new(group_for_logins.clone(), [stream_for_logins.clone()]);
             for wrapper in reader.read(&config) {
-                collected.0.push(wrapper.event().clone());
+                collected.events.push(wrapper.event().clone());
             }
         },
     );
@@ -120,7 +124,7 @@ fn single_topic_multiple_types_same_frame() {
     let (ok, _frames) = update_until(&mut reader, 5_000, |app| {
         let tests = app.world().resource::<CollectedTests>();
         let logins = app.world().resource::<CollectedLogins>();
-        !tests.0.is_empty() && !logins.0.is_empty()
+        !tests.events.is_empty() && !logins.events.is_empty()
     });
 
     assert!(ok, "Timed out waiting for both event types within timeout");
@@ -128,16 +132,16 @@ fn single_topic_multiple_types_same_frame() {
     let tests = reader.world().resource::<CollectedTests>();
     let logins = reader.world().resource::<CollectedLogins>();
     assert_eq!(
-        tests.0.len(),
+        tests.events.len(),
         1,
         "Expected 1 TestEvent, got {}",
-        tests.0.len()
+        tests.events.len()
     );
     assert_eq!(
-        logins.0.len(),
+        logins.events.len(),
         1,
         "Expected 1 UserLoginEvent, got {}",
-        logins.0.len()
+        logins.events.len()
     );
 }
 
@@ -180,10 +184,14 @@ fn single_topic_multiple_types_interleaved_frames() {
     reader.add_plugins(EventBusPlugins { backend: backend_reader });
 
     #[derive(Resource, Default)]
-    struct CollectedTests(Vec<TestEvent>);
+    struct CollectedTests {
+        events: Vec<TestEvent>,
+    }
 
     #[derive(Resource, Default)]
-    struct CollectedLogins(Vec<UserLoginEvent>);
+    struct CollectedLogins {
+        events: Vec<UserLoginEvent>,
+    }
 
     reader.insert_resource(CollectedTests::default());
     reader.insert_resource(CollectedLogins::default());
@@ -196,7 +204,7 @@ fn single_topic_multiple_types_interleaved_frames() {
             let config =
                 RedisConsumerConfig::new(group_for_tests.clone(), [stream_for_tests.clone()]);
             for wrapper in reader.read(&config) {
-                collected.0.push(wrapper.event().clone());
+                collected.events.push(wrapper.event().clone());
             }
         },
     );
@@ -210,7 +218,7 @@ fn single_topic_multiple_types_interleaved_frames() {
             let config =
                 RedisConsumerConfig::new(group_for_logins.clone(), [stream_for_logins.clone()]);
             for wrapper in reader.read(&config) {
-                collected.0.push(wrapper.event().clone());
+                collected.events.push(wrapper.event().clone());
             }
         },
     );
@@ -253,7 +261,7 @@ fn single_topic_multiple_types_interleaved_frames() {
     let (ok, _frames) = update_until(&mut reader, 12_000, |app| {
         let tests = app.world().resource::<CollectedTests>();
         let logins = app.world().resource::<CollectedLogins>();
-        tests.0.len() >= 3 && logins.0.len() >= 3
+        tests.events.len() >= 3 && logins.events.len() >= 3
     });
 
     assert!(
@@ -263,6 +271,6 @@ fn single_topic_multiple_types_interleaved_frames() {
 
     let tests = reader.world().resource::<CollectedTests>();
     let logins = reader.world().resource::<CollectedLogins>();
-    assert!(tests.0.len() >= 3);
-    assert!(logins.0.len() >= 3);
+    assert!(tests.events.len() >= 3);
+    assert!(logins.events.len() >= 3);
 }

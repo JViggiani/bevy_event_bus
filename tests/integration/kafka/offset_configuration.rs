@@ -212,7 +212,9 @@ fn offset_configuration_latest_ignores_historical_events() {
     latest_app.add_plugins(EventBusPlugins { backend: backend_latest });
 
     #[derive(Resource, Default)]
-    struct CollectedLatest(Vec<TestEvent>);
+    struct CollectedLatest {
+        events: Vec<TestEvent>,
+    }
     latest_app.insert_resource(CollectedLatest::default());
 
     let topic_read = topic.clone();
@@ -221,7 +223,7 @@ fn offset_configuration_latest_ignores_historical_events() {
         move |mut r: KafkaMessageReader<TestEvent>, mut c: ResMut<CollectedLatest>| {
             let config = KafkaConsumerConfig::new(consumer_group.clone(), [&topic_read]);
             for wrapper in r.read(&config) {
-                c.0.push(wrapper.event().clone());
+                c.events.push(wrapper.event().clone());
             }
         },
     );
@@ -244,7 +246,7 @@ fn offset_configuration_latest_ignores_historical_events() {
     // Wait until we receive the new event (but not historical ones)
     let (ok, _frames) = update_until(&mut latest_app, 5000, |app| {
         let c = app.world().resource::<CollectedLatest>();
-        c.0.iter().any(|e| e.message == "new_event")
+        c.events.iter().any(|e| e.message == "new_event")
     });
 
     assert!(
@@ -256,19 +258,19 @@ fn offset_configuration_latest_ignores_historical_events() {
 
     // Should have received the new event
     let new_events: Vec<&TestEvent> = collected
-        .0
+        .events
         .iter()
         .filter(|e| e.message == "new_event")
         .collect();
     assert!(
         !new_events.is_empty(),
         "Expected to receive new_event, got: {:?}",
-        collected.0
+        collected.events
     );
 
     // Should NOT have received historical events
     let historical_events: Vec<&TestEvent> = collected
-        .0
+        .events
         .iter()
         .filter(|e| e.message.starts_with("historical_"))
         .collect();
@@ -355,7 +357,9 @@ fn default_offset_configuration_is_latest() {
     app.add_plugins(EventBusPlugins { backend: backend });
 
     #[derive(Resource, Default)]
-    struct Collected(Vec<TestEvent>);
+    struct Collected {
+        events: Vec<TestEvent>,
+    }
     app.insert_resource(Collected::default());
 
     let topic_read = topic.clone();
@@ -364,7 +368,7 @@ fn default_offset_configuration_is_latest() {
         move |mut r: KafkaMessageReader<TestEvent>, mut c: ResMut<Collected>| {
             let config = KafkaConsumerConfig::new(consumer_group.clone(), [&topic_read]);
             for wrapper in r.read(&config) {
-                c.0.push(wrapper.event().clone());
+                c.events.push(wrapper.event().clone());
             }
         },
     );
@@ -374,12 +378,12 @@ fn default_offset_configuration_is_latest() {
     let (_ok, _frames) = update_until(&mut app, 1000, |app| {
         let c = app.world().resource::<Collected>();
         // Return true if we find the historical event (which would be bad)
-        c.0.iter().any(|e| e.message == "should_not_see_this")
+        c.events.iter().any(|e| e.message == "should_not_see_this")
     });
 
     let collected = app.world().resource::<Collected>();
     let historical_count = collected
-        .0
+        .events
         .iter()
         .filter(|e| e.message == "should_not_see_this")
         .count();

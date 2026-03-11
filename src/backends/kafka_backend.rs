@@ -14,7 +14,7 @@ use rdkafka::{
     producer::{BaseProducer, BaseRecord, DeliveryResult, Producer, ProducerContext},
 };
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     fmt::Debug,
     sync::{
         Arc, Mutex, RwLock,
@@ -36,7 +36,7 @@ use bevy_event_bus::{
     },
     config::kafka::{
         KafkaBackendConfig, KafkaConnectionConfig, KafkaConsumerGroupSpec, KafkaInitialOffset,
-        KafkaTopologyConfig,
+        KafkaTopicSpec, KafkaTopologyConfig,
     },
     errors::BusErrorKind,
     resources::{
@@ -995,6 +995,8 @@ fn prepare_topics(
         return Ok(());
     }
 
+    let unique_specs = deduplicate_topic_specs(topology.topics())?;
+
     let mut cfg = ClientConfig::new();
     apply_connection_settings(&mut cfg, connection);
     cfg.set("allow.auto.create.topics", "false");
@@ -1005,7 +1007,7 @@ fn prepare_topics(
 
     let mut provision_specs = Vec::new();
     let mut validate_specs = Vec::new();
-    for spec in topology.topics() {
+    for spec in &unique_specs {
         match spec.mode {
             TopologyMode::Provision => provision_specs.push(spec),
             TopologyMode::Validate => validate_specs.push(spec),
@@ -1014,59 +1016,107 @@ fn prepare_topics(
 
     if !provision_specs.is_empty() {
         let options = AdminOptions::new();
-        let topics: Vec<NewTopic> = provision_specs
-            .iter()
-            .map(|spec| {
-                let partitions = spec.partitions.unwrap_or(1);
-                let replication = spec
-                    .replication
-                    .map(|r| TopicReplication::Fixed(r as i32))
-                    .unwrap_or(TopicReplication::Fixed(1));
-                NewTopic::new(&spec.name, partitions, replication)
-            })
-            .collect();
 
-        if !topics.is_empty() {
-            if let Err(err) = runtime::block_on(admin.create_topics(topics.iter(), &options)) {
-                let msg = err.to_string();
-                if !msg.contains("TopicAlreadyExists") {
-                    return Err(format!("Topic creation batch failed: {msg}"));
+        // Note: calling create_topics with duplicate topic names can trigger a
+        // SIGSEGV inside librdkafka/rdkafka. We de-duplicate above and also
+        // create topics one-by-one to reduce the blast radius of any broker-side
+        // oddities.
+        for spec in provision_specs {
+            let partitions = spec.partitions.unwrap_or(1);
+            let replication = spec
+                .replication
+                .map(|r| TopicReplication::Fixed(r as i32))
+                .unwrap_or(TopicReplication::Fixed(1));
+            let new_topic = NewTopic::new(&spec.name, partitions, replication);
+
+            match runtime::block_on(admin.create_topics(std::iter::once(&new_topic), &options)) {
+                Ok(results) => {
+                    for result in results {
+                        match result {
+                            Ok(_topic) => {}
+                            Err((_topic, RDKafkaErrorCode::TopicAlreadyExists)) => {}
+                            Err((topic, code)) => {
+                                return Err(format!(
+                                    "Topic creation failed for '{topic}': {code:?}"
+                                ));
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    let msg = err.to_string();
+                    if !msg.contains("TopicAlreadyExists") {
+                        return Err(format!("Topic creation failed for '{}': {msg}", spec.name));
+                    }
                 }
             }
         }
     }
 
-    for spec in validate_specs {
-        let metadata = admin
-            .inner()
-            .fetch_metadata(Some(&spec.name), Duration::from_secs(5))
-            .map_err(|err| {
-                format!(
-                    "Failed to fetch metadata for Kafka topic '{}': {err}",
-                    spec.name
-                )
-            })?;
+    if !validate_specs.is_empty() {
+        for spec in validate_specs {
+            let metadata = admin
+                .inner()
+                .fetch_metadata(Some(&spec.name), Duration::from_secs(5))
+                .map_err(|err| {
+                    format!(
+                        "Failed to fetch metadata for Kafka topic '{}': {err}",
+                        spec.name
+                    )
+                })?;
 
-        let topic_metadata = metadata
-            .topics()
-            .iter()
-            .find(|topic| topic.name() == spec.name)
-            .ok_or_else(|| {
-                format!(
-                    "Kafka topic '{}' metadata missing during validation",
-                    spec.name
-                )
-            })?;
+            let topic_metadata = metadata
+                .topics()
+                .iter()
+                .find(|topic| topic.name() == spec.name)
+                .ok_or_else(|| {
+                    format!(
+                        "Kafka topic '{}' metadata missing during validation",
+                        spec.name
+                    )
+                })?;
 
-        if let Some(error) = topic_metadata.error() {
-            return Err(format!(
-                "Kafka topic '{}' reported error during validation: {:?}",
-                spec.name, error
-            ));
+            if let Some(error) = topic_metadata.error() {
+                return Err(format!(
+                    "Kafka topic '{}' reported error during validation: {:?}",
+                    spec.name, error
+                ));
+            }
         }
     }
 
     Ok(())
+}
+
+fn deduplicate_topic_specs(specs: &[KafkaTopicSpec]) -> Result<Vec<KafkaTopicSpec>, String> {
+    let mut unique = BTreeMap::<String, KafkaTopicSpec>::new();
+
+    for spec in specs {
+        match unique.get(&spec.name) {
+            None => {
+                unique.insert(spec.name.clone(), spec.clone());
+            }
+            Some(existing) => {
+                if existing.partitions != spec.partitions
+                    || existing.replication != spec.replication
+                    || existing.mode != spec.mode
+                {
+                    return Err(format!(
+                        "Kafka topology contains duplicate topic '{}' with conflicting settings (existing: partitions={:?} replication={:?} mode={:?}; new: partitions={:?} replication={:?} mode={:?})",
+                        spec.name,
+                        existing.partitions,
+                        existing.replication,
+                        existing.mode,
+                        spec.partitions,
+                        spec.replication,
+                        spec.mode
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(unique.into_values().collect())
 }
 
 fn prepare_consumer_groups(
@@ -1123,7 +1173,7 @@ fn provision_consumer_group(
         })?;
     }
 
-    const REGISTRATION_ATTEMPTS: usize = 10;
+    const REGISTRATION_ATTEMPTS: usize = 30;
     for attempt in 0..REGISTRATION_ATTEMPTS {
         if let Some(Err(err)) = consumer.poll(Duration::from_millis(100)) {
             warn!(
@@ -1156,7 +1206,7 @@ fn provision_consumer_group(
         }
 
         if attempt + 1 < REGISTRATION_ATTEMPTS {
-            thread::sleep(Duration::from_millis(100));
+            thread::sleep(Duration::from_millis(500));
         }
     }
 
@@ -1477,5 +1527,40 @@ mod tests {
         let context = EventBusProducerContext;
         assert_eq!(std::mem::size_of_val(&context), 0);
     }
+
+    #[test]
+    fn test_deduplicate_topic_specs_allows_exact_duplicates() {
+        let specs = vec![
+            KafkaTopicSpec::new("topic-a").partitions(3).replication(1),
+            KafkaTopicSpec::new("topic-a").partitions(3).replication(1),
+        ];
+
+        let unique = deduplicate_topic_specs(&specs).unwrap();
+        assert_eq!(unique.len(), 1);
+        assert_eq!(unique[0].name, "topic-a");
+    }
+
+    #[test]
+    fn test_deduplicate_topic_specs_rejects_conflicting_duplicates() {
+        let specs = vec![
+            KafkaTopicSpec::new("topic-a").partitions(3).replication(1),
+            KafkaTopicSpec::new("topic-a").partitions(1).replication(1),
+        ];
+
+        let err = deduplicate_topic_specs(&specs).unwrap_err();
+        assert!(err.contains("topic-a"));
+        assert!(err.contains("conflicting"));
+    }
+
+    #[test]
+    fn test_deduplicate_topic_specs_rejects_different_modes() {
+        let specs = vec![
+            KafkaTopicSpec::new("topic-a").mode(TopologyMode::Provision),
+            KafkaTopicSpec::new("topic-a").mode(TopologyMode::Validate),
+        ];
+
+        let err = deduplicate_topic_specs(&specs).unwrap_err();
+        assert!(err.contains("topic-a"));
+        assert!(err.contains("conflicting"));
+    }
 }
-// sync-test 1771243362

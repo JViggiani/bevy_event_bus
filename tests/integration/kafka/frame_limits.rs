@@ -68,7 +68,9 @@ fn frame_limit_spreads_drain() {
         max_drain_millis: None,
     });
     #[derive(Resource, Default)]
-    struct Collected(Vec<TestEvent>);
+    struct Collected {
+        events: Vec<TestEvent>,
+    }
     reader.insert_resource(Collected::default());
     let tr = topic.clone();
     reader.add_systems(
@@ -76,7 +78,7 @@ fn frame_limit_spreads_drain() {
         move |mut r: KafkaMessageReader<TestEvent>, mut c: ResMut<Collected>| {
             let config = KafkaConsumerConfig::new(consumer_group.as_str(), [&tr]);
             for wrapper in r.read(&config) {
-                c.0.push(wrapper.event().clone());
+                c.events.push(wrapper.event().clone());
             }
         },
     );
@@ -84,9 +86,9 @@ fn frame_limit_spreads_drain() {
     // Spin until all 15 collected or timeout
     let (ok, _frames) = update_until(&mut reader, 5000, |app| {
         let c = app.world().resource::<Collected>();
-        c.0.len() >= 15
+        c.events.len() >= 15
     });
     assert!(ok, "Timed out waiting for all events under frame limit");
     let collected = reader.world().resource::<Collected>();
-    assert_eq!(collected.0.len(), 15);
+    assert_eq!(collected.events.len(), 15);
 }

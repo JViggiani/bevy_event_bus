@@ -59,7 +59,10 @@ fn no_event_duplication_exactly_once_delivery() {
 
     // Send exactly 10 unique events (as a resource to avoid closure issues)
     #[derive(Resource, Clone)]
-    struct ToSend(Vec<TestEvent>, String);
+    struct ToSend {
+        events: Vec<TestEvent>,
+        topic: String,
+    }
 
     let expected_events: Vec<TestEvent> = (0..10)
         .map(|i| TestEvent {
@@ -68,11 +71,14 @@ fn no_event_duplication_exactly_once_delivery() {
         })
         .collect();
 
-    writer.insert_resource(ToSend(expected_events.clone(), topic.clone()));
+    writer.insert_resource(ToSend {
+        events: expected_events.clone(),
+        topic: topic.clone(),
+    });
 
     fn writer_system(mut w: KafkaMessageWriter, data: Res<ToSend>) {
-        let config = KafkaProducerConfig::new([data.1.clone()]);
-        for event in &data.0 {
+        let config = KafkaProducerConfig::new([data.topic.clone()]);
+        for event in &data.events {
             w.write(&config, event.clone(), None);
         }
     }
@@ -83,15 +89,21 @@ fn no_event_duplication_exactly_once_delivery() {
     reader.add_plugins(EventBusPlugins { backend: backend_reader });
 
     #[derive(Resource, Default)]
-    struct Collected(Vec<TestEvent>);
+    struct Collected {
+        events: Vec<TestEvent>,
+    }
     reader.insert_resource(Collected::default());
 
     #[derive(Resource, Clone)]
-    struct Topic(String);
+    struct Topic {
+        name: String,
+    }
     #[derive(Resource, Clone)]
-    struct ConsumerGroup(String);
-    reader.insert_resource(Topic(topic.clone()));
-    reader.insert_resource(ConsumerGroup(consumer_group));
+    struct ConsumerGroup {
+        name: String,
+    }
+    reader.insert_resource(Topic { name: topic.clone() });
+    reader.insert_resource(ConsumerGroup { name: consumer_group });
 
     fn reader_system(
         mut r: KafkaMessageReader<TestEvent>,
@@ -99,9 +111,9 @@ fn no_event_duplication_exactly_once_delivery() {
         group: Res<ConsumerGroup>,
         mut collected: ResMut<Collected>,
     ) {
-        let config = KafkaConsumerConfig::new(group.0.clone(), [&topic.0]);
+        let config = KafkaConsumerConfig::new(group.name.clone(), [topic.name.clone()]);
         for wrapper in r.read(&config) {
-            collected.0.push(wrapper.event().clone());
+            collected.events.push(wrapper.event().clone());
         }
     }
     reader.add_systems(Update, reader_system);
@@ -112,7 +124,7 @@ fn no_event_duplication_exactly_once_delivery() {
     // Wait for all 10 events to be received
     let (ok, _frames) = update_until(&mut reader, 5000, |app| {
         let c = app.world().resource::<Collected>();
-        c.0.len() >= 10
+        c.events.len() >= 10
     });
 
     let collected = reader.world().resource::<Collected>();
@@ -120,21 +132,21 @@ fn no_event_duplication_exactly_once_delivery() {
     assert!(
         ok,
         "Timed out waiting for events. Got {} events",
-        collected.0.len()
+        collected.events.len()
     );
 
     // Verify exactly 10 events were received (no duplication)
     assert_eq!(
-        collected.0.len(),
+        collected.events.len(),
         10,
         "Expected exactly 10 events, got {}",
-        collected.0.len()
+        collected.events.len()
     );
 
     // Verify each expected event appears exactly once
     for expected_event in &expected_events {
         let count = collected
-            .0
+            .events
             .iter()
             .filter(|e| e.message == expected_event.message && e.value == expected_event.value)
             .count();
@@ -150,9 +162,9 @@ fn no_event_duplication_exactly_once_delivery() {
 
     let collected_after_wait = reader.world().resource::<Collected>();
     assert_eq!(
-        collected_after_wait.0.len(),
+        collected_after_wait.events.len(),
         10,
         "Additional events appeared after waiting: expected 10, got {}",
-        collected_after_wait.0.len()
+        collected_after_wait.events.len()
     );
 }

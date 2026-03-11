@@ -86,7 +86,9 @@ fn metadata_propagation_from_kafka_to_bevy() {
     );
 
     #[derive(Resource, Default)]
-    struct ReceivedEvents(Vec<MessageWrapper<TestEvent>>);
+    struct ReceivedEvents {
+        events: Vec<MessageWrapper<TestEvent>>,
+    }
 
     reader.insert_resource(ReceivedEvents::default());
     let tr = topic.clone();
@@ -95,7 +97,7 @@ fn metadata_propagation_from_kafka_to_bevy() {
         move |mut r: KafkaMessageReader<TestEvent>, mut events: ResMut<ReceivedEvents>| {
             let config = KafkaConsumerConfig::new(consumer_group.as_str(), [&tr]);
             for wrapper in r.read(&config) {
-                events.0.push(wrapper.clone());
+                events.events.push(wrapper.clone());
             }
         },
     );
@@ -107,7 +109,7 @@ fn metadata_propagation_from_kafka_to_bevy() {
     // Wait for the event to arrive
     let received = wait_for_events(&mut reader, &topic, 5000, 1, |app| {
         let events = app.world().resource::<ReceivedEvents>();
-        events.0.clone()
+        events.events.clone()
     });
 
     assert_eq!(
@@ -217,7 +219,9 @@ fn header_forwarding_producer_to_consumer() {
     );
 
     #[derive(Resource, Default)]
-    struct ReceivedEvents(Vec<MessageWrapper<TestEvent>>);
+    struct ReceivedEvents {
+        events: Vec<MessageWrapper<TestEvent>>,
+    }
 
     reader.insert_resource(ReceivedEvents::default());
     let tr = topic.clone();
@@ -227,7 +231,7 @@ fn header_forwarding_producer_to_consumer() {
         move |mut r: KafkaMessageReader<TestEvent>, mut events: ResMut<ReceivedEvents>| {
             let config = KafkaConsumerConfig::new(consumer_group_clone.as_str(), [&tr]);
             for wrapper in r.read(&config) {
-                events.0.push(wrapper.clone());
+                events.events.push(wrapper.clone());
             }
         },
     );
@@ -243,7 +247,7 @@ fn header_forwarding_producer_to_consumer() {
         1,    // Wait for at least 1 event
         |app| {
             let events = app.world().resource::<ReceivedEvents>();
-            events.0.clone()
+            events.events.clone()
         },
     );
 
@@ -326,7 +330,9 @@ fn timestamp_accuracy_for_latency_measurement() {
     );
 
     #[derive(Resource, Default)]
-    struct ReceivedEvents(Vec<MessageWrapper<TestEvent>>);
+    struct ReceivedEvents {
+        events: Vec<MessageWrapper<TestEvent>>,
+    }
 
     reader.insert_resource(ReceivedEvents::default());
     let tr = topic.clone();
@@ -335,7 +341,7 @@ fn timestamp_accuracy_for_latency_measurement() {
         move |mut r: KafkaMessageReader<TestEvent>, mut events: ResMut<ReceivedEvents>| {
             let config = KafkaConsumerConfig::new(consumer_group.as_str(), [&tr]);
             for wrapper in r.read(&config) {
-                events.0.push(wrapper.clone());
+                events.events.push(wrapper.clone());
             }
         },
     );
@@ -347,7 +353,7 @@ fn timestamp_accuracy_for_latency_measurement() {
     // Wait for the event to arrive
     let received = wait_for_events(&mut reader, &topic, 5000, 1, |app| {
         let events = app.world().resource::<ReceivedEvents>();
-        events.0.clone()
+        events.events.clone()
     });
 
     assert_eq!(received.len(), 1, "Should receive exactly one event");
@@ -449,9 +455,13 @@ fn mixed_metadata_and_regular_reading() {
     );
 
     #[derive(Resource, Default)]
-    struct RegularEvents(Vec<TestEvent>);
+    struct RegularEvents {
+        events: Vec<TestEvent>,
+    }
     #[derive(Resource, Default)]
-    struct MetadataEvents(Vec<MessageWrapper<TestEvent>>);
+    struct MetadataEvents {
+        events: Vec<MessageWrapper<TestEvent>>,
+    }
 
     regular_reader.insert_resource(RegularEvents::default());
     metadata_reader.insert_resource(MetadataEvents::default());
@@ -464,7 +474,7 @@ fn mixed_metadata_and_regular_reading() {
         move |mut r: KafkaMessageReader<TestEvent>, mut events: ResMut<RegularEvents>| {
             let config = KafkaConsumerConfig::new(regular_group.as_str(), [&tr1]);
             for wrapper in r.read(&config) {
-                events.0.push(wrapper.event().clone());
+                events.events.push(wrapper.event().clone());
             }
         },
     );
@@ -475,7 +485,7 @@ fn mixed_metadata_and_regular_reading() {
         move |mut r: KafkaMessageReader<TestEvent>, mut events: ResMut<MetadataEvents>| {
             let config = KafkaConsumerConfig::new(metadata_group.as_str(), [&tr2]);
             for wrapper in r.read(&config) {
-                events.0.push(wrapper.clone());
+                events.events.push(wrapper.clone());
             }
         },
     );
@@ -487,12 +497,12 @@ fn mixed_metadata_and_regular_reading() {
     // Wait for events to arrive - use separate readers
     let regular = wait_for_events(&mut regular_reader, &topic, 5000, 3, |app| {
         let events = app.world().resource::<RegularEvents>();
-        events.0.clone()
+        events.events.clone()
     });
 
     let metadata = wait_for_events(&mut metadata_reader, &topic, 5000, 3, |app| {
         let events = app.world().resource::<MetadataEvents>();
-        events.0.clone()
+        events.events.clone()
     });
 
     // Both methods should see the same events

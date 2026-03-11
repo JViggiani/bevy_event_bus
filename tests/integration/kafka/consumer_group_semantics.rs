@@ -15,16 +15,24 @@ use integration_tests::utils::helpers::{
 use integration_tests::utils::kafka_setup;
 
 #[derive(Resource, Default)]
-struct EventCollector(Vec<TestEvent>);
+struct EventCollector {
+    events: Vec<TestEvent>,
+}
 
 #[derive(Resource, Default)]
-struct ErrorCollector(Vec<EventBusError<TestEvent>>);
+struct ErrorCollector {
+    errors: Vec<EventBusError<TestEvent>>,
+}
 
 #[derive(Resource, Default)]
-struct ValidKafkaCollector(Vec<TestEvent>);
+struct ValidKafkaCollector {
+    events: Vec<TestEvent>,
+}
 
 #[derive(Resource, Default)]
-struct InvalidKafkaCollector(Vec<TestEvent>);
+struct InvalidKafkaCollector {
+    events: Vec<TestEvent>,
+}
 
 /// Readers in the same consumer group should share work without duplicates.
 #[test]
@@ -94,7 +102,7 @@ fn same_consumer_group_distributes_messages_round_robin() {
         move |mut r: KafkaMessageReader<TestEvent>, mut c: ResMut<EventCollector>| {
             let config = KafkaConsumerConfig::new(g1.clone(), [t1.clone()]);
             for wrapper in r.read(&config) {
-                c.0.push(wrapper.event().clone());
+                c.events.push(wrapper.event().clone());
             }
         },
     );
@@ -111,7 +119,7 @@ fn same_consumer_group_distributes_messages_round_robin() {
         move |mut r: KafkaMessageReader<TestEvent>, mut c: ResMut<EventCollector>| {
             let config = KafkaConsumerConfig::new(g2.clone(), [t2.clone()]);
             for wrapper in r.read(&config) {
-                c.0.push(wrapper.event().clone());
+                c.events.push(wrapper.event().clone());
             }
         },
     );
@@ -153,8 +161,8 @@ fn same_consumer_group_distributes_messages_round_robin() {
         |reader1_app, reader2_app| {
             let collected1 = reader1_app.world().resource::<EventCollector>();
             let collected2 = reader2_app.world().resource::<EventCollector>();
-            let total_events = collected1.0.len() + collected2.0.len();
-            total_events >= 6 && (!collected1.0.is_empty() || !collected2.0.is_empty())
+            let total_events = collected1.events.len() + collected2.events.len();
+            total_events >= 6 && (!collected1.events.is_empty() || !collected2.events.is_empty())
         },
     );
 
@@ -167,27 +175,27 @@ fn same_consumer_group_distributes_messages_round_robin() {
         "Consumer group should receive all dispatched events"
     );
 
-    let total_events = collected1.0.len() + collected2.0.len();
+    let total_events = collected1.events.len() + collected2.events.len();
     assert_eq!(
         total_events,
         6,
         "Should receive all 6 events in total, got reader1={}, reader2={}",
-        collected1.0.len(),
-        collected2.0.len()
+        collected1.events.len(),
+        collected2.events.len()
     );
 
     // Kafka assigns partitions exclusively to a single consumer, so one reader may legitimately
     // observe all events depending on the broker's rebalancing. We only assert that the group
     // consumes the complete payload without duplication.
     assert!(
-        !collected1.0.is_empty() || !collected2.0.is_empty(),
+        !collected1.events.is_empty() || !collected2.events.is_empty(),
         "At least one reader should receive events"
     );
 
     println!(
         "Reader1 got {} events, Reader2 got {} events",
-        collected1.0.len(),
-        collected2.0.len()
+        collected1.events.len(),
+        collected2.events.len()
     );
 }
 
@@ -282,7 +290,7 @@ fn different_consumer_groups_receive_all_events() {
         move |mut r: KafkaMessageReader<TestEvent>, mut c: ResMut<EventCollector>| {
             let config = KafkaConsumerConfig::new(g1.clone(), [t1.clone()]);
             for wrapper in r.read(&config) {
-                c.0.push(wrapper.event().clone());
+                c.events.push(wrapper.event().clone());
             }
         },
     );
@@ -299,7 +307,7 @@ fn different_consumer_groups_receive_all_events() {
         move |mut r: KafkaMessageReader<TestEvent>, mut c: ResMut<EventCollector>| {
             let config = KafkaConsumerConfig::new(g2.clone(), [t2.clone()]);
             for wrapper in r.read(&config) {
-                c.0.push(wrapper.event().clone());
+                c.events.push(wrapper.event().clone());
             }
         },
     );
@@ -314,12 +322,12 @@ fn different_consumer_groups_receive_all_events() {
     // Wait for message broadcast
     let (received1, _) = update_until(&mut reader1, 10_000, |app| {
         let collected = app.world().resource::<EventCollector>();
-        collected.0.len() >= 4
+        collected.events.len() >= 4
     });
 
     let (received2, _) = update_until(&mut reader2, 10_000, |app| {
         let collected = app.world().resource::<EventCollector>();
-        collected.0.len() >= 4
+        collected.events.len() >= 4
     });
 
     let collected1 = reader1.world().resource::<EventCollector>();
@@ -329,19 +337,19 @@ fn different_consumer_groups_receive_all_events() {
     assert!(received1, "Reader1 should receive all events");
     assert!(received2, "Reader2 should receive all events");
 
-    assert_eq!(collected1.0.len(), 4, "Reader1 should receive all 4 events");
-    assert_eq!(collected2.0.len(), 4, "Reader2 should receive all 4 events");
+    assert_eq!(collected1.events.len(), 4, "Reader1 should receive all 4 events");
+    assert_eq!(collected2.events.len(), 4, "Reader2 should receive all 4 events");
 
     // Verify they got the same events
     for i in 0..4 {
-        assert_eq!(collected1.0[i].value, 100 + i as i32);
-        assert_eq!(collected2.0[i].value, 100 + i as i32);
+        assert_eq!(collected1.events[i].value, 100 + i as i32);
+        assert_eq!(collected2.events[i].value, 100 + i as i32);
     }
 
     println!(
         "Reader1 got {} events, Reader2 got {} events (broadcast mode)",
-        collected1.0.len(),
-        collected2.0.len()
+        collected1.events.len(),
+        collected2.events.len()
     );
 }
 
@@ -418,7 +426,7 @@ fn writer_only_works_without_consumer_groups() {
                 [topic_for_reader_runtime.clone()],
             );
             for wrapper in r.read(&config) {
-                c.0.push(wrapper.event().clone());
+                c.events.push(wrapper.event().clone());
             }
         },
     );
@@ -431,7 +439,7 @@ fn writer_only_works_without_consumer_groups() {
 
     let (received, _) = update_until(&mut reader, 10_000, |app| {
         let collected = app.world().resource::<EventCollector>();
-        collected.0.len() >= 3
+        collected.events.len() >= 3
     });
 
     assert!(
@@ -441,14 +449,14 @@ fn writer_only_works_without_consumer_groups() {
 
     let collected = reader.world().resource::<EventCollector>();
     assert_eq!(
-        collected.0.len(),
+        collected.events.len(),
         3,
         "Reader should receive all events from writer-only topology"
     );
 
     println!(
         "Writer-only topology sent events without consumer groups and reader consumed {} events",
-        collected.0.len()
+        collected.events.len()
     );
 }
 
@@ -480,7 +488,7 @@ fn reader_does_not_work_without_consumer_group() {
         |mut errors: MessageReader<EventBusError<TestEvent>>,
          mut collector: ResMut<ErrorCollector>| {
             for error in errors.read() {
-                collector.0.push(error.clone());
+                collector.errors.push(error.clone());
             }
         },
     );
@@ -495,7 +503,7 @@ fn reader_does_not_work_without_consumer_group() {
                 [topic_for_reader_runtime.clone()],
             );
             for wrapper in r.read(&config) {
-                c.0.push(wrapper.event().clone());
+                c.events.push(wrapper.event().clone());
             }
         },
     );
@@ -528,7 +536,7 @@ fn reader_does_not_work_without_consumer_group() {
 
     let (received, _) = update_until(&mut reader, 10_000, |app| {
         let collected = app.world().resource::<EventCollector>();
-        !collected.0.is_empty()
+        !collected.events.is_empty()
     });
 
     assert!(
@@ -539,7 +547,7 @@ fn reader_does_not_work_without_consumer_group() {
     {
         let collected = reader.world().resource::<EventCollector>();
         assert!(
-            collected.0.is_empty(),
+            collected.events.is_empty(),
             "Reader without a configured consumer group must not observe events"
         );
         println!("Reader correctly failed to receive events without an associated consumer group");
@@ -547,10 +555,10 @@ fn reader_does_not_work_without_consumer_group() {
 
     let errors = reader.world().resource::<ErrorCollector>();
     assert!(
-        !errors.0.is_empty(),
+        !errors.errors.is_empty(),
         "Reader should emit an error event when the consumer group is undefined"
     );
-    let first_error = &errors.0[0];
+    let first_error = &errors.errors[0];
     assert_eq!(first_error.error_type, EventBusErrorType::InvalidReadConfig);
     assert_eq!(first_error.topic, topic);
     assert_eq!(first_error.backend.as_deref(), Some("kafka"));
@@ -590,7 +598,7 @@ fn invalid_consumer_group_does_not_steal_events_from_valid_group() {
         |mut errors: MessageReader<EventBusError<TestEvent>>,
          mut collector: ResMut<ErrorCollector>| {
             for error in errors.read() {
-                collector.0.push(error.clone());
+                collector.errors.push(error.clone());
             }
         },
     );
@@ -603,7 +611,7 @@ fn invalid_consumer_group_does_not_steal_events_from_valid_group() {
               mut invalid: ResMut<InvalidKafkaCollector>| {
             let config = KafkaConsumerConfig::new(invalid_group.clone(), [invalid_topic.clone()]);
             for wrapper in reader.read(&config) {
-                invalid.0.push(wrapper.event().clone());
+                invalid.events.push(wrapper.event().clone());
             }
         },
     );
@@ -618,7 +626,7 @@ fn invalid_consumer_group_does_not_steal_events_from_valid_group() {
                 [valid_topic_runtime.clone()],
             );
             for wrapper in reader.read(&config) {
-                valid.0.push(wrapper.event().clone());
+                valid.events.push(wrapper.event().clone());
             }
         },
     );
@@ -646,7 +654,7 @@ fn invalid_consumer_group_does_not_steal_events_from_valid_group() {
 
     let (valid_received, _) = update_until(&mut app, 10_000, |app| {
         let collected = app.world().resource::<ValidKafkaCollector>();
-        collected.0.len() >= 3
+        collected.events.len() >= 3
     });
 
     assert!(
@@ -656,20 +664,20 @@ fn invalid_consumer_group_does_not_steal_events_from_valid_group() {
 
     let valid = app.world().resource::<ValidKafkaCollector>();
     assert_eq!(
-        valid.0.len(),
+        valid.events.len(),
         3,
         "Valid Kafka consumer group should observe every dispatched event"
     );
 
     let invalid = app.world().resource::<InvalidKafkaCollector>();
     assert!(
-        invalid.0.is_empty(),
+        invalid.events.is_empty(),
         "Invalid Kafka consumer group must not receive any events"
     );
 
     let errors = app.world().resource::<ErrorCollector>();
     assert!(
-        errors.0.iter().any(|error| {
+        errors.errors.iter().any(|error| {
             error.error_type == EventBusErrorType::InvalidReadConfig
                 && error.backend.as_deref() == Some("kafka")
                 && error.topic == topic

@@ -12,7 +12,9 @@ use integration_tests::utils::helpers::{
 use integration_tests::utils::redis_setup;
 
 #[derive(Resource, Default)]
-struct EventCollector(Vec<TestEvent>);
+struct EventCollector {
+    events: Vec<TestEvent>,
+}
 
 /// Test the principle: expensive setup at startup, cheap operations at runtime
 #[test]
@@ -67,7 +69,7 @@ fn test_topology_setup_principle() {
             let config = RedisConsumerConfig::new(runtime_group.clone(), [runtime_stream.clone()]);
 
             for wrapper in r.read(&config) {
-                c.0.push(wrapper.event().clone());
+                c.events.push(wrapper.event().clone());
             }
 
             let read_time = start_read.elapsed();
@@ -121,7 +123,7 @@ fn test_topology_setup_principle() {
 
     let collected_events = wait_for_events(&mut reader, &stream, 5_000, 1, |app| {
         let collected = app.world().resource::<EventCollector>();
-        collected.0.clone()
+        collected.events.clone()
     });
 
     println!("✅ Runtime operations completed successfully");

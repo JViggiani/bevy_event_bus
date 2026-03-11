@@ -39,7 +39,9 @@ fn idle_empty_stream_poll_does_not_block() {
     app.add_plugins(EventBusPlugins { backend });
 
     #[derive(Resource, Default)]
-    struct Ticks(u32);
+    struct Ticks {
+        count: u32,
+    }
     app.insert_resource(Ticks::default());
 
     let stream_read = stream.clone();
@@ -52,7 +54,7 @@ fn idle_empty_stream_poll_does_not_block() {
             for _ in reader.read(&config) {
                 // No events expected from idle stream
             }
-            ticks.0 += 1;
+            ticks.count += 1;
         },
     );
 
@@ -61,7 +63,7 @@ fn idle_empty_stream_poll_does_not_block() {
         app.update();
     }
     let elapsed_ms = start.elapsed().as_millis();
-    let ticks = app.world().resource::<Ticks>().0;
+    let ticks = app.world().resource::<Ticks>().count;
 
     assert_eq!(ticks, 200, "All frames should execute (ticks={ticks})");
     assert!(
