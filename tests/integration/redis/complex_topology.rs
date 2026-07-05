@@ -7,7 +7,7 @@ use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
-use bevy_event_bus::{EventBusPlugins, RedisMessageReader, RedisMessageWriter};
+use bevy_event_bus::{EventBusPlugin, RedisMessageReader, RedisMessageWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
     run_app_updates, unique_consumer_group_membership, unique_topic, update_two_apps_until,
@@ -125,10 +125,10 @@ fn complex_topology_no_cross_talk() {
     .collect();
 
     let mut writer_app = App::new();
-    writer_app.add_plugins(EventBusPlugins { backend: writer_backend });
+    writer_app.add_plugins(EventBusPlugin::new(writer_backend));
 
     let mut reader_app = App::new();
-    reader_app.add_plugins(EventBusPlugins { backend: reader_backend });
+    reader_app.add_plugins(EventBusPlugin::new(reader_backend));
     reader_app.insert_resource(Collected::default());
 
     let writer_messages = message_catalog.clone();

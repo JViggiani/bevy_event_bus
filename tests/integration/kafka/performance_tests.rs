@@ -7,7 +7,7 @@
 
 use bevy::prelude::*;
 use bevy_event_bus::{
-    EventBusPlugins, KafkaMessageReader, KafkaMessageWriter,
+    EventBusPlugin, KafkaMessageReader, KafkaMessageWriter,
     config::kafka::{
         KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
         KafkaTopicSpec,
@@ -176,7 +176,7 @@ fn run_throughput_test(
     payload_size: usize,
 ) {
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins { backend: backend });
+    app.add_plugins(EventBusPlugin::new(backend));
 
     #[derive(Resource)]
     struct PerformanceTestState {

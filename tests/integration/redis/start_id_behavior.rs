@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
-use bevy_event_bus::{EventBusPlugins, RedisMessageReader, RedisMessageWriter};
+use bevy_event_bus::{EventBusPlugin, RedisMessageReader, RedisMessageWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
     run_app_updates, unique_consumer_group_membership, unique_topic,
@@ -61,7 +61,7 @@ fn test_start_id_from_beginning() {
 
     // First, send some events with separate writer backend
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: writer_backend });
+    writer.add_plugins(EventBusPlugin::new(writer_backend));
 
     let stream_for_writer = stream.clone();
     writer.add_systems(
@@ -85,7 +85,7 @@ fn test_start_id_from_beginning() {
 
     // Now create reader with separate backend that won't see events from writer
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins { backend: reader_backend });
+    reader.add_plugins(EventBusPlugin::new(reader_backend));
     reader.insert_resource(EventCollector::default());
 
     let s = stream.clone();
@@ -158,7 +158,7 @@ fn test_start_id_from_end() {
 
     // First, send some events with separate writer backend
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: writer_backend });
+    writer.add_plugins(EventBusPlugin::new(writer_backend));
 
     let stream_for_writer = stream.clone();
     writer.add_systems(
@@ -182,7 +182,7 @@ fn test_start_id_from_end() {
 
     // Now create reader with separate backend that won't see events from writer
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins { backend: reader_backend });
+    reader.add_plugins(EventBusPlugin::new(reader_backend));
     reader.insert_resource(EventCollector::default());
 
     let s = stream.clone();

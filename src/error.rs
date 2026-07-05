@@ -1,30 +1,39 @@
+//! Unified error surface for the event bus.
+//!
+//! This is the single source of truth for error categorisation. Both the
+//! ECS-facing [`EventBusError`] message and the callback-facing
+//! [`BusErrorContext`] classify failures using the same [`EventBusErrorType`]
+//! enum so readers and writers speak one error vocabulary.
+
+use std::sync::Arc;
+
 use bevy::prelude::*;
-use bevy_event_bus::BusEvent;
+use bevy_event_bus::BusMessage;
 use bevy_event_bus::resources::MessageMetadata;
 use serde::{Deserialize, Serialize};
 
-/// Types of errors that can occur in the event bus
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Categories of errors that can occur in the event bus.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EventBusErrorType {
     Serialization,      // JSON serialization failed
     Connection,         // Backend connection issues
     NotConfigured,      // Backend not configured
     Topic,              // Invalid topic name/format
     Timeout,            // Network timeout
-    DeliveryFailure,    // Async delivery failure from Kafka
+    DeliveryFailure,    // Async delivery failure from the backend
     Deserialization,    // Failed to deserialize message from topic
     ConsumerError,      // Background consumer error
+    AckFailure,         // Acknowledgement of a consumed message failed
     InvalidReadConfig,  // Reader configuration does not align with the provisioned topology
     InvalidWriteConfig, // Writer configuration does not align with the provisioned topology
     Other,              // Catch-all
 }
 
-/// Event fired when any operation on the event bus fails
+/// Event fired when any operation on the event bus fails.
 ///
-/// This replaces both the old Result-based error handling and EventBusDeliveryFailure.
 /// All errors, whether immediate (serialization) or async (delivery), are sent as events.
 #[derive(Message, Debug, Clone)]
-pub struct EventBusError<T: BusEvent> {
+pub struct EventBusError<T: BusMessage> {
     /// The topic the event was being sent to
     pub topic: String,
     /// The specific type of error that occurred
@@ -41,7 +50,7 @@ pub struct EventBusError<T: BusEvent> {
     pub metadata: Option<MessageMetadata>,
 }
 
-impl<T: BusEvent> EventBusError<T> {
+impl<T: BusMessage> EventBusError<T> {
     /// Create a new immediate error (with original event available)
     pub fn immediate(
         topic: String,
@@ -79,42 +88,36 @@ impl<T: BusEvent> EventBusError<T> {
     }
 }
 
-/// Event fired when message deserialization fails
-///
-/// This is a non-generic error event for cases where we cannot create EventBusError<T>
-/// because the deserialization failed and we don't have a T instance.
-#[derive(Message, Debug, Clone)]
-pub struct EventBusDecodeError {
-    /// The topic the message was received from
+/// Context passed to error callbacks registered on writers/readers.
+#[derive(Debug, Clone)]
+pub struct BusErrorContext {
+    pub backend: &'static str,
     pub topic: String,
-    /// Human-readable error message
-    pub error_message: String,
-    /// Timestamp when the error occurred
-    pub timestamp: std::time::SystemTime,
-    /// The raw message bytes that failed to decode
-    pub raw_payload: Vec<u8>,
-    /// The decoder name that failed
-    pub decoder_name: String,
-    /// Optional metadata for the message (contains backend-specific details like partition/offset)
+    pub kind: EventBusErrorType,
+    pub message: String,
     pub metadata: Option<MessageMetadata>,
+    pub original_bytes: Option<Vec<u8>>, // when available
 }
 
-impl EventBusDecodeError {
-    /// Create a new decode error
+/// Callback invoked when an error occurs.
+pub type BusErrorCallback = Arc<dyn Fn(BusErrorContext) + Send + Sync + 'static>;
+
+impl BusErrorContext {
     pub fn new(
-        topic: String,
-        error_message: String,
-        raw_payload: Vec<u8>,
-        decoder_name: String,
+        backend: &'static str,
+        topic: impl Into<String>,
+        kind: EventBusErrorType,
+        message: impl Into<String>,
         metadata: Option<MessageMetadata>,
+        original_bytes: Option<Vec<u8>>,
     ) -> Self {
         Self {
-            topic,
-            error_message,
-            timestamp: std::time::SystemTime::now(),
-            raw_payload,
-            decoder_name,
+            backend,
+            topic: topic.into(),
+            kind,
+            message: message.into(),
             metadata,
+            original_bytes,
         }
     }
 }

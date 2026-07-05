@@ -9,9 +9,9 @@ use bevy_event_bus::backends::{
     },
 };
 use bevy_event_bus::config::{EventBusConfig, redis::RedisProducerConfig, redis::TrimStrategy};
-use bevy_event_bus::errors::{BusErrorCallback, BusErrorContext, BusErrorKind};
+use bevy_event_bus::{BusErrorCallback, BusErrorContext, EventBusErrorType};
 use bevy_event_bus::resources::{MessageMetadata, ProvisionedTopology};
-use bevy_event_bus::{BusEvent, runtime};
+use bevy_event_bus::{BusMessage, runtime};
 
 use super::BusMessageWriter;
 
@@ -54,7 +54,7 @@ impl<'w> RedisMessageWriter<'w> {
     /// Write a message with an optional error callback.
     pub fn write<T, C>(&mut self, config: &C, event: T, callback: Option<BusErrorCallback>)
     where
-        T: BusEvent + Message,
+        T: BusMessage + Message,
         C: EventBusConfig + Any,
     {
         let callback_ref = callback.as_ref();
@@ -65,7 +65,7 @@ impl<'w> RedisMessageWriter<'w> {
                     Self::emit_error(
                         callback_ref,
                         &stream,
-                        BusErrorKind::InvalidWriteConfig,
+                        EventBusErrorType::InvalidWriteConfig,
                         format!("Stream '{stream}' is not provisioned in the Redis topology"),
                         None,
                         None,
@@ -106,7 +106,7 @@ impl<'w> RedisMessageWriter<'w> {
                             Self::emit_error(
                                 callback_ref,
                                 stream,
-                                BusErrorKind::DeliveryFailure,
+                                EventBusErrorType::DeliveryFailure,
                                 "Failed to enqueue Redis message",
                                 None,
                                 Some(serialized.clone()),
@@ -119,7 +119,7 @@ impl<'w> RedisMessageWriter<'w> {
                         Self::emit_error(
                             callback_ref,
                             stream,
-                            BusErrorKind::Serialization,
+                            EventBusErrorType::Serialization,
                             err.to_string(),
                             None,
                             None,
@@ -132,7 +132,7 @@ impl<'w> RedisMessageWriter<'w> {
                 Self::emit_error(
                     callback_ref,
                     stream,
-                    BusErrorKind::NotConfigured,
+                    EventBusErrorType::NotConfigured,
                     "No event bus backend configured",
                     None,
                     None,
@@ -219,7 +219,7 @@ impl<'w> RedisMessageWriter<'w> {
     fn emit_error(
         callback: Option<&BusErrorCallback>,
         stream: &str,
-        kind: BusErrorKind,
+        kind: EventBusErrorType,
         message: impl Into<String>,
         metadata: Option<MessageMetadata>,
         payload: Option<Vec<u8>>,
@@ -242,7 +242,7 @@ impl<'w> RedisMessageWriter<'w> {
 
 impl<'w, T> BusMessageWriter<T> for RedisMessageWriter<'w>
 where
-    T: BusEvent + Message,
+    T: BusMessage + Message,
 {
     fn write<C>(&mut self, config: &C, event: T, error_callback: Option<BusErrorCallback>)
     where
@@ -299,7 +299,7 @@ mod tests {
 
         let mut state = SystemState::<RedisMessageWriter>::new(&mut world);
         {
-            let mut writer = state.get_mut(&mut world);
+            let mut writer = state.get_mut(&mut world).unwrap();
             let config = RedisProducerConfig::new("audit");
             let event = TestEvent { value: 7 };
             writer.write(&config, event, Some(callback.clone()));
@@ -308,7 +308,7 @@ mod tests {
 
         let collected = errors.lock().unwrap().clone();
         assert_eq!(collected.len(), 1);
-        assert_eq!(collected[0].kind, BusErrorKind::NotConfigured);
+        assert_eq!(collected[0].kind, EventBusErrorType::NotConfigured);
         assert_eq!(collected[0].topic, "audit");
     }
 
@@ -332,7 +332,7 @@ mod tests {
 
         let mut state = SystemState::<RedisMessageWriter>::new(&mut world);
         {
-            let mut writer = state.get_mut(&mut world);
+            let mut writer = state.get_mut(&mut world).unwrap();
             let config = RedisProducerConfig::new("unknown");
             let event = TestEvent { value: 99 };
             writer.write(&config, event, Some(callback.clone()));
@@ -343,7 +343,7 @@ mod tests {
         assert_eq!(collected.len(), 1);
         let error = &collected[0];
         assert_eq!(error.topic, "unknown");
-        assert_eq!(error.kind, BusErrorKind::InvalidWriteConfig);
+        assert_eq!(error.kind, EventBusErrorType::InvalidWriteConfig);
         assert!(error.message.contains("not provisioned"));
     }
 }

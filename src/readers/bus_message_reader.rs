@@ -1,8 +1,8 @@
 use bevy::prelude::Message;
-use bevy_event_bus::{config::EventBusConfig, resources::MessageWrapper, BusEvent};
+use bevy_event_bus::{config::EventBusConfig, resources::MessageWrapper, BusMessage};
 
 /// Common capabilities shared by all bus message readers.
-pub trait BusMessageReader<T: BusEvent + Message> {
+pub trait BusMessageReader<T: BusMessage + Message> {
     /// Drain the buffered messages for the supplied configuration.
     fn read<C: EventBusConfig>(&mut self, config: &C) -> Vec<MessageWrapper<T>> {
         self.read_bounded(config, usize::MAX)

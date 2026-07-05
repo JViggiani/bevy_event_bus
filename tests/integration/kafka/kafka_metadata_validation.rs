@@ -4,7 +4,7 @@ use bevy_event_bus::config::kafka::{
     KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
     KafkaTopicSpec,
 };
-use bevy_event_bus::{EventBusPlugins, KafkaMessageReader, KafkaMessageWriter, MessageWrapper};
+use bevy_event_bus::{EventBusPlugin, KafkaMessageReader, KafkaMessageWriter, MessageWrapper};
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{
     unique_consumer_group, unique_topic, update_until, wait_for_events,
@@ -57,10 +57,10 @@ fn kafka_metadata_end_to_end_validation() {
 
     // Writer app
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: backend_w });
+    writer.add_plugins(EventBusPlugin::new(backend_w));
     // Reader app - receives events and validates metadata
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins { backend: backend_r });
+    reader.add_plugins(EventBusPlugin::new(backend_r));
 
     #[derive(Resource, Default)]
     struct ReceivedEventsWithMetadata {
@@ -305,11 +305,11 @@ fn kafka_metadata_topic_isolation() {
 
     // Writer app
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: backend_w });
+    writer.add_plugins(EventBusPlugin::new(backend_w));
 
     // Reader app
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins { backend: backend_r });
+    reader.add_plugins(EventBusPlugin::new(backend_r));
 
     #[derive(Resource, Default)]
     struct ReceivedEvents {
@@ -493,11 +493,11 @@ fn kafka_metadata_consistency_under_load() {
 
     // Writer app
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: backend_w });
+    writer.add_plugins(EventBusPlugin::new(backend_w));
 
     // Reader app
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins { backend: backend_r });
+    reader.add_plugins(EventBusPlugin::new(backend_r));
 
     #[derive(Resource, Default)]
     struct ReceivedEventsWithMetadata {

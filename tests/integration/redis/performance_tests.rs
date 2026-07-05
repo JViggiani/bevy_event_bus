@@ -11,7 +11,7 @@ use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisRuntimeTuning,
     RedisStreamSpec,
 };
-use bevy_event_bus::{EventBusPlugins, RedisMessageReader, RedisMessageWriter};
+use bevy_event_bus::{EventBusPlugin, RedisMessageReader, RedisMessageWriter};
 use integration_tests::utils::helpers::{unique_consumer_group_membership, unique_topic};
 use integration_tests::utils::performance::{PerformanceMetrics, record_performance_results};
 use integration_tests::utils::redis_setup;
@@ -185,7 +185,7 @@ fn run_throughput_test(
     payload_size: usize,
 ) {
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins { backend: backend });
+    app.add_plugins(EventBusPlugin::new(backend));
 
     #[derive(Resource)]
     struct PerformanceTestState {

@@ -2,7 +2,7 @@
 
 use super::{EventBusConfig, Redis, TopologyMode};
 use crate::{
-    BusEvent, EventBusError, backends::event_bus_backend::EventBusBackendConfig,
+    BusMessage, EventBusError, backends::event_bus_backend::EventBusBackendConfig,
     decoder::DecoderRegistry,
 };
 use bevy::prelude::{App, Message};
@@ -94,7 +94,7 @@ pub struct RedisTopologyEventBinding {
 }
 
 impl RedisTopologyEventBinding {
-    pub fn new<T: BusEvent + Message>(streams: Vec<String>) -> Self {
+    pub fn new<T: BusMessage + Message>(streams: Vec<String>) -> Self {
         Self {
             streams,
             register_fn: register_event_binding::<T>,
@@ -110,13 +110,9 @@ impl RedisTopologyEventBinding {
     }
 }
 
-fn register_event_binding<T: BusEvent + Message>(app: &mut App, streams: &[String]) {
+fn register_event_binding<T: BusMessage + Message>(app: &mut App, streams: &[String]) {
     App::add_message::<T>(app);
     App::add_message::<EventBusError<T>>(app);
-
-    if !app.world().contains_resource::<DecoderRegistry>() {
-        app.world_mut().insert_resource(DecoderRegistry::new());
-    }
 
     let mut registry = app.world_mut().resource_mut::<DecoderRegistry>();
     for stream in streams {
@@ -294,7 +290,7 @@ impl RedisTopologyBuilder {
         self
     }
 
-    pub fn add_event<T: BusEvent + Message>(
+    pub fn add_event<T: BusMessage + Message>(
         &mut self,
         streams: impl IntoIterator<Item = impl Into<String>>,
     ) -> &mut Self {
@@ -304,7 +300,7 @@ impl RedisTopologyBuilder {
         self
     }
 
-    pub fn add_event_single<T: BusEvent + Message>(
+    pub fn add_event_single<T: BusMessage + Message>(
         &mut self,
         stream: impl Into<String>,
     ) -> &mut Self {

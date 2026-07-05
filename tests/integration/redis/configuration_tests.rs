@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec, TrimStrategy,
 };
-use bevy_event_bus::{EventBusConfig, EventBusPlugins, RedisMessageReader, RedisMessageWriter};
+use bevy_event_bus::{EventBusConfig, EventBusPlugin, RedisMessageReader, RedisMessageWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
     run_app_updates, unique_consumer_group_membership, unique_topic, update_until,
@@ -50,7 +50,7 @@ fn configuration_with_readers_writers_works() {
     // Consumer app styled after Kafka configuration test
     let mut reader_app = {
         let mut app = App::new();
-        app.add_plugins(EventBusPlugins { backend: backend_reader });
+        app.add_plugins(EventBusPlugin::new(backend_reader));
 
         let stream_clone = stream.clone();
         let consumer_group_clone = consumer_group.clone();
@@ -72,7 +72,7 @@ fn configuration_with_readers_writers_works() {
     // Producer app styled after Kafka configuration test
     let mut writer_app = {
         let mut app = App::new();
-        app.add_plugins(EventBusPlugins { backend: backend_writer });
+        app.add_plugins(EventBusPlugin::new(backend_writer));
 
         let stream_clone = stream.clone();
         let event_payload = TestEvent {
@@ -141,7 +141,7 @@ fn redis_specific_methods_work() {
     .expect("Redis backend setup successful");
 
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins { backend: backend });
+    app.add_plugins(EventBusPlugin::new(backend));
 
     let redis_producer_config = RedisProducerConfig::new(stream.clone());
     let redis_consumer_config = RedisConsumerConfig::new(consumer_group.clone(), [stream.clone()]);

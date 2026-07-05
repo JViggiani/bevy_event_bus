@@ -4,7 +4,7 @@ use bevy_event_bus::config::kafka::{
     KafkaTopicSpec,
 };
 use bevy_event_bus::{
-    EventBusConsumerConfig, EventBusPlugins, KafkaMessageReader, KafkaMessageWriter,
+    EventBusConsumerConfig, EventBusPlugin, KafkaMessageReader, KafkaMessageWriter,
 };
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{unique_consumer_group, unique_topic, update_until};
@@ -43,10 +43,10 @@ fn frame_limit_spreads_drain() {
             .add_event_single::<TestEvent>(topic_for_reader.clone());
     }));
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: backend_w });
+    writer.add_plugins(EventBusPlugin::new(backend_w));
 
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins { backend: backend_r });
+    reader.add_plugins(EventBusPlugin::new(backend_r));
     let tclone = topic.clone();
     writer.add_systems(Update, move |mut w: KafkaMessageWriter| {
         let config = KafkaProducerConfig::new([tclone.clone()]);

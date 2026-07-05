@@ -7,9 +7,9 @@ pub mod outbound_bridge;
 
 use bevy::prelude::*;
 
-use bevy_event_bus::BusEvent;
+use bevy_event_bus::BusMessage;
 use bevy_event_bus::config::EventBusConfig;
-use bevy_event_bus::errors::BusErrorCallback;
+use bevy_event_bus::BusErrorCallback;
 
 #[cfg(feature = "kafka")]
 pub use kafka::{KafkaMessageWriter, KafkaWriterError};
@@ -17,7 +17,7 @@ pub use kafka::{KafkaMessageWriter, KafkaWriterError};
 pub use redis::{RedisMessageWriter, RedisWriterError};
 
 /// Common interface shared by all outbound message writers.
-pub trait BusMessageWriter<T: BusEvent + Message> {
+pub trait BusMessageWriter<T: BusMessage + Message> {
     /// Send a single message using the provided configuration.
     fn write<C: EventBusConfig>(
         &mut self,

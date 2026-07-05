@@ -2,7 +2,7 @@
 
 use super::{EventBusConfig, Kafka, ProcessingLimits, TopologyMode};
 use crate::{
-    BusEvent, EventBusError, backends::event_bus_backend::EventBusBackendConfig,
+    BusMessage, EventBusError, backends::event_bus_backend::EventBusBackendConfig,
     decoder::DecoderRegistry,
 };
 use bevy::prelude::{App, Message};
@@ -114,7 +114,7 @@ pub struct KafkaTopologyEventBinding {
 }
 
 impl KafkaTopologyEventBinding {
-    pub fn new<T: BusEvent + Message>(topics: Vec<String>) -> Self {
+    pub fn new<T: BusMessage + Message>(topics: Vec<String>) -> Self {
         Self {
             topics,
             register_fn: register_event_binding::<T>,
@@ -130,13 +130,9 @@ impl KafkaTopologyEventBinding {
     }
 }
 
-fn register_event_binding<T: BusEvent + Message>(app: &mut App, topics: &[String]) {
+fn register_event_binding<T: BusMessage + Message>(app: &mut App, topics: &[String]) {
     App::add_message::<T>(app);
     App::add_message::<EventBusError<T>>(app);
-
-    if !app.world().contains_resource::<DecoderRegistry>() {
-        app.world_mut().insert_resource(DecoderRegistry::new());
-    }
 
     let mut registry = app.world_mut().resource_mut::<DecoderRegistry>();
     for topic in topics {
@@ -215,7 +211,7 @@ impl KafkaTopologyBuilder {
         self
     }
 
-    pub fn add_event<T: BusEvent + Message>(
+    pub fn add_event<T: BusMessage + Message>(
         &mut self,
         topics: impl IntoIterator<Item = impl Into<String>>,
     ) -> &mut Self {
@@ -225,7 +221,7 @@ impl KafkaTopologyBuilder {
         self
     }
 
-    pub fn add_event_single<T: BusEvent + Message>(
+    pub fn add_event_single<T: BusMessage + Message>(
         &mut self,
         topic: impl Into<String>,
     ) -> &mut Self {

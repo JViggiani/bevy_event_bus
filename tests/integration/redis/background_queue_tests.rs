@@ -7,7 +7,7 @@ use bevy_event_bus::config::redis::{
 };
 use bevy_event_bus::{
     ConsumerMetrics, DrainMetricsMessage, DrainedTopicMetadata, EventBusConsumerConfig,
-    EventBusPlugins, MessageMetadata, ProcessedMessage, RedisMessageReader, RedisMessageWriter,
+    EventBusPlugin, MessageMetadata, ProcessedMessage, RedisMessageReader, RedisMessageWriter,
 };
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
@@ -34,7 +34,7 @@ fn drain_empty_ok() {
     app.update();
     let buffers = app.world().resource::<DrainedTopicMetadata>();
     assert!(
-        buffers.topics.is_empty() || buffers.topics.values().all(|entries| entries.is_empty()),
+        buffers.is_empty(),
         "Expected no drained messages for a fresh background queue"
     );
 }
@@ -46,11 +46,10 @@ fn unlimited_buffer_gathers() {
 
     {
         let mut buffers = app.world_mut().resource_mut::<DrainedTopicMetadata>();
-        let entry = buffers.topics.entry(stream.clone()).or_default();
         for i in 0..5u32 {
             let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
             let metadata = MessageMetadata::new(stream.clone(), Instant::now(), None, None);
-            entry.push(ProcessedMessage { payload, metadata });
+            buffers.push(&stream, ProcessedMessage { payload, metadata });
         }
     }
 
@@ -83,11 +82,10 @@ fn frame_limit_respected() {
 
     {
         let mut buffers = app.world_mut().resource_mut::<DrainedTopicMetadata>();
-        let entry = buffers.topics.entry(stream.clone()).or_default();
         for i in 0..10u32 {
             let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
             let metadata = MessageMetadata::new(stream.clone(), Instant::now(), None, None);
-            entry.push(ProcessedMessage { payload, metadata });
+            buffers.push(&stream, ProcessedMessage { payload, metadata });
         }
     }
 
@@ -110,11 +108,10 @@ fn drain_metrics_emitted_and_updated() {
 
     {
         let mut buffers = app.world_mut().resource_mut::<DrainedTopicMetadata>();
-        let entry = buffers.topics.entry("m".into()).or_default();
         for i in 0..3u32 {
             let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
             let metadata = MessageMetadata::new("m".into(), Instant::now(), None, None);
-            entry.push(ProcessedMessage { payload, metadata });
+            buffers.push("m", ProcessedMessage { payload, metadata });
         }
     }
 
@@ -188,9 +185,9 @@ fn unlimited_buffer_separate_backends() {
     .expect("Writer Redis backend setup successful");
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: writer_backend });
+    writer.add_plugins(EventBusPlugin::new(writer_backend));
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins { backend: reader_backend });
+    reader.add_plugins(EventBusPlugin::new(reader_backend));
 
     reader.insert_resource(BackgroundStats::default());
 
@@ -292,9 +289,9 @@ fn drain_metrics_separate_backends() {
     .expect("Writer Redis backend setup successful");
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: writer_backend });
+    writer.add_plugins(EventBusPlugin::new(writer_backend));
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins { backend: reader_backend });
+    reader.add_plugins(EventBusPlugin::new(reader_backend));
 
     reader.insert_resource(BackgroundStats::default());
 
@@ -392,7 +389,7 @@ fn drain_empty_separate_backends() {
     .expect("Redis backend setup successful");
 
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins { backend });
+    reader.add_plugins(EventBusPlugin::new(backend));
 
     reader.insert_resource(BackgroundStats::default());
     // Configure frame limiting
@@ -469,9 +466,9 @@ fn frame_limit_separate_backends() {
     .expect("Writer Redis backend setup successful");
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: writer_backend });
+    writer.add_plugins(EventBusPlugin::new(writer_backend));
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins { backend: reader_backend });
+    reader.add_plugins(EventBusPlugin::new(reader_backend));
 
     #[derive(Resource, Default)]
     struct FrameLimiter {

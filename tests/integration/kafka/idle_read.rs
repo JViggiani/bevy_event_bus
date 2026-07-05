@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy_event_bus::config::kafka::{
     KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaTopicSpec,
 };
-use bevy_event_bus::{EventBusPlugins, KafkaMessageReader};
+use bevy_event_bus::{EventBusPlugin, KafkaMessageReader};
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{unique_consumer_group, unique_topic};
 use integration_tests::utils::kafka_setup;
@@ -30,7 +30,7 @@ fn idle_empty_topic_poll_does_not_block() {
             .add_event_single::<TestEvent>(topic_for_backend.clone());
     }));
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins { backend });
+    app.add_plugins(EventBusPlugin::new(backend));
     #[derive(Resource, Default)]
     struct Ticks {
         count: u32,

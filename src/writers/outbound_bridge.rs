@@ -3,9 +3,9 @@ use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 
-use bevy_event_bus::BusEvent;
+use bevy_event_bus::BusMessage;
 use bevy_event_bus::backends::{EventBusBackendResource, event_bus_backend::SendOptions};
-use bevy_event_bus::errors::{BusErrorCallback, BusErrorContext, BusErrorKind};
+use bevy_event_bus::{BusErrorCallback, BusErrorContext, EventBusErrorType};
 use bevy_event_bus::resources::MessageMetadata;
 
 /// Optional error callback used by the outbound bridge.
@@ -22,7 +22,7 @@ pub struct OutboundBridgeRegistry {
 }
 
 impl OutboundBridgeRegistry {
-    pub fn register_type<T: BusEvent + Message>(&mut self) {
+    pub fn register_type<T: BusMessage + Message>(&mut self) {
         let ty = TypeId::of::<T>();
         self.callbacks.entry(ty).or_insert(add_bridge::<T>);
     }
@@ -60,7 +60,7 @@ impl OutboundTopicRegistry {
     }
 }
 
-fn outbound_bridge_system<T: BusEvent + Message>(
+fn outbound_bridge_system<T: BusMessage + Message>(
     mut reader: MessageReader<T>,
     topic_registry: Option<Res<OutboundTopicRegistry>>,
     backend: Option<Res<EventBusBackendResource>>,
@@ -81,7 +81,7 @@ fn outbound_bridge_system<T: BusEvent + Message>(
     let callback_ref = error_callback.as_ref().map(|cb| &cb.callback);
 
     let emit_error = |topic: &str,
-                      kind: BusErrorKind,
+                      kind: EventBusErrorType,
                       message: &str,
                       metadata: Option<MessageMetadata>| {
         if let Some(cb) = callback_ref {
@@ -108,7 +108,7 @@ fn outbound_bridge_system<T: BusEvent + Message>(
                     if !backend.try_send(event, topic, SendOptions::default()) {
                         emit_error(
                             topic,
-                            BusErrorKind::DeliveryFailure,
+                            EventBusErrorType::DeliveryFailure,
                             "Failed to send to external backend",
                             None,
                         );
@@ -119,7 +119,7 @@ fn outbound_bridge_system<T: BusEvent + Message>(
                 for topic in topics {
                     emit_error(
                         topic,
-                        BusErrorKind::NotConfigured,
+                        EventBusErrorType::NotConfigured,
                         "No event bus backend configured",
                         None,
                     );
@@ -129,22 +129,20 @@ fn outbound_bridge_system<T: BusEvent + Message>(
     }
 }
 
-fn add_bridge<T: BusEvent + Message>(app: &mut App) {
+fn add_bridge<T: BusMessage + Message>(app: &mut App) {
     app.add_systems(PostUpdate, outbound_bridge_system::<T>);
 }
 
 /// Ensure the outbound bridge is configured for the given event type and topics.
-pub fn ensure_bridge<T: BusEvent + Message>(app: &mut App, topics: &[String]) {
+pub fn ensure_bridge<T: BusMessage + Message>(app: &mut App, topics: &[String]) {
     {
         let world = app.world_mut();
-
-        let mut topic_registry = world
-            .get_resource_or_insert_with::<OutboundTopicRegistry>(OutboundTopicRegistry::default);
-        topic_registry.register_topics::<T>(topics);
-
-        let mut bridge_registry = world
-            .get_resource_or_insert_with::<OutboundBridgeRegistry>(OutboundBridgeRegistry::default);
-        bridge_registry.register_type::<T>();
+        world
+            .resource_mut::<OutboundTopicRegistry>()
+            .register_topics::<T>(topics);
+        world
+            .resource_mut::<OutboundBridgeRegistry>()
+            .register_type::<T>();
     }
 
     activate_registered_bridges(app);

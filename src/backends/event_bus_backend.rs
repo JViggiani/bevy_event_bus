@@ -1,9 +1,10 @@
 use crate::config::{kafka::KafkaTopologyConfig, redis::RedisTopologyConfig};
-use crate::errors::BusErrorKind;
+use crate::error::EventBusErrorType;
 use crate::resources::{ConsumerMetrics, IncomingMessage, MessageMetadata};
+use crate::plugins::event_bus::resources::{MessageQueue, ProvisionedTopology};
 use async_trait::async_trait;
 use bevy::prelude::{App, World};
-use bevy_event_bus::BusEvent;
+use bevy_event_bus::BusMessage;
 use crossbeam_channel::Receiver;
 use std::any::Any;
 use std::error::Error;
@@ -54,6 +55,50 @@ pub struct BackendPluginSetup {
     pub lag_reporting: Option<Box<dyn LagReportingHandle>>,
     pub kafka_topology: Option<KafkaTopologyConfig>,
     pub redis_topology: Option<RedisTopologyConfig>,
+}
+
+/// Runtime handles produced when a connected backend installs into the Bevy world.
+#[derive(Debug, Clone, Default)]
+pub struct BackendInstallSnapshot {
+    pub message_stream: bool,
+    pub manual_commit: Option<ManualCommitDescriptor>,
+    pub lag_reporting: Option<LagReportingDescriptor>,
+}
+
+impl BackendPluginSetup {
+    /// Move connection-time channels, topology records, and commit/lag resources into the world.
+    pub fn install(&mut self, world: &mut World) -> BackendInstallSnapshot {
+        let mut snapshot = BackendInstallSnapshot::default();
+
+        if let Some(topology) = self.kafka_topology.take() {
+            world
+                .resource_mut::<ProvisionedTopology>()
+                .record_kafka(topology);
+        }
+
+        if let Some(topology) = self.redis_topology.take() {
+            world
+                .resource_mut::<ProvisionedTopology>()
+                .record_redis(topology);
+        }
+
+        if let Some(receiver) = self.message_stream.take() {
+            world.insert_resource(MessageQueue { receiver });
+            snapshot.message_stream = true;
+        }
+
+        if let Some(handle) = self.manual_commit.take() {
+            snapshot.manual_commit = Some(handle.descriptor());
+            handle.register_resources(world);
+        }
+
+        if let Some(handle) = self.lag_reporting.take() {
+            snapshot.lag_reporting = Some(handle.descriptor());
+            handle.register_resources(world);
+        }
+
+        snapshot
+    }
 }
 
 /// Error returned when a backend configuration cannot be applied.
@@ -108,7 +153,7 @@ pub enum StreamTrimStrategy {
 #[derive(Clone, Debug)]
 pub struct DeliveryFailure {
     pub backend: &'static str,
-    pub kind: BusErrorKind,
+    pub kind: EventBusErrorType,
     pub topic: String,
     pub error: String,
     pub metadata: Option<MessageMetadata>,
@@ -265,8 +310,13 @@ pub trait EventBusBackend: Send + Sync + 'static + Debug {
         failure_handler: Option<Arc<DeliveryFailureCallback>>,
     ) -> bool;
 
-    /// Receive serialized messages from a topic.
-    /// Returns empty vec if no messages or on error.
+    /// Directly drain serialized messages from a topic (polling API).
+    ///
+    /// This is the synchronous drain used by tools and tests. It is distinct
+    /// from the plugin's streaming path: once [`EventBusPlugin`](crate::EventBusPlugin)
+    /// takes the backend's incoming receiver into the drain system, this method
+    /// no longer observes streamed messages. Returns an empty vec if there are
+    /// no messages or on error.
     async fn receive_serialized(&self, topic: &str, options: ReceiveOptions<'_>) -> Vec<Vec<u8>>;
 
     /// Flush all pending messages (producer-side)
@@ -292,24 +342,10 @@ pub trait LagReportingBackend: EventBusBackend {
 impl dyn EventBusBackend {
     /// Non-blocking send that queues the event for delivery.
     /// Returns true if the event was serialized and queued successfully.
-    pub fn try_send<T: BusEvent>(&self, event: &T, topic: &str, options: SendOptions<'_>) -> bool {
+    pub fn try_send<T: BusMessage>(&self, event: &T, topic: &str, options: SendOptions<'_>) -> bool {
         match serde_json::to_vec(event) {
             Ok(serialized) => self.try_send_serialized(&serialized, topic, options, None),
             Err(_) => false, // Serialization failed
         }
-    }
-
-    /// Receive and deserialize messages from a topic.
-    /// Returns empty vec if no messages or on error.
-    pub async fn receive<T: BusEvent>(&self, topic: &str, options: ReceiveOptions<'_>) -> Vec<T> {
-        let serialized_messages = self.receive_serialized(topic, options).await;
-        let mut result = Vec::with_capacity(serialized_messages.len());
-        for message in serialized_messages {
-            if let Ok(deserialized) = serde_json::from_slice(&message) {
-                result.push(deserialized);
-            }
-            // Silently skip messages that fail to deserialize
-        }
-        result
     }
 }

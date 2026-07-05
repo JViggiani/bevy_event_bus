@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
-use bevy_event_bus::{EventBusPlugins, RedisMessageReader, RedisMessageWriter};
+use bevy_event_bus::{EventBusPlugin, RedisMessageReader, RedisMessageWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
     unique_consumer_group, unique_consumer_group_member, unique_consumer_group_membership,
@@ -43,10 +43,10 @@ fn per_stream_order_preserved() {
     .expect("Redis reader backend setup successful");
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: backend_writer });
+    writer.add_plugins(EventBusPlugin::new(backend_writer));
 
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins { backend: backend_reader });
+    reader.add_plugins(EventBusPlugin::new(backend_reader));
 
     #[derive(Resource, Default)]
     struct Collected {
@@ -149,10 +149,10 @@ fn cross_stream_interleave_each_ordered() {
     .expect("Redis reader backend setup successful");
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: backend_writer });
+    writer.add_plugins(EventBusPlugin::new(backend_writer));
 
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins { backend: backend_reader });
+    reader.add_plugins(EventBusPlugin::new(backend_reader));
 
     #[derive(Resource, Default)]
     struct Collected {

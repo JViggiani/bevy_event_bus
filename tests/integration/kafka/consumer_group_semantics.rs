@@ -6,7 +6,7 @@ use bevy_event_bus::config::kafka::{
     KafkaTopicSpec,
 };
 use bevy_event_bus::{
-    EventBusError, EventBusErrorType, EventBusPlugins, KafkaMessageReader, KafkaMessageWriter,
+    EventBusError, EventBusErrorType, EventBusPlugin, KafkaMessageReader, KafkaMessageWriter,
 };
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
@@ -92,7 +92,7 @@ fn same_consumer_group_distributes_messages_round_robin() {
 
     // Setup reader1 app
     let mut reader1 = App::new();
-    reader1.add_plugins(EventBusPlugins { backend: reader1_backend.clone() });
+    reader1.add_plugins(EventBusPlugin::new(reader1_backend.clone()));
     reader1.insert_resource(EventCollector::default());
 
     let t1 = topic.clone();
@@ -109,7 +109,7 @@ fn same_consumer_group_distributes_messages_round_robin() {
 
     // Setup reader2 app
     let mut reader2 = App::new();
-    reader2.add_plugins(EventBusPlugins { backend: reader2_backend });
+    reader2.add_plugins(EventBusPlugin::new(reader2_backend));
     reader2.insert_resource(EventCollector::default());
 
     let t2 = topic.clone();
@@ -126,7 +126,7 @@ fn same_consumer_group_distributes_messages_round_robin() {
 
     // Setup writer app
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: writer_backend });
+    writer.add_plugins(EventBusPlugin::new(writer_backend));
 
     writer.add_systems(
         Update,
@@ -258,7 +258,7 @@ fn different_consumer_groups_receive_all_events() {
 
     // Setup writer app
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: writer_backend });
+    writer.add_plugins(EventBusPlugin::new(writer_backend));
 
     writer.add_systems(
         Update,
@@ -280,7 +280,7 @@ fn different_consumer_groups_receive_all_events() {
 
     // Setup reader1 app
     let mut reader1 = App::new();
-    reader1.add_plugins(EventBusPlugins { backend: reader1_backend.clone() });
+    reader1.add_plugins(EventBusPlugin::new(reader1_backend.clone()));
     reader1.insert_resource(EventCollector::default());
 
     let t1 = topic.clone();
@@ -297,7 +297,7 @@ fn different_consumer_groups_receive_all_events() {
 
     // Setup reader2 app
     let mut reader2 = App::new();
-    reader2.add_plugins(EventBusPlugins { backend: reader2_backend });
+    reader2.add_plugins(EventBusPlugin::new(reader2_backend));
     reader2.insert_resource(EventCollector::default());
 
     let t2 = topic.clone();
@@ -390,7 +390,7 @@ fn writer_only_works_without_consumer_groups() {
 
     // Setup writer app
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: writer_backend });
+    writer.add_plugins(EventBusPlugin::new(writer_backend));
 
     let topic_for_runtime_writer = topic.clone();
     writer.add_systems(
@@ -413,7 +413,7 @@ fn writer_only_works_without_consumer_groups() {
 
     // Setup reader app to verify messages originating from writer-only topology
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins { backend: reader_backend });
+    reader.add_plugins(EventBusPlugin::new(reader_backend));
     reader.insert_resource(EventCollector::default());
 
     let topic_for_reader_runtime = topic.clone();
@@ -479,7 +479,7 @@ fn reader_does_not_work_without_consumer_group() {
 
     // Reader attempts to use a consumer group that was never configured
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins { backend: backend.clone() });
+    reader.add_plugins(EventBusPlugin::new(backend.clone()));
     reader.insert_resource(EventCollector::default());
     reader.insert_resource(ErrorCollector::default());
 
@@ -510,7 +510,7 @@ fn reader_does_not_work_without_consumer_group() {
 
     // Writer publishes messages without any registered consumer groups
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: backend });
+    writer.add_plugins(EventBusPlugin::new(backend));
 
     let topic_for_runtime_writer = topic.clone();
     writer.add_systems(
@@ -588,7 +588,7 @@ fn invalid_consumer_group_does_not_steal_events_from_valid_group() {
         }));
 
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins { backend: backend });
+    app.add_plugins(EventBusPlugin::new(backend));
     app.insert_resource(ValidKafkaCollector::default());
     app.insert_resource(InvalidKafkaCollector::default());
     app.insert_resource(ErrorCollector::default());

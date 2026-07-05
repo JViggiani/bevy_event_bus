@@ -2,7 +2,7 @@
 
 use bevy::prelude::*;
 use bevy_event_bus::config::redis::{RedisConsumerConfig, RedisProducerConfig, RedisStreamSpec};
-use bevy_event_bus::{EventBusPlugins, RedisMessageReader, RedisMessageWriter};
+use bevy_event_bus::{EventBusPlugin, RedisMessageReader, RedisMessageWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::unique_topic;
 use integration_tests::utils::redis_setup;
@@ -38,10 +38,10 @@ fn consumer_lag_and_stream_trimming() {
     .expect("Reader Redis backend setup successful");
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: writer_backend });
+    writer.add_plugins(EventBusPlugin::new(writer_backend));
 
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins { backend: reader_backend });
+    reader.add_plugins(EventBusPlugin::new(reader_backend));
 
     #[derive(Resource, Default)]
     struct Collected {
@@ -114,7 +114,7 @@ fn stream_memory_optimization() {
     .expect("Writer Redis backend setup successful");
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: writer_backend });
+    writer.add_plugins(EventBusPlugin::new(writer_backend));
 
     // Send messages in bursts to test memory management
     let stream_clone = stream.clone();

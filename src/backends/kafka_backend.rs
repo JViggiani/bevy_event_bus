@@ -38,7 +38,7 @@ use bevy_event_bus::{
         KafkaBackendConfig, KafkaConnectionConfig, KafkaConsumerGroupSpec, KafkaInitialOffset,
         KafkaTopicSpec, KafkaTopologyConfig,
     },
-    errors::BusErrorKind,
+    error::EventBusErrorType,
     resources::{
         ConsumerMetrics, IncomingMessage, KafkaCommitQueue, KafkaCommitResultChannel,
         KafkaLagCacheResource, MessageMetadata, backend_metadata::KafkaMetadata,
@@ -245,24 +245,117 @@ struct ConsumerRuntime {
     topics: Vec<String>,
 }
 
+/// Crossbeam channel from consumer workers into the plugin drain path.
+struct KafkaMessageIngress {
+    tx: Sender<IncomingMessage>,
+    rx: Mutex<Option<Receiver<IncomingMessage>>>,
+    pending: Mutex<VecDeque<IncomingMessage>>,
+    dropped: Arc<AtomicUsize>,
+}
+
+impl KafkaMessageIngress {
+    fn new(capacity: usize) -> Self {
+        let (tx, rx) = bounded(capacity);
+        Self {
+            tx,
+            rx: Mutex::new(Some(rx)),
+            pending: Mutex::new(VecDeque::new()),
+            dropped: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    fn take_receiver(&self) -> Option<Receiver<IncomingMessage>> {
+        self.rx.lock().unwrap().take()
+    }
+
+    fn restore_receiver(&self, receiver: Receiver<IncomingMessage>) {
+        *self.rx.lock().unwrap() = Some(receiver);
+    }
+}
+
+/// Async manual-commit request queue and result notifications.
+struct KafkaCommitPipeline {
+    request_tx: Sender<KafkaCommitRequest>,
+    request_rx: Mutex<Option<Receiver<KafkaCommitRequest>>>,
+    outcome_tx: Sender<KafkaCommitResult>,
+    outcome_rx: Mutex<Option<Receiver<KafkaCommitResult>>>,
+}
+
+impl KafkaCommitPipeline {
+    fn new(capacity: usize) -> Self {
+        let (request_tx, request_rx) = bounded(capacity);
+        let (outcome_tx, outcome_rx) = bounded(capacity);
+        Self {
+            request_tx,
+            request_rx: Mutex::new(Some(request_rx)),
+            outcome_tx,
+            outcome_rx: Mutex::new(Some(outcome_rx)),
+        }
+    }
+
+    fn request_sender(&self) -> Sender<KafkaCommitRequest> {
+        self.request_tx.clone()
+    }
+
+    fn take_outcome_receiver(&self) -> Option<Receiver<KafkaCommitResult>> {
+        self.outcome_rx.lock().unwrap().take()
+    }
+
+    fn take_request_receiver(&self) -> Receiver<KafkaCommitRequest> {
+        self.request_rx
+            .lock()
+            .unwrap()
+            .take()
+            .expect("commit request receiver already taken")
+    }
+}
+
+/// Background worker lifecycle for producer polling, consumption, commits, and lag sampling.
+struct KafkaWorkerRuntime {
+    running: Arc<AtomicBool>,
+    consumer_handles: Mutex<Vec<JoinHandle<()>>>,
+    commit: Mutex<Option<JoinHandle<()>>>,
+    lag: Mutex<Option<JoinHandle<()>>>,
+    producer_poll: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl KafkaWorkerRuntime {
+    fn new() -> Self {
+        Self {
+            running: Arc::new(AtomicBool::new(false)),
+            consumer_handles: Mutex::new(Vec::new()),
+            commit: Mutex::new(None),
+            lag: Mutex::new(None),
+            producer_poll: Mutex::new(None),
+        }
+    }
+
+    fn stop_all(&self) {
+        if let Ok(mut handles) = self.consumer_handles.lock() {
+            for handle in handles.drain(..) {
+                handle.abort();
+            }
+        }
+
+        for slot in [&self.commit, &self.lag, &self.producer_poll] {
+            if let Ok(mut guard) = slot.lock() {
+                if let Some(handle) = guard.take() {
+                    handle.abort();
+                }
+            }
+        }
+    }
+}
+
 /// Shared runtime state for the Kafka backend, allowing clones to coordinate producer, consumer and worker tasks.
 struct KafkaBackendState {
     config: KafkaBackendConfig,
     producer: Arc<BaseProducer<EventBusProducerContext>>,
     consumers: Arc<Mutex<HashMap<String, ConsumerRuntime>>>,
-    incoming_tx: Sender<IncomingMessage>,
-    incoming_rx: Mutex<Option<Receiver<IncomingMessage>>>,
-    pending_messages: Mutex<VecDeque<IncomingMessage>>,
-    commit_tx: Sender<KafkaCommitRequest>,
-    commit_rx: Mutex<Option<Receiver<KafkaCommitRequest>>>,
-    commit_outcome_tx: Sender<KafkaCommitResult>,
-    commit_outcome_rx: Mutex<Option<Receiver<KafkaCommitResult>>>,
+    ingress: KafkaMessageIngress,
+    commits: KafkaCommitPipeline,
     lag_cache: KafkaLagCache,
-    running: Arc<AtomicBool>,
-    consumer_handles: Mutex<Vec<JoinHandle<()>>>,
-    commit_handle: Mutex<Option<JoinHandle<()>>>,
-    lag_handle: Mutex<Option<JoinHandle<()>>>,
-    dropped: Arc<AtomicUsize>,
+    workers: KafkaWorkerRuntime,
 }
 
 #[derive(Clone)]
@@ -335,7 +428,7 @@ impl ProducerContext for EventBusProducerContext {
 
                 delivery_opaque.call(DeliveryFailure {
                     backend: "kafka",
-                    kind: BusErrorKind::DeliveryFailure,
+                    kind: EventBusErrorType::DeliveryFailure,
                     topic: owned_message.topic().to_string(),
                     error: kafka_error.to_string(),
                     metadata: Some(metadata),
@@ -369,27 +462,14 @@ impl KafkaEventBusBackend {
 
         let capacities = config.channel_capacities.clone();
 
-        let (incoming_tx, incoming_rx) = bounded(capacities.message);
-        let (commit_tx, commit_rx) = bounded(capacities.commit);
-        let (result_tx, result_rx) = bounded(capacities.commit);
-
         let state = KafkaBackendState {
             config,
             producer,
             consumers: consumers.clone(),
-            incoming_tx,
-            incoming_rx: Mutex::new(Some(incoming_rx)),
-            pending_messages: Mutex::new(VecDeque::new()),
-            commit_tx,
-            commit_rx: Mutex::new(Some(commit_rx)),
-            commit_outcome_tx: result_tx,
-            commit_outcome_rx: Mutex::new(Some(result_rx)),
+            ingress: KafkaMessageIngress::new(capacities.message),
+            commits: KafkaCommitPipeline::new(capacities.commit),
             lag_cache: KafkaLagCache::default(),
-            running: Arc::new(AtomicBool::new(false)),
-            consumer_handles: Mutex::new(Vec::new()),
-            commit_handle: Mutex::new(None),
-            lag_handle: Mutex::new(None),
-            dropped: Arc::new(AtomicUsize::new(0)),
+            workers: KafkaWorkerRuntime::new(),
         };
         Ok(Self {
             state: Arc::new(state),
@@ -412,15 +492,15 @@ impl KafkaEventBusBackend {
     }
 
     pub fn take_receiver(&self) -> Option<Receiver<IncomingMessage>> {
-        self.state.incoming_rx.lock().unwrap().take()
+        self.state.ingress.take_receiver()
     }
 
     pub fn commit_sender(&self) -> Sender<KafkaCommitRequest> {
-        self.state.commit_tx.clone()
+        self.state.commits.request_sender()
     }
 
     pub fn take_commit_results(&self) -> Option<Receiver<KafkaCommitResult>> {
-        self.state.commit_outcome_rx.lock().unwrap().take()
+        self.state.commits.take_outcome_receiver()
     }
 
     pub fn lag_cache(&self) -> KafkaLagCache {
@@ -428,7 +508,7 @@ impl KafkaEventBusBackend {
     }
 
     pub fn dropped_count(&self) -> usize {
-        self.state.dropped.load(Ordering::Relaxed)
+        self.state.ingress.dropped.load(Ordering::Relaxed)
     }
 
     pub fn poll_producer(&self) {
@@ -436,10 +516,13 @@ impl KafkaEventBusBackend {
     }
 
     pub fn flush(&self, timeout: Duration) -> Result<(), String> {
-        self.state
-            .producer
-            .flush(timeout)
-            .map_err(|err| err.to_string())
+        let result = self.state.producer.flush(timeout);
+        // `flush` waits for delivery but a few extra zero-timeout polls ensure
+        // the delivery-report callback queue is fully drained before we return.
+        for _ in 0..10 {
+            self.state.producer.poll(Duration::from_millis(0));
+        }
+        result.map_err(|err| err.to_string())
     }
 
     fn drain_matching_messages(&self, topic: &str, group: Option<&str>) -> Vec<Vec<u8>> {
@@ -447,7 +530,7 @@ impl KafkaEventBusBackend {
         let mut deferred = VecDeque::new();
 
         {
-            let mut pending = self.state.pending_messages.lock().unwrap();
+            let mut pending = self.state.ingress.pending.lock().unwrap();
             while let Some(msg) = pending.pop_front() {
                 if Self::message_matches(&msg, topic, group) {
                     let payload = msg.payload;
@@ -458,12 +541,7 @@ impl KafkaEventBusBackend {
             }
         }
 
-        let receiver_opt = {
-            let mut guard = self.state.incoming_rx.lock().unwrap();
-            guard.take()
-        };
-
-        if let Some(receiver) = receiver_opt {
+        if let Some(receiver) = self.state.ingress.take_receiver() {
             loop {
                 match receiver.try_recv() {
                     Ok(msg) => {
@@ -480,12 +558,11 @@ impl KafkaEventBusBackend {
                 }
             }
 
-            let mut guard = self.state.incoming_rx.lock().unwrap();
-            *guard = Some(receiver);
+            self.state.ingress.restore_receiver(receiver);
         }
 
         if !deferred.is_empty() {
-            let mut pending = self.state.pending_messages.lock().unwrap();
+            let mut pending = self.state.ingress.pending.lock().unwrap();
             while let Some(msg) = deferred.pop_front() {
                 pending.push_back(msg);
             }
@@ -512,19 +589,39 @@ impl KafkaEventBusBackend {
     }
 
     fn spawn_runtime_tasks(&self) {
+        self.spawn_producer_poll_worker();
         self.spawn_consumer_tasks();
         self.spawn_commit_worker();
         self.spawn_lag_worker();
     }
 
+    fn spawn_producer_poll_worker(&self) {
+        let mut guard = self.state.workers.producer_poll.lock().unwrap();
+        if guard.is_some() {
+            return;
+        }
+
+        let running = self.state.workers.running.clone();
+        let producer = self.state.producer.clone();
+
+        let handle = runtime::runtime().spawn_blocking(move || {
+            while running.load(Ordering::Relaxed) {
+                producer.poll(Duration::from_millis(10));
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+
+        *guard = Some(handle);
+    }
+
     fn spawn_consumer_tasks(&self) {
         let consumers = self.state.consumers.lock().unwrap().clone();
-        let running = self.state.running.clone();
+        let running = self.state.workers.running.clone();
         let producer = self.state.producer.clone();
-        let tx = self.state.incoming_tx.clone();
-        let dropped = self.state.dropped.clone();
+        let tx = self.state.ingress.tx.clone();
+        let dropped = self.state.ingress.dropped.clone();
 
-        let mut handles = self.state.consumer_handles.lock().unwrap();
+        let mut handles = self.state.workers.consumer_handles.lock().unwrap();
         for runtime in consumers.into_values() {
             let tx_clone = tx.clone();
             let running_clone = running.clone();
@@ -538,21 +635,15 @@ impl KafkaEventBusBackend {
     }
 
     fn spawn_commit_worker(&self) {
-        let mut guard = self.state.commit_handle.lock().unwrap();
+        let mut guard = self.state.workers.commit.lock().unwrap();
         if guard.is_some() {
             return;
         }
 
-        let running = self.state.running.clone();
+        let running = self.state.workers.running.clone();
         let consumers = self.state.consumers.clone();
-        let rx = self
-            .state
-            .commit_rx
-            .lock()
-            .unwrap()
-            .take()
-            .expect("commit receiver already taken");
-        let outcome_tx = self.state.commit_outcome_tx.clone();
+        let rx = self.state.commits.take_request_receiver();
+        let outcome_tx = self.state.commits.outcome_tx.clone();
 
         let handle = runtime::runtime().spawn(async move {
             while running.load(Ordering::Relaxed) {
@@ -587,12 +678,12 @@ impl KafkaEventBusBackend {
     }
 
     fn spawn_lag_worker(&self) {
-        let mut guard = self.state.lag_handle.lock().unwrap();
+        let mut guard = self.state.workers.lag.lock().unwrap();
         if guard.is_some() {
             return;
         }
 
-        let running = self.state.running.clone();
+        let running = self.state.workers.running.clone();
         let consumers = self.state.consumers.clone();
         let lag_cache = self.state.lag_cache.clone();
         let poll_interval = self.state.config.consumer_lag_poll_interval;
@@ -613,21 +704,42 @@ impl KafkaEventBusBackend {
                 ticker.tick().await;
                 let snapshot = consumers.lock().unwrap().clone();
                 for runtime in snapshot.values() {
-                    for topic in &runtime.topics {
-                        let group_id = runtime.group_id.clone();
-                        let topic = topic.clone();
-                        let connection_for_lag = connection.clone();
-                        let group_id_for_lag = group_id.clone();
-                        let topic_for_compute = topic.clone();
+                    let group_id = runtime.group_id.clone();
+                    let topics = runtime.topics.clone();
+                    let connection_for_lag = connection.clone();
+                    let group_for_task = group_id.clone();
 
-                        let measurement = tokio::task::spawn_blocking(move || {
-                            compute_consumer_lag(&connection_for_lag, &group_id_for_lag, &topic_for_compute)
-                        })
-                        .await;
+                    // One short-lived client per group per tick, reused across the
+                    // group's topics (instead of one client per topic).
+                    let group_measurement = tokio::task::spawn_blocking(move || {
+                        compute_group_lag(&connection_for_lag, &group_for_task, &topics)
+                    })
+                    .await;
 
+                    let per_topic = match group_measurement {
+                        Ok(Ok(per_topic)) => per_topic,
+                        Ok(Err(err)) => {
+                            warn!(
+                                consumer_group = %group_id,
+                                error = %err,
+                                "Failed to create consumer for lag measurement"
+                            );
+                            continue;
+                        }
+                        Err(err) => {
+                            warn!(
+                                consumer_group = %group_id,
+                                error = %err,
+                                "Consumer lag measurement task failed"
+                            );
+                            continue;
+                        }
+                    };
+
+                    for (topic, measurement) in per_topic {
                         let key = (group_id.clone(), topic.clone());
                         match measurement {
-                            Ok(Ok(lag)) => {
+                            Ok(lag) => {
                                 transport_failures.remove(&key);
                                 lag_cache.update(
                                     &group_id,
@@ -638,7 +750,7 @@ impl KafkaEventBusBackend {
                                     },
                                 );
                             }
-                            Ok(Err(KafkaError::MetadataFetch(RDKafkaErrorCode::BrokerTransportFailure))) => {
+                            Err(KafkaError::MetadataFetch(RDKafkaErrorCode::BrokerTransportFailure)) => {
                                 let count = transport_failures.entry(key).or_insert(0);
                                 *count += 1;
                                 if *count <= TRANSPORT_WARN_THRESHOLD {
@@ -656,15 +768,6 @@ impl KafkaEventBusBackend {
                                         "Failed to refresh consumer lag: broker transport failure"
                                     );
                                 }
-                            }
-                            Ok(Err(err)) => {
-                                transport_failures.remove(&key);
-                                warn!(
-                                    consumer_group = %group_id,
-                                    topic = %topic,
-                                    error = %err,
-                                    "Failed to refresh consumer lag"
-                                );
                             }
                             Err(err) => {
                                 transport_failures.remove(&key);
@@ -685,29 +788,13 @@ impl KafkaEventBusBackend {
     }
 
     fn stop_tasks(&self) {
-        if let Ok(mut handles) = self.state.consumer_handles.lock() {
-            for handle in handles.drain(..) {
-                handle.abort();
-            }
-        }
-
-        if let Ok(mut guard) = self.state.commit_handle.lock() {
-            if let Some(handle) = guard.take() {
-                handle.abort();
-            }
-        }
-
-        if let Ok(mut guard) = self.state.lag_handle.lock() {
-            if let Some(handle) = guard.take() {
-                handle.abort();
-            }
-        }
+        self.state.workers.stop_all();
     }
 }
 
 impl Drop for KafkaEventBusBackend {
     fn drop(&mut self) {
-        if self.state.running.swap(false, Ordering::SeqCst) {
+        if self.state.workers.running.swap(false, Ordering::SeqCst) {
             self.stop_tasks();
         }
 
@@ -776,6 +863,7 @@ impl EventBusBackend for KafkaEventBusBackend {
     async fn connect(&mut self) -> bool {
         if self
             .state
+            .workers
             .running
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
             .is_err()
@@ -788,7 +876,7 @@ impl EventBusBackend for KafkaEventBusBackend {
     }
 
     async fn disconnect(&mut self) -> bool {
-        if !self.state.running.swap(false, Ordering::SeqCst) {
+        if !self.state.workers.running.swap(false, Ordering::SeqCst) {
             return true;
         }
 
@@ -806,42 +894,12 @@ impl EventBusBackend for KafkaEventBusBackend {
         let handler = failure_handler
             .unwrap_or_else(|| Arc::new(DeliveryFailureCallback::new(|_failure| {})));
 
-        let topic_known = self
-            .state
-            .config
-            .topology
-            .topics()
-            .iter()
-            .any(|spec| spec.name == topic);
-
-        if !topic_known {
-            let missing = self
-                .state
-                .producer
-                .client()
-                .fetch_metadata(Some(topic), Duration::from_secs(1))
-                .map(|metadata| {
-                    metadata
-                        .topics()
-                        .iter()
-                        .find(|meta| meta.name() == topic)
-                        .map(|meta| meta.error().is_some())
-                        .unwrap_or(true)
-                })
-                .unwrap_or(true);
-
-            if missing {
-                handler.call(DeliveryFailure {
-                    backend: "kafka",
-                    kind: BusErrorKind::InvalidWriteConfig,
-                    topic: topic.to_string(),
-                    error: "Topic is not provisioned in Kafka topology".to_string(),
-                    metadata: None,
-                });
-                return false;
-            }
-        }
-
+        // Note: we intentionally do not probe the broker with a blocking
+        // `fetch_metadata` here. Writers validate topics against the provisioned
+        // topology (`ProvisionedTopology`) up front, and any genuinely
+        // unresolvable topic surfaces asynchronously via the producer's delivery
+        // failure callback. Probing synchronously would stall the Bevy main
+        // thread for up to a second whenever a topic is not locally known.
         let mut record = BaseRecord::<[u8], [u8], Arc<DeliveryFailureCallback>>::with_opaque_to(
             topic,
             handler.clone(),
@@ -873,7 +931,7 @@ impl EventBusBackend for KafkaEventBusBackend {
                 warn!(target = %topic, error = %err, "Failed to enqueue Kafka message");
                 handler.call(DeliveryFailure {
                     backend: "kafka",
-                    kind: BusErrorKind::DeliveryFailure,
+                    kind: EventBusErrorType::DeliveryFailure,
                     topic: topic.to_string(),
                     error: err.to_string(),
                     metadata: None,
@@ -929,7 +987,7 @@ impl ManualCommitController for KafkaEventBusBackend {
             consumer_group: runtime.group_id.clone(),
         };
 
-        match self.state.commit_tx.try_send(request.clone()) {
+        match self.state.commits.request_tx.try_send(request.clone()) {
             Ok(_) => Ok(()),
             Err(crossbeam_channel::TrySendError::Full(_)) => commit_offset_sync(&runtime, &request),
             Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
@@ -946,7 +1004,8 @@ impl LagReportingBackend for KafkaEventBusBackend {
         let group_id = group_id.to_string();
         let topic = topic.to_string();
         tokio::task::spawn_blocking(move || {
-            compute_consumer_lag(&connection, &group_id, &topic)
+            let consumer = build_lag_consumer(&connection, &group_id)?;
+            compute_topic_lag(&consumer, &topic)
         })
         .await
         .map_err(|e| e.to_string())?
@@ -971,7 +1030,12 @@ fn build_producer(
 ) -> Result<BaseProducer<EventBusProducerContext>, KafkaError> {
     let mut cfg = ClientConfig::new();
     apply_connection_settings(&mut cfg, connection);
-    cfg.set("message.timeout.ms", connection.timeout_ms().to_string());
+    if !connection
+        .additional_config()
+        .contains_key("message.timeout.ms")
+    {
+        cfg.set("message.timeout.ms", connection.timeout_ms().to_string());
+    }
 
     cfg.create_with_context(EventBusProducerContext)
 }
@@ -1465,19 +1529,39 @@ fn commit_offset_sync(runtime: &ConsumerRuntime, req: &KafkaCommitRequest) -> Re
         .map_err(|err| err.to_string())
 }
 
-fn compute_consumer_lag(connection: &KafkaConnectionConfig, group_id: &str, topic: &str) -> Result<i64, KafkaError> {
-    // Build a fresh, short-lived consumer for each measurement. The long-lived
-    // consuming BaseConsumer can get its transport stuck in a failed state after
-    // a broker restart while still delivering messages via poll(). A fresh client
-    // always reflects the current broker reachability, matching the behaviour of
-    // the health check's AdminClient.
+/// Build a fresh, short-lived consumer used to measure lag.
+///
+/// A single consumer is reused for every topic in a group during a poll tick
+/// (a consumer is bound to one `group.id`), instead of creating one client per
+/// topic. A fresh client per tick still reflects current broker reachability,
+/// matching the behaviour of the health check's AdminClient, without the churn
+/// of one full librdkafka client per (group, topic) pair.
+fn build_lag_consumer(
+    connection: &KafkaConnectionConfig,
+    group_id: &str,
+) -> Result<BaseConsumer, KafkaError> {
     let mut cfg = ClientConfig::new();
     apply_connection_settings(&mut cfg, connection);
     cfg.set("group.id", group_id);
     cfg.set("enable.auto.commit", "false");
     cfg.set("session.timeout.ms", "6000");
-    let consumer: BaseConsumer = cfg.create()?;
+    cfg.create()
+}
 
+/// Measure the consumer lag for every topic of a group using a single client.
+fn compute_group_lag(
+    connection: &KafkaConnectionConfig,
+    group_id: &str,
+    topics: &[String],
+) -> Result<Vec<(String, Result<i64, KafkaError>)>, KafkaError> {
+    let consumer = build_lag_consumer(connection, group_id)?;
+    Ok(topics
+        .iter()
+        .map(|topic| (topic.clone(), compute_topic_lag(&consumer, topic)))
+        .collect())
+}
+
+fn compute_topic_lag(consumer: &BaseConsumer, topic: &str) -> Result<i64, KafkaError> {
     let metadata = consumer
         .fetch_metadata(Some(topic), Duration::from_secs(5))?;
 

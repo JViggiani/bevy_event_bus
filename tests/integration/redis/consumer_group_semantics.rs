@@ -5,7 +5,7 @@ use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
 use bevy_event_bus::{
-    EventBusError, EventBusErrorType, EventBusPlugins, RedisMessageReader, RedisMessageWriter,
+    EventBusError, EventBusErrorType, EventBusPlugin, RedisMessageReader, RedisMessageWriter,
 };
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
@@ -87,7 +87,7 @@ fn same_consumer_group_distributes_messages_round_robin() {
 
     // Setup reader1 app with coordinated consumer name
     let mut reader1 = App::new();
-    reader1.add_plugins(EventBusPlugins { backend: reader1_backend });
+    reader1.add_plugins(EventBusPlugin::new(reader1_backend));
     reader1.insert_resource(EventCollector::default());
 
     let s1 = stream.clone();
@@ -104,7 +104,7 @@ fn same_consumer_group_distributes_messages_round_robin() {
 
     // Setup reader2 app with coordinated consumer name
     let mut reader2 = App::new();
-    reader2.add_plugins(EventBusPlugins { backend: reader2_backend });
+    reader2.add_plugins(EventBusPlugin::new(reader2_backend));
     reader2.insert_resource(EventCollector::default());
 
     let s2 = stream.clone();
@@ -121,7 +121,7 @@ fn same_consumer_group_distributes_messages_round_robin() {
 
     // Setup writer app
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: writer_backend });
+    writer.add_plugins(EventBusPlugin::new(writer_backend));
 
     let stream_for_runtime_writer = stream.clone();
     writer.add_systems(
@@ -246,7 +246,7 @@ fn different_consumer_groups_receive_all_events() {
 
     // Setup reader1 app in group1
     let mut reader1 = App::new();
-    reader1.add_plugins(EventBusPlugins { backend: reader1_backend });
+    reader1.add_plugins(EventBusPlugin::new(reader1_backend));
     reader1.insert_resource(EventCollector::default());
 
     let s1 = stream.clone();
@@ -263,7 +263,7 @@ fn different_consumer_groups_receive_all_events() {
 
     // Setup reader2 app in group2
     let mut reader2 = App::new();
-    reader2.add_plugins(EventBusPlugins { backend: reader2_backend });
+    reader2.add_plugins(EventBusPlugin::new(reader2_backend));
     reader2.insert_resource(EventCollector::default());
 
     let s2 = stream.clone();
@@ -280,7 +280,7 @@ fn different_consumer_groups_receive_all_events() {
 
     // Setup writer app
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: writer_backend });
+    writer.add_plugins(EventBusPlugin::new(writer_backend));
 
     let stream_for_runtime_writer = stream.clone();
     writer.add_systems(
@@ -380,7 +380,7 @@ fn writer_only_works_without_consumer_groups() {
 
     // Setup writer app
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: writer_backend });
+    writer.add_plugins(EventBusPlugin::new(writer_backend));
 
     let stream_for_runtime_writer = stream.clone();
     writer.add_systems(
@@ -403,7 +403,7 @@ fn writer_only_works_without_consumer_groups() {
 
     // Setup reader app to verify delivery even when writer topology omits consumer groups
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins { backend: reader_backend });
+    reader.add_plugins(EventBusPlugin::new(reader_backend));
     reader.insert_resource(EventCollector::default());
 
     let s = stream.clone();
@@ -464,7 +464,7 @@ fn reader_does_not_work_without_consumer_group() {
 
     // Reader attempts to use a consumer group that was never configured in topology
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins { backend: backend.clone() });
+    reader.add_plugins(EventBusPlugin::new(backend.clone()));
     reader.insert_resource(EventCollector::default());
     reader.insert_resource(ErrorCollector::default());
 
@@ -492,7 +492,7 @@ fn reader_does_not_work_without_consumer_group() {
 
     // Writer publishes events without any consumer group defined in topology
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: backend });
+    writer.add_plugins(EventBusPlugin::new(backend));
 
     let stream_for_runtime_writer = stream.clone();
     writer.add_systems(
@@ -571,7 +571,7 @@ fn invalid_consumer_group_does_not_steal_events_from_valid_group() {
     .expect("Redis backend setup successful");
 
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins { backend: backend });
+    app.add_plugins(EventBusPlugin::new(backend));
     app.insert_resource(ValidGroupCollector::default());
     app.insert_resource(InvalidGroupCollector::default());
     app.insert_resource(ErrorCollector::default());

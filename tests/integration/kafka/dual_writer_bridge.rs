@@ -5,7 +5,7 @@ use bevy_event_bus::config::kafka::{
     KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
     KafkaTopicSpec,
 };
-use bevy_event_bus::{EventBusPlugins, KafkaMessageReader, KafkaMessageWriter, MessageWrapper};
+use bevy_event_bus::{EventBusPlugin, KafkaMessageReader, KafkaMessageWriter, MessageWrapper};
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{
     run_app_updates, unique_consumer_group, unique_topic, wait_for_events,
@@ -112,7 +112,7 @@ fn external_bus_events_flow_from_both_writers() {
 
     // Writer app configuration
     let mut writer_app = App::new();
-    writer_app.add_plugins(EventBusPlugins { backend: backend_writer });
+    writer_app.add_plugins(EventBusPlugin::new(backend_writer));
     writer_app.insert_resource(WriterState {
         topic: topic.clone(),
         dispatched: false,
@@ -124,7 +124,7 @@ fn external_bus_events_flow_from_both_writers() {
 
     // Reader app configuration
     let mut reader_app = App::new();
-    reader_app.add_plugins(EventBusPlugins { backend: backend_reader });
+    reader_app.add_plugins(EventBusPlugin::new(backend_reader));
     reader_app.insert_resource(ReaderState {
         topic: topic.clone(),
         consumer_group,

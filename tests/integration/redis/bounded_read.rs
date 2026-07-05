@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
-use bevy_event_bus::{EventBusPlugins, RedisMessageReader, RedisMessageWriter};
+use bevy_event_bus::{EventBusPlugin, RedisMessageReader, RedisMessageWriter};
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{
     unique_consumer_group_membership, unique_topic, update_until,
@@ -55,7 +55,7 @@ fn read_bounded_limits_stream_drain() {
     .expect("Reader Redis backend setup successful");
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: backend_writer });
+    writer.add_plugins(EventBusPlugin::new(backend_writer));
 
     let sclone = stream.clone();
     writer.add_systems(Update, move |mut w: RedisMessageWriter| {
@@ -74,7 +74,7 @@ fn read_bounded_limits_stream_drain() {
     writer.update();
 
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins { backend: backend_reader });
+    reader.add_plugins(EventBusPlugin::new(backend_reader));
     reader.insert_resource(Collected::default());
 
     let stream_for_system = stream.clone();

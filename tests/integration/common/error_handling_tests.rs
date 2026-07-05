@@ -14,7 +14,7 @@
 use bevy::prelude::*;
 use bevy_event_bus::config::kafka::{KafkaProducerConfig, KafkaTopologyEventBinding};
 use bevy_event_bus::{
-    BusErrorCallback, BusErrorContext, BusErrorKind, EventBusPlugins, KafkaMessageWriter,
+    BusErrorCallback, BusErrorContext, EventBusErrorType, EventBusPlugin, KafkaMessageWriter,
 };
 use integration_tests::utils::MockEventBusBackend;
 use integration_tests::utils::helpers::unique_topic;
@@ -104,7 +104,7 @@ fn test_delivery_error_handling() {
     mock_backend.simulate_delivery_failure_for_topic(&topic);
 
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins { backend: mock_backend });
+    app.add_plugins(EventBusPlugin::new(mock_backend));
 
     // Register event bindings for the mock backend scenario
     KafkaTopologyEventBinding::new::<TestErrorEvent>(vec![topic.clone()]).apply(&mut app);
@@ -174,7 +174,7 @@ fn test_delivery_error_handling() {
             "Error {} should contain correct topic",
             i
         );
-        assert_eq!(error.kind, BusErrorKind::DeliveryFailure);
+        assert_eq!(error.kind, EventBusErrorType::DeliveryFailure);
         assert!(
             error.original_bytes.is_some(),
             "Error {} should include serialized payload",
@@ -207,7 +207,7 @@ fn test_multiple_event_types_error_handling() {
     mock_backend.simulate_delivery_failure_for_topic(&analytics_topic);
 
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins { backend: mock_backend });
+    app.add_plugins(EventBusPlugin::new(mock_backend));
 
     // Register all event types through topology bindings (includes error events)
     KafkaTopologyEventBinding::new::<PlayerEvent>(vec![player_topic.clone()]).apply(&mut app);
@@ -285,7 +285,7 @@ fn test_multiple_event_types_error_handling() {
 
     let player_error = errors
         .iter()
-        .find(|e| e.topic == player_topic && e.kind == BusErrorKind::DeliveryFailure)
+        .find(|e| e.topic == player_topic && e.kind == EventBusErrorType::DeliveryFailure)
         .expect("Should receive 1 player error");
     let player_original: PlayerEvent =
         decode_event(player_error).expect("player error should decode payload");
@@ -293,7 +293,7 @@ fn test_multiple_event_types_error_handling() {
 
     let combat_error = errors
         .iter()
-        .find(|e| e.topic == combat_topic && e.kind == BusErrorKind::DeliveryFailure)
+        .find(|e| e.topic == combat_topic && e.kind == EventBusErrorType::DeliveryFailure)
         .expect("Should receive 1 combat error");
     let combat_original: CombatEvent =
         decode_event(combat_error).expect("combat error should decode payload");
@@ -301,7 +301,7 @@ fn test_multiple_event_types_error_handling() {
 
     let analytics_error = errors
         .iter()
-        .find(|e| e.topic == analytics_topic && e.kind == BusErrorKind::DeliveryFailure)
+        .find(|e| e.topic == analytics_topic && e.kind == EventBusErrorType::DeliveryFailure)
         .expect("Should receive 1 analytics error");
     let analytics_original: AnalyticsEvent =
         decode_event(analytics_error).expect("analytics error should decode payload");
@@ -324,7 +324,7 @@ fn test_centralized_error_handling() {
     // working_topic is not configured to fail, so it should succeed
 
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins { backend: mock_backend });
+    app.add_plugins(EventBusPlugin::new(mock_backend));
 
     // Register the event bindings for both topics
     KafkaTopologyEventBinding::new::<TestEvent>(vec![working_topic.clone()]).apply(&mut app);
@@ -396,11 +396,11 @@ fn test_centralized_error_handling() {
 
     let failing_errors: Vec<_> = collected
         .iter()
-        .filter(|e| e.topic == failing_topic_assert && e.kind == BusErrorKind::DeliveryFailure)
+        .filter(|e| e.topic == failing_topic_assert && e.kind == EventBusErrorType::DeliveryFailure)
         .collect();
     let working_errors: Vec<_> = collected
         .iter()
-        .filter(|e| e.topic == working_topic && e.kind == BusErrorKind::DeliveryFailure)
+        .filter(|e| e.topic == working_topic && e.kind == EventBusErrorType::DeliveryFailure)
         .collect();
 
     assert_eq!(
@@ -442,7 +442,7 @@ fn test_batch_operation_error_handling() {
     mock_backend.simulate_delivery_failure_for_topic(&topic);
 
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins { backend: mock_backend });
+    app.add_plugins(EventBusPlugin::new(mock_backend));
 
     KafkaTopologyEventBinding::new::<TestEvent>(vec![topic.clone()]).apply(&mut app);
 
@@ -547,7 +547,7 @@ fn test_error_retry_mechanism() {
     mock_backend.simulate_delivery_failure_for_topic(&topic);
 
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins { backend: mock_backend });
+    app.add_plugins(EventBusPlugin::new(mock_backend));
 
     KafkaTopologyEventBinding::new::<TestEvent>(vec![topic.clone()]).apply(&mut app);
 

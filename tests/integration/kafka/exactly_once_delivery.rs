@@ -3,7 +3,7 @@ use bevy_event_bus::config::kafka::{
     KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
     KafkaTopicSpec,
 };
-use bevy_event_bus::{EventBusPlugins, KafkaMessageReader, KafkaMessageWriter};
+use bevy_event_bus::{EventBusPlugin, KafkaMessageReader, KafkaMessageWriter};
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{unique_consumer_group, unique_topic, update_until};
 use integration_tests::utils::kafka_setup;
@@ -55,7 +55,7 @@ fn no_event_duplication_exactly_once_delivery() {
 
     // Writer app
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: backend_writer });
+    writer.add_plugins(EventBusPlugin::new(backend_writer));
 
     // Send exactly 10 unique events (as a resource to avoid closure issues)
     #[derive(Resource, Clone)]
@@ -86,7 +86,7 @@ fn no_event_duplication_exactly_once_delivery() {
 
     // Reader app with separate backend
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins { backend: backend_reader });
+    reader.add_plugins(EventBusPlugin::new(backend_reader));
 
     #[derive(Resource, Default)]
     struct Collected {

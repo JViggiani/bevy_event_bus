@@ -8,7 +8,7 @@ use bevy_event_bus::config::kafka::{
     KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
     KafkaTopicSpec,
 };
-use bevy_event_bus::{EventBusPlugins, KafkaMessageReader, KafkaMessageWriter};
+use bevy_event_bus::{EventBusPlugin, KafkaMessageReader, KafkaMessageWriter};
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{
     run_app_updates, unique_consumer_group, unique_topic, update_two_apps_until,
@@ -137,7 +137,7 @@ fn complex_topology_routing() {
     .collect();
 
     let mut writer_app = App::new();
-    writer_app.add_plugins(EventBusPlugins { backend: writer_backend });
+    writer_app.add_plugins(EventBusPlugin::new(writer_backend));
 
     let writer_messages = message_catalog.clone();
     writer_app.add_systems(
@@ -162,7 +162,7 @@ fn complex_topology_routing() {
     );
 
     let mut reader_app = App::new();
-    reader_app.add_plugins(EventBusPlugins { backend: reader_backend });
+    reader_app.add_plugins(EventBusPlugin::new(reader_backend));
     reader_app.insert_resource(Collected::default());
 
     let group_topics: Vec<(String, Vec<String>)> = vec![

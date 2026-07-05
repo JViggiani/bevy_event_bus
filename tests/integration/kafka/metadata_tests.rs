@@ -5,7 +5,7 @@ use bevy_event_bus::config::kafka::{
     KafkaTopicSpec, KafkaTopologyBuilder,
 };
 use bevy_event_bus::{
-    EventBusPlugins, KafkaEventBusBackend, KafkaMessageReader, KafkaMessageWriter, MessageWrapper,
+    EventBusPlugin, KafkaEventBusBackend, KafkaMessageReader, KafkaMessageWriter, MessageWrapper,
 };
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{
@@ -63,8 +63,8 @@ fn metadata_propagation_from_kafka_to_bevy() {
     let mut writer = App::new();
     let mut reader = App::new();
 
-    writer.add_plugins(EventBusPlugins { backend: backend_w });
-    reader.add_plugins(EventBusPlugins { backend: backend_r });
+    writer.add_plugins(EventBusPlugin::new(backend_w));
+    reader.add_plugins(EventBusPlugin::new(backend_r));
 
     // Create test event
     let test_event = TestEvent {
@@ -190,8 +190,8 @@ fn header_forwarding_producer_to_consumer() {
     let mut writer = App::new();
     let mut reader = App::new();
 
-    writer.add_plugins(EventBusPlugins { backend: backend_w });
-    reader.add_plugins(EventBusPlugins { backend: backend_r });
+    writer.add_plugins(EventBusPlugin::new(backend_w));
+    reader.add_plugins(EventBusPlugin::new(backend_r));
 
     // Create test event
     let test_event = TestEvent {
@@ -307,8 +307,8 @@ fn timestamp_accuracy_for_latency_measurement() {
     let mut writer = App::new();
     let mut reader = App::new();
 
-    writer.add_plugins(EventBusPlugins { backend: backend_w });
-    reader.add_plugins(EventBusPlugins { backend: backend_r });
+    writer.add_plugins(EventBusPlugin::new(backend_w));
+    reader.add_plugins(EventBusPlugin::new(backend_r));
 
     let send_time = std::time::Instant::now();
 
@@ -431,9 +431,9 @@ fn mixed_metadata_and_regular_reading() {
     let mut regular_reader = App::new();
     let mut metadata_reader = App::new();
 
-    writer.add_plugins(EventBusPlugins { backend: backend_w });
-    regular_reader.add_plugins(EventBusPlugins { backend: backend_r1 });
-    metadata_reader.add_plugins(EventBusPlugins { backend: backend_r2 });
+    writer.add_plugins(EventBusPlugin::new(backend_w));
+    regular_reader.add_plugins(EventBusPlugin::new(backend_r1));
+    metadata_reader.add_plugins(EventBusPlugin::new(backend_r2));
 
     // Send events
     let topic_clone = topic.clone();

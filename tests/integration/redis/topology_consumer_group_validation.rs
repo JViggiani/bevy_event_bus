@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
-use bevy_event_bus::{EventBusPlugins, RedisMessageReader, RedisMessageWriter};
+use bevy_event_bus::{EventBusPlugin, RedisMessageReader, RedisMessageWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
     run_app_updates, unique_consumer_group_membership, unique_topic, wait_for_events,
@@ -49,11 +49,11 @@ fn test_topology_setup_principle() {
 
     // Setup apps
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins { backend: backend.clone() });
+    reader.add_plugins(EventBusPlugin::new(backend.clone()));
     reader.insert_resource(EventCollector::default());
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: backend });
+    writer.add_plugins(EventBusPlugin::new(backend));
 
     println!("=== CHEAP OPERATIONS AT RUNTIME ===");
 

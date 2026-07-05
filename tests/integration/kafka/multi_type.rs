@@ -3,7 +3,7 @@ use bevy_event_bus::config::kafka::{
     KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
     KafkaTopicSpec,
 };
-use bevy_event_bus::{EventBusPlugins, KafkaMessageReader, KafkaMessageWriter};
+use bevy_event_bus::{EventBusPlugin, KafkaMessageReader, KafkaMessageWriter};
 use integration_tests::utils::events::{TestEvent, UserLoginEvent};
 use integration_tests::utils::helpers::{unique_consumer_group, unique_topic, update_until};
 use integration_tests::utils::kafka_setup;
@@ -44,9 +44,9 @@ fn single_topic_multiple_types_same_frame() {
     }));
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: backend_w });
+    writer.add_plugins(EventBusPlugin::new(backend_w));
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins { backend: backend_r });
+    reader.add_plugins(EventBusPlugin::new(backend_r));
 
     #[derive(Resource, Default)]
     struct CollectedTests {
@@ -163,9 +163,9 @@ fn single_topic_multiple_types_interleaved_frames() {
     }));
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: backend_w });
+    writer.add_plugins(EventBusPlugin::new(backend_w));
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins { backend: backend_r });
+    reader.add_plugins(EventBusPlugin::new(backend_r));
 
     #[derive(Resource, Default)]
     struct CollectedTests {

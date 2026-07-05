@@ -3,8 +3,7 @@ use bevy::prelude::*;
 use bevy_event_bus::backends::EventBusBackendResource;
 use bevy_event_bus::config::kafka::{KafkaProducerConfig, KafkaTopologyEventBinding};
 use bevy_event_bus::{
-    BusErrorCallback, BusErrorContext, BusErrorKind, EventBusPlugin, EventBusPlugins,
-    KafkaMessageWriter,
+    BusErrorCallback, BusErrorContext, EventBusErrorType, EventBusPlugin, KafkaMessageWriter,
 };
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::unique_topic;
@@ -20,9 +19,7 @@ struct InternalSeen {
 fn writer_does_not_emit_bevy_events() {
     let mut app = App::new();
 
-    app.add_plugins(EventBusPlugins {
-        backend: MockEventBusBackend::new(),
-    });
+    app.add_plugins(EventBusPlugin::new(MockEventBusBackend::new()));
 
     let topic = unique_topic("external_only");
     KafkaTopologyEventBinding::new::<TestEvent>(vec![topic.clone()]).apply(&mut app);
@@ -70,9 +67,6 @@ fn writer_does_not_emit_bevy_events() {
 fn writer_queues_not_configured_error_when_backend_missing() {
     let mut app = App::new();
 
-    app.add_plugins(EventBusPlugin);
-
-    // Register events/results needed for the writer
     app.add_message::<TestEvent>();
 
     // Remove any backend resource to simulate a missing backend scenario
@@ -104,7 +98,7 @@ fn writer_queues_not_configured_error_when_backend_missing() {
     let errors = errors.lock().unwrap();
     assert_eq!(errors.len(), 1, "Exactly one error should be emitted");
     let error = &errors[0];
-    assert_eq!(error.kind, BusErrorKind::NotConfigured);
+    assert_eq!(error.kind, EventBusErrorType::NotConfigured);
     assert_eq!(
         error.message, "No event bus backend configured",
         "Error message should explain the missing backend",

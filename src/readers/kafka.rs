@@ -6,9 +6,9 @@ use bevy_event_bus::backends::KafkaCommitRequest;
 use bevy_event_bus::config::{EventBusConfig, kafka::KafkaConsumerConfig};
 use bevy_event_bus::resources::{
     DrainedTopicMetadata, KafkaCommitQueue, KafkaLagCacheResource, MessageWrapper,
-    ProvisionedTopology,
+    ProvisionedTopology, allocate_reader_id,
 };
-use bevy_event_bus::{BusEvent, EventBusError, EventBusErrorType, readers::BusMessageReader};
+use bevy_event_bus::{BusMessage, EventBusError, EventBusErrorType, readers::BusMessageReader};
 use crossbeam_channel::TrySendError;
 
 /// Errors that can occur when working with the Kafka-specific reader.
@@ -66,10 +66,11 @@ impl std::error::Error for KafkaReaderError {}
 /// Kafka-specific `BusMessageReader` implementation that can optionally perform manual commits
 /// and expose consumer lag metrics.
 #[derive(bevy::ecs::system::SystemParam)]
-pub struct KafkaMessageReader<'w, 's, T: BusEvent + Message> {
+pub struct KafkaMessageReader<'w, 's, T: BusMessage + Message> {
     wrapped_events: Local<'s, Vec<MessageWrapper<T>>>,
     metadata_drained: Option<ResMut<'w, DrainedTopicMetadata>>,
     metadata_offsets: Local<'s, HashMap<String, usize>>,
+    reader_id: Local<'s, Option<u64>>,
     commit_queue: Option<Res<'w, KafkaCommitQueue>>,
     lag_cache: Option<Res<'w, KafkaLagCacheResource>>,
     topology: Option<Res<'w, ProvisionedTopology>>,
@@ -77,7 +78,7 @@ pub struct KafkaMessageReader<'w, 's, T: BusEvent + Message> {
     error_writer: MessageWriter<'w, EventBusError<T>>,
 }
 
-impl<'w, 's, T: BusEvent + Message> KafkaMessageReader<'w, 's, T> {
+impl<'w, 's, T: BusMessage + Message> KafkaMessageReader<'w, 's, T> {
     /// Read all messages for the supplied Kafka configuration. When manual commit is requested
     /// (auto commit disabled) the reader ensures the backend has manual commit mode enabled
     /// for the consumer group before returning events.
@@ -103,6 +104,7 @@ impl<'w, 's, T: BusEvent + Message> KafkaMessageReader<'w, 's, T> {
             }
         }
 
+        let reader_id = *self.reader_id.get_or_insert_with(allocate_reader_id);
         let mut remaining = max_messages;
         let mut all_events = Vec::new();
         let topics = config.topics();
@@ -115,13 +117,18 @@ impl<'w, 's, T: BusEvent + Message> KafkaMessageReader<'w, 's, T> {
             self.wrapped_events.clear();
 
             if let Some(metadata_drained) = &mut self.metadata_drained {
-                if let Some(messages) = metadata_drained.topics.get(topic) {
-                    let start = *self.metadata_offsets.get(topic).unwrap_or(&0);
-                    if start < messages.len() {
-                        let available = messages.len().saturating_sub(start);
+                let mut consumed_to: Option<usize> = None;
+
+                if let Some(buffer) = metadata_drained.buffer(topic) {
+                    let requested = *self.metadata_offsets.get(topic).unwrap_or(&0);
+                    let (effective_abs, rel) = buffer.resolve_start(requested);
+                    let messages = buffer.messages();
+
+                    if rel < messages.len() {
+                        let available = messages.len() - rel;
                         let take = available.min(remaining);
 
-                        for processed_msg in messages.iter().skip(start).take(take) {
+                        for processed_msg in messages[rel..rel + take].iter() {
                             match serde_json::from_slice::<T>(&processed_msg.payload) {
                                 Ok(event) => self.wrapped_events.push(MessageWrapper::new(
                                     event,
@@ -134,10 +141,19 @@ impl<'w, 's, T: BusEvent + Message> KafkaMessageReader<'w, 's, T> {
                             }
                         }
 
-                        // Only advance the offset by the number of messages we actually return.
-                        self.metadata_offsets
-                            .insert(topic.clone(), start.saturating_add(take));
+                        // Only advance the offset by the number of messages we actually scanned.
+                        let new_abs = effective_abs + take;
+                        self.metadata_offsets.insert(topic.clone(), new_abs);
                         remaining = remaining.saturating_sub(take);
+                        consumed_to = Some(new_abs);
+                    } else {
+                        consumed_to = Some(effective_abs);
+                    }
+                }
+
+                if let Some(new_abs) = consumed_to {
+                    if let Some(buffer) = metadata_drained.buffer_mut(topic) {
+                        buffer.note_reader_progress(reader_id, new_abs);
                     }
                 }
             }
@@ -218,7 +234,7 @@ impl<'w, 's, T: BusEvent + Message> KafkaMessageReader<'w, 's, T> {
     }
 }
 
-impl<'w, 's, T: BusEvent + Message> KafkaMessageReader<'w, 's, T> {
+impl<'w, 's, T: BusMessage + Message> KafkaMessageReader<'w, 's, T> {
     fn validate_configuration(&mut self, config: &KafkaConsumerConfig) -> bool {
         let Some(topology) = self.topology.as_ref().and_then(|topo| topo.kafka()) else {
             return true;
@@ -300,7 +316,7 @@ impl<'w, 's, T: BusEvent + Message> KafkaMessageReader<'w, 's, T> {
     }
 }
 
-impl<'w, 's, T: BusEvent + Message> BusMessageReader<T> for KafkaMessageReader<'w, 's, T> {
+impl<'w, 's, T: BusMessage + Message> BusMessageReader<T> for KafkaMessageReader<'w, 's, T> {
     fn read<C: EventBusConfig>(&mut self, config: &C) -> Vec<MessageWrapper<T>> {
         KafkaMessageReader::read(self, config)
     }

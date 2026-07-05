@@ -21,9 +21,9 @@ bevy_event_bus = { version = "0.2", features = ["kafka", "redis"] }
 
 ## Quick start
 
-1. **Define your Bevy messages.** Derive `Message` (and `Event` if you still emit internally), plus `Serialize`, `Deserialize`, `Clone`, and `Sync` — the `BusEvent` marker trait is implemented automatically.
+1. **Define your Bevy messages.** Derive `Message` (and `Event` if you still emit internally), plus `Serialize`, `Deserialize`, `Clone`, and `Sync` — the `BusMessage` marker trait is implemented automatically.
 2. **Describe your topology.** Use the `KafkaTopologyBuilder` to declare topics, consumer groups, and which Bevy message types bind to which topics.
-3. **Spin up the plugin.** Build a `KafkaBackendConfig`, pass it to `KafkaEventBusBackend`, then add `EventBusPlugins` to your app.
+3. **Spin up the plugin.** Build a `KafkaBackendConfig`, pass it to `KafkaEventBusBackend`, then add `EventBusPlugin` to your app.
 
 ```rust
 use std::time::Duration;
@@ -69,7 +69,7 @@ fn main() {
     ));
 
     App::new()
-        .add_plugins(EventBusPlugins(backend))
+        .add_plugins(EventBusPlugin(backend))
         .insert_resource(LevelUpProducerConfig::default())
         .insert_resource(LevelUpConsumerConfig::default())
         .add_systems(Update, (emit_level_ups, apply_level_ups))
@@ -124,7 +124,7 @@ fn apply_level_ups(
 ## Error handling
 
 - Delivery failures surface as `EventBusError<T>` messages. Add a Bevy system that reads `MessageReader<EventBusError<T>>` to react to dropped messages, backend outages, or serialization issues.
-- Deserialization issues emit `EventBusDecodeError` messages. Metadata includes the raw payload, decoder name, and original topic so you can log or dead-letter messages.
+- Writer error callbacks receive a `BusErrorContext` classified with the shared `EventBusErrorType` enum, so readers, writers, and delivery failures all share one error vocabulary.
 - For Kafka-specific acknowledgement workflows, consume `KafkaCommitResultEvent` and inspect `KafkaCommitResultStats` for aggregate success/failure counts.
 
 ## Observability & diagnostics
@@ -132,7 +132,7 @@ fn apply_level_ups(
 The plugin inserts several resources once the backend activates:
 
 - `ConsumerMetrics` tracks queue depths, per-frame drain counts, and idle frame streaks.
-- `DrainedTopicMetadata` and `DecodedEventBuffer` expose the in-flight multi-decoder output.
+- `DrainedTopicMetadata` holds the per-topic drained messages that readers consume; consumed prefixes are compacted automatically to keep memory bounded.
 - `KafkaLagCacheResource` (Kafka only) provides consumer lag estimates for each topic/partition.
 
 Hook these into your diagnostics UI or telemetry exporters to keep an eye on the pipeline.

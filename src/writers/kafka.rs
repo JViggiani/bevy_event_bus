@@ -7,9 +7,9 @@ use bevy_event_bus::backends::{
     event_bus_backend::{BackendSpecificSendOptions, DeliveryFailureCallback, SendOptions},
 };
 use bevy_event_bus::config::{EventBusConfig, kafka::KafkaProducerConfig};
-use bevy_event_bus::errors::{BusErrorCallback, BusErrorContext, BusErrorKind};
+use bevy_event_bus::{BusErrorCallback, BusErrorContext, EventBusErrorType};
 use bevy_event_bus::resources::{MessageMetadata, ProvisionedTopology};
-use bevy_event_bus::{BusEvent, runtime};
+use bevy_event_bus::{BusMessage, runtime};
 
 use super::BusMessageWriter;
 
@@ -52,7 +52,7 @@ impl<'w> KafkaMessageWriter<'w> {
     /// Write a message with an optional error callback.
     pub fn write<T, C>(&mut self, config: &C, event: T, callback: Option<BusErrorCallback>)
     where
-        T: BusEvent + Message,
+        T: BusMessage + Message,
         C: EventBusConfig + Any,
     {
         let callback_ref = callback.as_ref();
@@ -64,7 +64,7 @@ impl<'w> KafkaMessageWriter<'w> {
                         callback_ref,
                         "kafka",
                         &topic,
-                        BusErrorKind::InvalidWriteConfig,
+                        EventBusErrorType::InvalidWriteConfig,
                         format!("Topic '{topic}' is not provisioned in the Kafka topology"),
                         None,
                         None,
@@ -101,7 +101,7 @@ impl<'w> KafkaMessageWriter<'w> {
                                 callback_ref,
                                 "kafka",
                                 topic,
-                                BusErrorKind::DeliveryFailure,
+                                EventBusErrorType::DeliveryFailure,
                                 "Failed to enqueue Kafka message",
                                 None,
                                 Some(serialized.clone()),
@@ -115,7 +115,7 @@ impl<'w> KafkaMessageWriter<'w> {
                             callback_ref,
                             "kafka",
                             topic,
-                            BusErrorKind::Serialization,
+                            EventBusErrorType::Serialization,
                             err.to_string(),
                             None,
                             None,
@@ -129,7 +129,7 @@ impl<'w> KafkaMessageWriter<'w> {
                     callback_ref,
                     "kafka",
                     topic,
-                    BusErrorKind::NotConfigured,
+                    EventBusErrorType::NotConfigured,
                     "No event bus backend configured",
                     None,
                     None,
@@ -178,7 +178,7 @@ impl<'w> KafkaMessageWriter<'w> {
         callback: Option<&BusErrorCallback>,
         backend: &'static str,
         topic: &str,
-        kind: BusErrorKind,
+        kind: EventBusErrorType,
         message: impl Into<String>,
         metadata: Option<MessageMetadata>,
         payload: Option<Vec<u8>>,
@@ -222,7 +222,7 @@ impl<'w> KafkaMessageWriter<'w> {
 
 impl<'w, T> BusMessageWriter<T> for KafkaMessageWriter<'w>
 where
-    T: BusEvent + Message,
+    T: BusMessage + Message,
 {
     fn write<C>(&mut self, config: &C, event: T, error_callback: Option<BusErrorCallback>)
     where
@@ -273,7 +273,7 @@ mod tests {
 
         let mut state = SystemState::<KafkaMessageWriter>::new(&mut world);
         {
-            let mut writer = state.get_mut(&mut world);
+            let mut writer = state.get_mut(&mut world).unwrap();
             let config = KafkaProducerConfig::new(["unknown"]);
             let event = TestEvent { value: 42 };
             writer.write(&config, event, Some(callback.clone()));
@@ -284,7 +284,7 @@ mod tests {
         assert_eq!(collected.len(), 1);
         let error = &collected[0];
         assert_eq!(error.topic, "unknown");
-        assert_eq!(error.kind, BusErrorKind::InvalidWriteConfig);
+        assert_eq!(error.kind, EventBusErrorType::InvalidWriteConfig);
         assert!(error.message.contains("not provisioned"));
     }
 }

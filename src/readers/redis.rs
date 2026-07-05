@@ -2,10 +2,13 @@ use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 use bevy_event_bus::config::EventBusConfig;
+use bevy_event_bus::config::redis::RedisConsumerConfig;
+use bevy_event_bus::resources::backend_metadata::RedisMetadata;
 use bevy_event_bus::resources::{
     DrainedTopicMetadata, MessageWrapper, ProvisionedTopology, RedisAckQueue, RedisAckRequest,
+    allocate_reader_id,
 };
-use bevy_event_bus::{BusEvent, EventBusError, EventBusErrorType, readers::BusMessageReader};
+use bevy_event_bus::{BusMessage, EventBusError, EventBusErrorType, readers::BusMessageReader};
 use crossbeam_channel::TrySendError;
 
 /// Errors that can occur when working with the Redis-specific reader.
@@ -50,17 +53,18 @@ impl std::error::Error for RedisReaderError {}
 
 /// Redis-specific `BusMessageReader` implementation that exposes manual acknowledgements.
 #[derive(bevy::ecs::system::SystemParam)]
-pub struct RedisMessageReader<'w, 's, T: BusEvent + Message> {
+pub struct RedisMessageReader<'w, 's, T: BusMessage + Message> {
     wrapped_events: Local<'s, Vec<MessageWrapper<T>>>,
     metadata_drained: Option<ResMut<'w, DrainedTopicMetadata>>,
     metadata_offsets: Local<'s, HashMap<String, usize>>,
+    reader_id: Local<'s, Option<u64>>,
     ack_queue: Option<Res<'w, RedisAckQueue>>,
     topology: Option<Res<'w, ProvisionedTopology>>,
     invalid_config_reports: Local<'s, HashSet<String>>,
     error_writer: MessageWriter<'w, EventBusError<T>>,
 }
 
-impl<'w, 's, T: BusEvent + Message> RedisMessageReader<'w, 's, T> {
+impl<'w, 's, T: BusMessage + Message> RedisMessageReader<'w, 's, T> {
     /// Read all messages for the supplied Redis configuration.
     pub fn read<C: EventBusConfig>(&mut self, config: &C) -> Vec<MessageWrapper<T>> {
         self.read_bounded(config, usize::MAX)
@@ -76,9 +80,7 @@ impl<'w, 's, T: BusEvent + Message> RedisMessageReader<'w, 's, T> {
             return Vec::new();
         }
 
-        let redis_config = config
-            .as_any()
-            .downcast_ref::<bevy_event_bus::config::redis::RedisConsumerConfig>();
+        let redis_config = config.as_any().downcast_ref::<RedisConsumerConfig>();
 
         if let Some(redis_config) = redis_config {
             if !self.validate_configuration(redis_config) {
@@ -88,6 +90,7 @@ impl<'w, 's, T: BusEvent + Message> RedisMessageReader<'w, 's, T> {
 
         let required_consumer_group = redis_config.and_then(|cfg| cfg.consumer_group());
 
+        let reader_id = *self.reader_id.get_or_insert_with(allocate_reader_id);
         let mut remaining = max_messages;
         let mut all_events = Vec::new();
         let topics = config.topics();
@@ -100,13 +103,18 @@ impl<'w, 's, T: BusEvent + Message> RedisMessageReader<'w, 's, T> {
             self.wrapped_events.clear();
 
             if let Some(metadata_drained) = &mut self.metadata_drained {
-                if let Some(messages) = metadata_drained.topics.get(topic) {
-                    let start = *self.metadata_offsets.get(topic).unwrap_or(&0);
-                    if start < messages.len() {
-                        let available = messages.len().saturating_sub(start);
+                let mut consumed_to: Option<usize> = None;
+
+                if let Some(buffer) = metadata_drained.buffer(topic) {
+                    let requested = *self.metadata_offsets.get(topic).unwrap_or(&0);
+                    let (effective_abs, rel) = buffer.resolve_start(requested);
+                    let messages = buffer.messages();
+
+                    if rel < messages.len() {
+                        let available = messages.len() - rel;
                         let take = available.min(remaining);
 
-                        for processed_msg in messages.iter().skip(start).take(take) {
+                        for processed_msg in messages[rel..rel + take].iter() {
                             // Filter by consumer group if specified
                             let message_matches_group = match required_consumer_group {
                                 Some(required_group) => {
@@ -114,7 +122,7 @@ impl<'w, 's, T: BusEvent + Message> RedisMessageReader<'w, 's, T> {
                                         .metadata
                                         .backend_specific
                                         .as_ref()
-                                        .and_then(|meta| meta.as_any().downcast_ref::<crate::resources::backend_metadata::RedisMetadata>())
+                                        .and_then(|meta| meta.as_any().downcast_ref::<RedisMetadata>())
                                         .and_then(|redis_meta| redis_meta.consumer_group.as_deref());
 
                                     message_group
@@ -138,9 +146,20 @@ impl<'w, 's, T: BusEvent + Message> RedisMessageReader<'w, 's, T> {
                             }
                         }
 
-                        self.metadata_offsets
-                            .insert(topic.clone(), start.saturating_add(take));
+                        let new_abs = effective_abs + take;
+                        self.metadata_offsets.insert(topic.clone(), new_abs);
                         remaining = remaining.saturating_sub(take);
+                        consumed_to = Some(new_abs);
+                    } else {
+                        // Already caught up to the buffer tail; record the
+                        // watermark so consumed prefixes can be compacted.
+                        consumed_to = Some(effective_abs);
+                    }
+                }
+
+                if let Some(new_abs) = consumed_to {
+                    if let Some(buffer) = metadata_drained.buffer_mut(topic) {
+                        buffer.note_reader_progress(reader_id, new_abs);
                     }
                 }
             }
@@ -179,11 +198,8 @@ impl<'w, 's, T: BusEvent + Message> RedisMessageReader<'w, 's, T> {
     }
 }
 
-impl<'w, 's, T: BusEvent + Message> RedisMessageReader<'w, 's, T> {
-    fn validate_configuration(
-        &mut self,
-        config: &bevy_event_bus::config::redis::RedisConsumerConfig,
-    ) -> bool {
+impl<'w, 's, T: BusMessage + Message> RedisMessageReader<'w, 's, T> {
+    fn validate_configuration(&mut self, config: &RedisConsumerConfig) -> bool {
         let Some(topology) = self.topology.as_ref().and_then(|topo| topo.redis()) else {
             return true;
         };
@@ -248,7 +264,7 @@ impl<'w, 's, T: BusEvent + Message> RedisMessageReader<'w, 's, T> {
 
     fn record_invalid_config(
         &mut self,
-        config: &bevy_event_bus::config::redis::RedisConsumerConfig,
+        config: &RedisConsumerConfig,
         stream: String,
         group: Option<&str>,
         reason: String,
@@ -276,7 +292,7 @@ impl<'w, 's, T: BusEvent + Message> RedisMessageReader<'w, 's, T> {
     }
 }
 
-impl<'w, 's, T: BusEvent + Message> BusMessageReader<T> for RedisMessageReader<'w, 's, T> {
+impl<'w, 's, T: BusMessage + Message> BusMessageReader<T> for RedisMessageReader<'w, 's, T> {
     fn read<C: EventBusConfig>(&mut self, config: &C) -> Vec<MessageWrapper<T>> {
         RedisMessageReader::read(self, config)
     }

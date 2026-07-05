@@ -5,7 +5,7 @@ use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
 use bevy_event_bus::{
-    EventBusConsumerConfig, EventBusPlugins, RedisMessageReader, RedisMessageWriter,
+    EventBusConsumerConfig, EventBusPlugin, RedisMessageReader, RedisMessageWriter,
 };
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
@@ -52,7 +52,7 @@ fn frame_limit_spreads_drain() {
     .expect("Reader Redis backend setup successful");
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: backend_writer });
+    writer.add_plugins(EventBusPlugin::new(backend_writer));
 
     #[derive(Resource, Clone)]
     struct Payload {
@@ -87,7 +87,7 @@ fn frame_limit_spreads_drain() {
     writer.update();
 
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins { backend: backend_reader });
+    reader.add_plugins(EventBusPlugin::new(backend_reader));
     reader.insert_resource(EventBusConsumerConfig {
         max_events_per_frame: Some(5),
         max_drain_millis: None,

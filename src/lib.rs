@@ -7,12 +7,11 @@ extern crate self as bevy_event_bus;
 
 // Core modules
 pub mod backends;
+pub mod bus_message;
 pub mod config;
 pub mod decoder;
 mod error;
-mod errors;
-mod event;
-mod plugin;
+pub mod plugins;
 mod readers;
 mod resources;
 mod runtime;
@@ -21,24 +20,23 @@ mod writers;
 // Re-exports
 pub use backends::EventBusBackend;
 pub use backends::event_bus_backend::StreamTrimStrategy;
+pub use bus_message::BusMessage;
 #[cfg(feature = "kafka")]
 pub use config::Kafka;
 pub use config::{BackendMarker, EventBusConfig, InMemory, ProcessingLimits, TopologyMode};
 pub use decoder::{DecodedEvent, DecoderFn, DecoderRegistry, TypedDecoder};
-pub use error::{EventBusDecodeError, EventBusError, EventBusErrorType};
-pub use errors::{BusErrorCallback, BusErrorContext, BusErrorKind};
-pub use event::BusEvent;
-pub use plugin::{BackendCapabilities, BackendDownMessage, BackendReadyMessage, BackendStatus};
-pub use plugin::{EventBusPlugin, EventBusPlugins};
+pub use error::{BusErrorCallback, BusErrorContext, EventBusError, EventBusErrorType};
+pub use plugins::event_bus::{
+    BackendCapabilities, BackendDownMessage, BackendReadyMessage, BackendStatus, EventBusPlugin,
+};
 pub use readers::BusMessageReader;
-#[cfg(feature = "kafka")]
 pub use readers::{KafkaMessageReader, KafkaReaderError};
 #[cfg(feature = "redis")]
 pub use readers::{RedisMessageReader, RedisReaderError};
 pub use resources::{
-    BackendMetadata, ConsumerMetrics, DecodedEventBuffer, DrainMetricsMessage,
-    DrainedTopicMetadata, EventBusConsumerConfig, KafkaMetadata, MessageMetadata, MessageWrapper,
-    ProcessedMessage, ProvisionedTopology, TopicDecodedEvents,
+    BackendMetadata, ConsumerMetrics, DrainMetricsMessage, DrainedTopicMetadata,
+    EventBusConsumerConfig, KafkaMetadata, MessageMetadata, MessageWrapper, ProcessedMessage,
+    ProvisionedTopology,
 };
 pub use writers::BusMessageWriter;
 #[cfg(feature = "kafka")]
@@ -71,11 +69,10 @@ pub use runtime::{block_on, runtime};
 /// Re-export common items for convenience
 pub mod prelude {
     pub use bevy_event_bus::{
-        BusEvent, BusMessageReader, BusMessageWriter, ConsumerMetrics, DecodedEvent,
-        DecodedEventBuffer, DecoderRegistry, EventBusBackend, EventBusConsumerConfig,
-        EventBusDecodeError, EventBusError, EventBusErrorType, EventBusPlugin, EventBusPlugins,
-        MessageMetadata, MessageWrapper, ProcessedMessage, StreamTrimStrategy, TopicDecodedEvents,
-        TypedDecoder,
+        BusMessage, BusMessageReader, BusMessageWriter, ConsumerMetrics, DecodedEvent,
+        DecoderRegistry, EventBusBackend, EventBusConsumerConfig, EventBusError, EventBusErrorType,
+        EventBusPlugin, MessageMetadata, MessageWrapper, ProcessedMessage,
+        StreamTrimStrategy, TypedDecoder,
         config::{BackendMarker, EventBusConfig, InMemory, ProcessingLimits, TopologyMode},
     };
 

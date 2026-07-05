@@ -1,7 +1,7 @@
 //! Multi-decoder pipeline supporting multiple event types per topic
 
 use bevy::prelude::*;
-use bevy_event_bus::BusEvent;
+use bevy_event_bus::BusMessage;
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 
@@ -22,12 +22,12 @@ type DecoderClosure<T> = dyn Fn(&[u8]) -> Option<T> + Send + Sync + 'static;
 type BoxedDecoderClosure<T> = Box<DecoderClosure<T>>;
 
 /// Concrete implementation of [`DecoderFn`] for a specific event type
-pub struct TypedDecoder<T: BusEvent + Message> {
+pub struct TypedDecoder<T: BusMessage + Message> {
     decoder_fn: BoxedDecoderClosure<T>,
     name: &'static str,
 }
 
-impl<T: BusEvent + Message> TypedDecoder<T> {
+impl<T: BusMessage + Message> TypedDecoder<T> {
     pub fn new<F>(decoder_fn: F, name: &'static str) -> Self
     where
         F: Fn(&[u8]) -> Option<T> + Send + Sync + 'static,
@@ -38,7 +38,7 @@ impl<T: BusEvent + Message> TypedDecoder<T> {
         }
     }
 
-    /// Create a default JSON decoder for a BusEvent type
+    /// Create a default JSON decoder for a BusMessage type
     pub fn json_decoder() -> Self {
         Self::new(
             |bytes| serde_json::from_slice::<T>(bytes).ok(),
@@ -47,7 +47,7 @@ impl<T: BusEvent + Message> TypedDecoder<T> {
     }
 }
 
-impl<T: BusEvent + Message> DecoderFn for TypedDecoder<T> {
+impl<T: BusMessage + Message> DecoderFn for TypedDecoder<T> {
     fn decode(&self, data: &[u8]) -> Option<Box<dyn Any + Send + Sync>> {
         (self.decoder_fn)(data).map(|event| Box::new(event) as Box<dyn Any + Send + Sync>)
     }
@@ -87,7 +87,7 @@ impl DecoderRegistry {
     }
 
     /// Register a decoder for a specific topic
-    pub fn register_decoder<T: BusEvent + Message>(
+    pub fn register_decoder<T: BusMessage + Message>(
         &mut self,
         topic: &str,
         decoder: TypedDecoder<T>,
@@ -103,8 +103,8 @@ impl DecoderRegistry {
         );
     }
 
-    /// Register a default JSON decoder for a BusEvent type on a topic
-    pub fn register_json_decoder<T: BusEvent + Message>(&mut self, topic: &str) {
+    /// Register a default JSON decoder for a BusMessage type on a topic
+    pub fn register_json_decoder<T: BusMessage + Message>(&mut self, topic: &str) {
         self.register_decoder(topic, TypedDecoder::<T>::json_decoder());
     }
 

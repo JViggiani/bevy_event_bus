@@ -3,7 +3,7 @@ use bevy_event_bus::config::kafka::{
     KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
     KafkaTopicSpec,
 };
-use bevy_event_bus::{EventBusPlugins, KafkaMessageReader, KafkaMessageWriter};
+use bevy_event_bus::{EventBusPlugin, KafkaMessageReader, KafkaMessageWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
     run_app_updates, unique_consumer_group, unique_topic, update_two_apps_until, update_until,
@@ -46,7 +46,7 @@ fn kafka_single_direction_writer_reader_flow() {
         }));
 
     let mut reader_app = App::new();
-    reader_app.add_plugins(EventBusPlugins { backend: backend_reader });
+    reader_app.add_plugins(EventBusPlugin::new(backend_reader));
 
     #[derive(Resource, Default)]
     struct Collected {
@@ -80,7 +80,7 @@ fn kafka_single_direction_writer_reader_flow() {
     reader_app.add_systems(Update, reader_system);
 
     let mut writer_app = App::new();
-    writer_app.add_plugins(EventBusPlugins { backend: backend_writer });
+    writer_app.add_plugins(EventBusPlugin::new(backend_writer));
 
     #[derive(Resource, Clone)]
     struct Outgoing {
@@ -206,7 +206,7 @@ fn kafka_bidirectional_apps_exchange_events() {
     }
 
     let mut app_a = App::new();
-    app_a.add_plugins(EventBusPlugins { backend: backend_a });
+    app_a.add_plugins(EventBusPlugin::new(backend_a));
     let event_from_a = TestEvent {
         message: "event-from-kafka-app-a".into(),
         value: 1,
@@ -222,7 +222,7 @@ fn kafka_bidirectional_apps_exchange_events() {
     app_a.add_systems(Update, (reader_system, writer_system));
 
     let mut app_b = App::new();
-    app_b.add_plugins(EventBusPlugins { backend: backend_b });
+    app_b.add_plugins(EventBusPlugin::new(backend_b));
     let event_from_b = TestEvent {
         message: "event-from-kafka-app-b".into(),
         value: 2,

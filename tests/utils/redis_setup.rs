@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use bevy::log::{debug, info, info_span};
 use bevy::prelude::App;
-use bevy_event_bus::EventBusPlugins;
+use bevy_event_bus::EventBusPlugin;
 use bevy_event_bus::backends::RedisEventBusBackend;
 use bevy_event_bus::config::redis::{
     RedisBackendConfig, RedisConnectionConfig, RedisRuntimeTuning, RedisTopologyBuilder,
@@ -165,7 +165,7 @@ where
 {
     let (backend, _) = prepare_backend(|_| {}).expect("Redis backend setup");
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins { backend: backend });
+    app.add_plugins(EventBusPlugin::new(backend));
     customize(&mut app);
     app
 }

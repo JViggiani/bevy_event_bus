@@ -21,7 +21,7 @@ fn drain_empty_ok() {
     let mut app = build_basic_app_simple();
     app.update(); // run drain once
     let buffers = app.world().resource::<DrainedTopicMetadata>();
-    assert!(buffers.topics.is_empty() || buffers.topics.values().all(|v| v.is_empty()));
+    assert!(buffers.is_empty());
 }
 
 #[test]
@@ -32,7 +32,6 @@ fn unlimited_buffer_gathers() {
     // Simulate manually inserting drained payloads (bypass Kafka for unit-style test)
     {
         let mut buffers = app.world_mut().resource_mut::<DrainedTopicMetadata>();
-        let entry = buffers.topics.entry(topic.clone()).or_default();
         for i in 0..5u32 {
             let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
             let metadata = MessageMetadata::new(
@@ -48,7 +47,7 @@ fn unlimited_buffer_gathers() {
                     headers: HashMap::new(),
                 })),
             );
-            entry.push(ProcessedMessage { payload, metadata });
+            buffers.push(&topic, ProcessedMessage { payload, metadata });
         }
     }
     let topic_for_reader = topic.clone();
@@ -81,7 +80,6 @@ fn frame_limit_respected() {
     // Preload channel by faking buffers (simulate drain would only take first 3)
     {
         let mut buffers = app.world_mut().resource_mut::<DrainedTopicMetadata>();
-        let entry = buffers.topics.entry(topic.clone()).or_default();
         for i in 0..10u32 {
             let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
             let metadata = MessageMetadata::new(
@@ -97,7 +95,7 @@ fn frame_limit_respected() {
                     headers: HashMap::new(),
                 })),
             );
-            entry.push(ProcessedMessage { payload, metadata });
+            buffers.push(&topic, ProcessedMessage { payload, metadata });
         }
     }
     // Reader only sees existing buffer; limit logic applies only during drain; since we injected directly this test is less meaningful but placeholder.
@@ -122,7 +120,6 @@ fn drain_metrics_emitted_and_updated() {
     // Preload channel indirectly: insert some drained payloads, then run one update to emit metrics
     {
         let mut buffers = app.world_mut().resource_mut::<DrainedTopicMetadata>();
-        let entry = buffers.topics.entry("m".into()).or_default();
         for i in 0..3u32 {
             let payload = serde_json::to_vec(&TestMsg { v: i }).unwrap();
             let metadata = MessageMetadata::new(
@@ -138,7 +135,7 @@ fn drain_metrics_emitted_and_updated() {
                     headers: HashMap::new(),
                 })),
             );
-            entry.push(ProcessedMessage { payload, metadata });
+            buffers.push("m", ProcessedMessage { payload, metadata });
         }
     }
     // First update drains nothing new (already in buffers) but still emits metrics event with drained=0

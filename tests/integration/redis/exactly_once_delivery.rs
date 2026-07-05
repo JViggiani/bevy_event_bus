@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
-use bevy_event_bus::{EventBusPlugins, RedisMessageReader, RedisMessageWriter};
+use bevy_event_bus::{EventBusPlugin, RedisMessageReader, RedisMessageWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
     unique_consumer_group, unique_consumer_group_member, unique_topic, update_until,
@@ -45,7 +45,7 @@ fn no_event_duplication_exactly_once_delivery() {
     .expect("reader Redis backend setup successful");
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: writer_backend });
+    writer.add_plugins(EventBusPlugin::new(writer_backend));
 
     #[derive(Resource, Clone)]
     struct ToSend {
@@ -75,7 +75,7 @@ fn no_event_duplication_exactly_once_delivery() {
     writer.add_systems(Update, writer_system);
 
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins { backend: reader_backend });
+    reader.add_plugins(EventBusPlugin::new(reader_backend));
     #[derive(Resource, Default)]
     struct Collected {
         events: Vec<TestEvent>,

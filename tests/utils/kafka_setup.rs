@@ -546,7 +546,7 @@ where
 {
     let (backend, _bootstrap) = prepare_backend(latest(|_| {}));
     let mut app = bevy::prelude::App::new();
-    app.add_plugins(bevy_event_bus::EventBusPlugins { backend: backend });
+    app.add_plugins(bevy_event_bus::EventBusPlugin::new(backend));
     customize(&mut app);
     app
 }

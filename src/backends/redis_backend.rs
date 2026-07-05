@@ -24,7 +24,7 @@ use bevy_event_bus::{
         RedisBackendConfig, RedisConnectionConfig, RedisConsumerGroupSpec, RedisRuntimeTuning,
         RedisTopologyConfig, TrimStrategy,
     },
-    errors::BusErrorKind,
+    error::EventBusErrorType,
     resources::{
         ConsumerMetrics, IncomingMessage, RedisAckQueue, RedisAckRequest,
         backend_metadata::RedisMetadata,
@@ -116,86 +116,173 @@ struct RedisWriteRequest {
     failure_handler: Arc<DeliveryFailureCallback>,
 }
 
-/// Shared runtime state for the Redis backend so cloned backends operate over the same queues and tasks.
-struct RedisBackendState {
-    config: RedisBackendConfig,
-    runtime: RedisRuntimeTuning,
-    client: redis::Client,
-    writer: Mutex<Option<Arc<tokio::sync::Mutex<ConnectionManager>>>>,
-    write_tx: Sender<RedisWriteRequest>,
-    write_rx: Mutex<Option<Receiver<RedisWriteRequest>>>,
-    incoming_tx: Sender<IncomingMessage>,
-    incoming_rx: Mutex<Option<Receiver<IncomingMessage>>>,
-    pending_messages: Mutex<VecDeque<IncomingMessage>>,
-    ack_tx: Option<Sender<RedisAckRequest>>,
-    ack_rx: Mutex<Option<Receiver<RedisAckRequest>>>,
-    trim_tx: Sender<RedisTrimRequest>,
-    trim_rx: Mutex<Option<Receiver<RedisTrimRequest>>>,
-    ack_counters: AckCounters,
-    handles: Mutex<Vec<JoinHandle<()>>>,
-    running: Arc<AtomicBool>,
+/// Crossbeam channel from reader workers into the plugin drain path.
+struct RedisMessageIngress {
+    tx: Sender<IncomingMessage>,
+    rx: Mutex<Option<Receiver<IncomingMessage>>>,
+    pending: Mutex<VecDeque<IncomingMessage>>,
     dropped: Arc<AtomicUsize>,
-    stream_writes: HashMap<String, StreamWriteConfig>,
 }
 
-impl RedisBackendState {
+impl RedisMessageIngress {
+    fn new(capacity: usize) -> Self {
+        let (tx, rx) = bounded(capacity);
+        Self {
+            tx,
+            rx: Mutex::new(Some(rx)),
+            pending: Mutex::new(VecDeque::new()),
+            dropped: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
     fn take_receiver(&self) -> Option<Receiver<IncomingMessage>> {
-        self.incoming_rx.lock().unwrap().take()
+        self.rx.lock().unwrap().take()
     }
 
-    fn write_sender(&self) -> Sender<RedisWriteRequest> {
-        self.write_tx.clone()
+    fn restore_receiver(&self, receiver: Receiver<IncomingMessage>) {
+        *self.rx.lock().unwrap() = Some(receiver);
     }
 
-    fn take_write_receiver(&self) -> Option<Receiver<RedisWriteRequest>> {
-        self.write_rx.lock().unwrap().take()
+    fn dropped_count(&self) -> usize {
+        self.dropped.load(Ordering::Relaxed)
+    }
+}
+
+/// Async XADD queue and shared writer connection.
+struct RedisWritePipeline {
+    tx: Sender<RedisWriteRequest>,
+    rx: Mutex<Option<Receiver<RedisWriteRequest>>>,
+    writer: Mutex<Option<Arc<tokio::sync::Mutex<ConnectionManager>>>>,
+}
+
+impl RedisWritePipeline {
+    fn new(capacity: usize) -> Self {
+        let (tx, rx) = bounded(capacity);
+        Self {
+            tx,
+            rx: Mutex::new(Some(rx)),
+            writer: Mutex::new(None),
+        }
     }
 
-    fn ack_sender(&self) -> Option<Sender<RedisAckRequest>> {
-        self.ack_tx.clone()
+    fn sender(&self) -> Sender<RedisWriteRequest> {
+        self.tx.clone()
     }
 
-    fn take_ack_receiver(&self) -> Option<Receiver<RedisAckRequest>> {
-        self.ack_rx.lock().unwrap().take()
-    }
-
-    fn trim_sender(&self) -> Sender<RedisTrimRequest> {
-        self.trim_tx.clone()
-    }
-
-    fn take_trim_receiver(&self) -> Option<Receiver<RedisTrimRequest>> {
-        self.trim_rx.lock().unwrap().take()
+    fn take_receiver(&self) -> Option<Receiver<RedisWriteRequest>> {
+        self.rx.lock().unwrap().take()
     }
 
     fn writer(&self) -> Option<Arc<tokio::sync::Mutex<ConnectionManager>>> {
         self.writer.lock().unwrap().clone()
     }
 
-    fn set_writer(&self, manager: ConnectionManager) {
-        self.writer
-            .lock()
-            .unwrap()
-            .replace(Arc::new(tokio::sync::Mutex::new(manager)));
+    fn set_writer(
+        &self,
+        manager: ConnectionManager,
+    ) -> Arc<tokio::sync::Mutex<ConnectionManager>> {
+        let handle = Arc::new(tokio::sync::Mutex::new(manager));
+        self.writer.lock().unwrap().replace(handle.clone());
+        handle
     }
 
     fn clear_writer(&self) {
         self.writer.lock().unwrap().take();
+    }
+}
+
+/// Async XACK request queue and success/failure counters.
+struct RedisAckPipeline {
+    tx: Option<Sender<RedisAckRequest>>,
+    rx: Mutex<Option<Receiver<RedisAckRequest>>>,
+    counters: AckCounters,
+}
+
+impl RedisAckPipeline {
+    fn new(capacity: usize, enabled: bool) -> Self {
+        let (tx, rx) = if enabled {
+            let (tx, rx) = bounded(capacity);
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
+        Self {
+            tx,
+            rx: Mutex::new(rx),
+            counters: AckCounters::default(),
+        }
+    }
+
+    fn sender(&self) -> Option<Sender<RedisAckRequest>> {
+        self.tx.clone()
+    }
+
+    fn take_receiver(&self) -> Option<Receiver<RedisAckRequest>> {
+        self.rx.lock().unwrap().take()
+    }
+}
+
+/// Async XTRIM request queue.
+struct RedisTrimPipeline {
+    tx: Sender<RedisTrimRequest>,
+    rx: Mutex<Option<Receiver<RedisTrimRequest>>>,
+}
+
+impl RedisTrimPipeline {
+    fn new(capacity: usize) -> Self {
+        let (tx, rx) = bounded(capacity);
+        Self {
+            tx,
+            rx: Mutex::new(Some(rx)),
+        }
+    }
+
+    fn sender(&self) -> Sender<RedisTrimRequest> {
+        self.tx.clone()
+    }
+
+    fn take_receiver(&self) -> Option<Receiver<RedisTrimRequest>> {
+        self.rx.lock().unwrap().take()
+    }
+}
+
+/// Background worker lifecycle for readers, writers, acks, and trims.
+struct RedisWorkerRuntime {
+    running: Arc<AtomicBool>,
+    handles: Mutex<Vec<JoinHandle<()>>>,
+}
+
+impl RedisWorkerRuntime {
+    fn new() -> Self {
+        Self {
+            running: Arc::new(AtomicBool::new(false)),
+            handles: Mutex::new(Vec::new()),
+        }
     }
 
     fn push_handle(&self, handle: JoinHandle<()>) {
         self.handles.lock().unwrap().push(handle);
     }
 
-    fn abort_tasks(&self) {
+    fn stop_all(&self) {
         let mut handles = self.handles.lock().unwrap();
         for handle in handles.drain(..) {
             handle.abort();
         }
     }
+}
 
-    fn dropped_count(&self) -> usize {
-        self.dropped.load(Ordering::Relaxed)
-    }
+/// Shared runtime state for the Redis backend so cloned backends operate over the same queues and tasks.
+struct RedisBackendState {
+    config: RedisBackendConfig,
+    runtime: RedisRuntimeTuning,
+    client: redis::Client,
+    ingress: RedisMessageIngress,
+    writes: RedisWritePipeline,
+    acks: RedisAckPipeline,
+    trims: RedisTrimPipeline,
+    workers: RedisWorkerRuntime,
+    stream_writes: HashMap<String, StreamWriteConfig>,
 }
 
 #[derive(Clone)]
@@ -244,7 +331,7 @@ fn build_stream_write_map(topology: &RedisTopologyConfig) -> HashMap<String, Str
 
 fn redis_topology_error(message: impl Into<String>) -> RedisError {
     RedisError::from((
-        RedisErrorKind::ExtensionError,
+        RedisErrorKind::Extension,
         "bevy_event_bus::redis_topology",
         message.into(),
     ))
@@ -266,11 +353,11 @@ async fn ensure_consumer_group_present(
     let response = redis::cmd("XINFO")
         .arg("GROUPS")
         .arg(stream)
-        .query_async::<_, RedisValue>(manager)
+        .query_async::<RedisValue>(manager)
         .await?;
 
     let groups = match response {
-        RedisValue::Bulk(groups) => groups,
+        RedisValue::Array(groups) => groups,
         _ => {
             return Err(redis_topology_error(format!(
                 "Unexpected response while inspecting groups for Redis stream '{}'",
@@ -280,7 +367,7 @@ async fn ensure_consumer_group_present(
     };
 
     for group in groups {
-        if let RedisValue::Bulk(entries) = group {
+        if let RedisValue::Array(entries) = group {
             let mut iter = entries.iter();
             while let Some(key) = iter.next() {
                 if redis_value_to_string(key).as_deref() == Some("name") {
@@ -366,7 +453,7 @@ async fn provision_consumer_group(
         .arg(&spec.start_id)
         .arg("MKSTREAM");
 
-    match cmd.query_async::<_, RedisValue>(manager).await {
+    match cmd.query_async::<RedisValue>(manager).await {
         Ok(_) => {
             debug!(stream = %stream, group = %spec.consumer_group, "Created Redis consumer group");
             Ok(())
@@ -385,8 +472,8 @@ async fn provision_consumer_group(
 
 fn redis_value_to_bytes(value: &RedisValue) -> Option<Vec<u8>> {
     match value {
-        RedisValue::Data(bytes) => Some(bytes.clone()),
-        RedisValue::Bulk(items) => {
+        RedisValue::BulkString(bytes) => Some(bytes.clone()),
+        RedisValue::Array(items) => {
             let mut buffer = Vec::new();
             for item in items {
                 buffer.extend(redis_value_to_bytes(item)?);
@@ -395,16 +482,16 @@ fn redis_value_to_bytes(value: &RedisValue) -> Option<Vec<u8>> {
         }
         RedisValue::Int(num) => Some(num.to_string().into_bytes()),
         RedisValue::Nil => None,
-        _ => from_redis_value::<Vec<u8>>(value).ok(),
+        _ => from_redis_value::<Vec<u8>>(value.clone()).ok(),
     }
 }
 
 fn redis_value_to_string(value: &RedisValue) -> Option<String> {
     match value {
-        RedisValue::Data(bytes) => String::from_utf8(bytes.clone()).ok(),
+        RedisValue::BulkString(bytes) => String::from_utf8(bytes.clone()).ok(),
         RedisValue::Int(num) => Some(num.to_string()),
         RedisValue::Nil => None,
-        _ => from_redis_value::<String>(value).ok(),
+        _ => from_redis_value::<String>(value.clone()).ok(),
     }
 }
 
@@ -416,7 +503,7 @@ fn convert_stream_entries(
     let mut messages = Vec::new();
 
     for StreamKey { key, ids } in reply.keys {
-        for StreamId { id, map } in ids {
+        for StreamId { id, map, .. } in ids {
             if let Some(payload_value) = map.get("payload") {
                 if let Some(payload) = redis_value_to_bytes(payload_value) {
                     let mut key_field = None;
@@ -471,34 +558,15 @@ impl RedisEventBusBackend {
 
         let runtime = config.runtime.clone();
 
-        let (incoming_tx, incoming_rx) = bounded(runtime.message_channel_capacity);
-        let (write_tx, write_rx) = bounded(runtime.message_channel_capacity);
-        let (ack_tx, ack_rx) = if manual_ack {
-            let (tx, rx) = bounded(runtime.ack_channel_capacity);
-            (Some(tx), Some(rx))
-        } else {
-            (None, None)
-        };
-        let (trim_tx, trim_rx) = bounded(runtime.trim_channel_capacity);
-
         let state = RedisBackendState {
             config,
-            runtime,
+            runtime: runtime.clone(),
             client,
-            writer: Mutex::new(None),
-            write_tx,
-            write_rx: Mutex::new(Some(write_rx)),
-            incoming_tx,
-            incoming_rx: Mutex::new(Some(incoming_rx)),
-            pending_messages: Mutex::new(VecDeque::new()),
-            ack_tx,
-            ack_rx: Mutex::new(ack_rx),
-            trim_tx,
-            trim_rx: Mutex::new(Some(trim_rx)),
-            ack_counters: AckCounters::default(),
-            handles: Mutex::new(Vec::new()),
-            running: Arc::new(AtomicBool::new(false)),
-            dropped: Arc::new(AtomicUsize::new(0)),
+            ingress: RedisMessageIngress::new(runtime.message_channel_capacity),
+            writes: RedisWritePipeline::new(runtime.message_channel_capacity),
+            acks: RedisAckPipeline::new(runtime.ack_channel_capacity, manual_ack),
+            trims: RedisTrimPipeline::new(runtime.trim_channel_capacity),
+            workers: RedisWorkerRuntime::new(),
             stream_writes,
         };
 
@@ -507,25 +575,24 @@ impl RedisEventBusBackend {
         })
     }
 
-    fn spawn_runtime_tasks(&self) {
-        self.spawn_writer_worker();
+    /// Spawn all background workers. The writer connection is passed in
+    /// explicitly (rather than read back from shared state) so the requirement
+    /// that `connect()` establishes the writer before workers start is enforced
+    /// by the type system instead of relying on call ordering.
+    fn spawn_runtime_tasks(&self, writer: Arc<tokio::sync::Mutex<ConnectionManager>>) {
+        self.spawn_writer_worker(writer);
         self.spawn_group_readers();
         self.spawn_plain_stream_readers();
         self.spawn_ack_worker();
         self.spawn_trim_worker();
     }
 
-    fn spawn_writer_worker(&self) {
-        let Some(receiver) = self.state.take_write_receiver() else {
+    fn spawn_writer_worker(&self, manager: Arc<tokio::sync::Mutex<ConnectionManager>>) {
+        let Some(receiver) = self.state.writes.take_receiver() else {
             return;
         };
 
-        let Some(manager) = self.state.writer() else {
-            warn!("Redis writer connection not available; writer worker not started");
-            return;
-        };
-
-        let running = self.state.running.clone();
+        let running = self.state.workers.running.clone();
 
         let handle = runtime::runtime().spawn(async move {
             while running.load(Ordering::SeqCst) {
@@ -581,11 +648,11 @@ impl RedisEventBusBackend {
                         cmd.arg("event_key").arg(key);
                     }
 
-                    if let Err(err) = cmd.query_async::<_, RedisValue>(&mut *guard).await {
+                    if let Err(err) = cmd.query_async::<RedisValue>(&mut *guard).await {
                         warn!(stream = %request.stream, error = %err, "Failed to enqueue Redis message");
                         request.failure_handler.call(DeliveryFailure {
                             backend: "redis",
-                            kind: BusErrorKind::DeliveryFailure,
+                            kind: EventBusErrorType::DeliveryFailure,
                             topic: request.stream.clone(),
                             error: err.to_string(),
                             metadata: None,
@@ -599,7 +666,7 @@ impl RedisEventBusBackend {
             }
         });
 
-        self.state.push_handle(handle);
+        self.state.workers.push_handle(handle);
     }
 
     fn spawn_group_readers(&self) {
@@ -618,9 +685,9 @@ impl RedisEventBusBackend {
         runtime: &RedisRuntimeTuning,
     ) {
         let client = self.state.client.clone();
-        let incoming = self.state.incoming_tx.clone();
-        let dropped = self.state.dropped.clone();
-        let running = self.state.running.clone();
+        let incoming = self.state.ingress.tx.clone();
+        let dropped = self.state.ingress.dropped.clone();
+        let running = self.state.workers.running.clone();
         let manual_ack = spec.manual_ack;
         let consumer_group = spec.consumer_group.clone();
         let consumer_name = spec.consumer_name.clone();
@@ -658,11 +725,11 @@ impl RedisEventBusBackend {
                     cmd.arg(">");
                 }
 
-                match cmd.query_async::<_, RedisValue>(&mut manager).await {
+                match cmd.query_async::<RedisValue>(&mut manager).await {
                     Ok(RedisValue::Nil) => {
                         tokio::time::sleep(empty_backoff).await;
                     }
-                    Ok(value) => match from_redis_value::<StreamReadReply>(&value) {
+                    Ok(value) => match from_redis_value::<StreamReadReply>(value) {
                         Ok(reply) => {
                             let messages =
                                 convert_stream_entries(reply, Some(&consumer_group), manual_ack);
@@ -699,7 +766,7 @@ impl RedisEventBusBackend {
             }
         });
 
-        self.state.push_handle(handle);
+        self.state.workers.push_handle(handle);
     }
 
     fn spawn_plain_stream_readers(&self) {
@@ -727,9 +794,9 @@ impl RedisEventBusBackend {
         runtime: &RedisRuntimeTuning,
     ) {
         let client = self.state.client.clone();
-        let incoming = self.state.incoming_tx.clone();
-        let dropped = self.state.dropped.clone();
-        let running = self.state.running.clone();
+        let incoming = self.state.ingress.tx.clone();
+        let dropped = self.state.ingress.dropped.clone();
+        let running = self.state.workers.running.clone();
         let batch_size = runtime.read_batch_size;
         let empty_backoff = runtime.empty_read_backoff;
 
@@ -743,6 +810,12 @@ impl RedisEventBusBackend {
             };
 
             let block_ms = read_block.as_millis() as usize;
+            // Plain (ungrouped) streams tail from "$", i.e. only entries added
+            // *after* this reader connects. This is intentional live-tail
+            // behaviour, but it means any entries written between stream
+            // creation and this reader attaching are not delivered here
+            // (at-most-once for the connection gap). Use a consumer group if
+            // you need at-least-once delivery of the full backlog.
             let mut last_id = "$".to_string();
 
             while running.load(Ordering::SeqCst) {
@@ -755,11 +828,11 @@ impl RedisEventBusBackend {
                     .arg(&stream)
                     .arg(&last_id);
 
-                match cmd.query_async::<_, RedisValue>(&mut manager).await {
+                match cmd.query_async::<RedisValue>(&mut manager).await {
                     Ok(RedisValue::Nil) => {
                         tokio::time::sleep(empty_backoff).await;
                     }
-                    Ok(value) => match from_redis_value::<StreamReadReply>(&value) {
+                    Ok(value) => match from_redis_value::<StreamReadReply>(value) {
                         Ok(reply) => {
                             let mut messages =
                                 convert_stream_entries(reply, None, false);
@@ -799,17 +872,17 @@ impl RedisEventBusBackend {
             }
         });
 
-        self.state.push_handle(handle);
+        self.state.workers.push_handle(handle);
     }
 
     fn spawn_ack_worker(&self) {
-        let Some(receiver) = self.state.take_ack_receiver() else {
+        let Some(receiver) = self.state.acks.take_receiver() else {
             return;
         };
 
         let client = self.state.client.clone();
-        let running = self.state.running.clone();
-        let counters = self.state.ack_counters.clone();
+        let running = self.state.workers.running.clone();
+        let counters = self.state.acks.counters.clone();
 
         let runtime = self.state.runtime.clone();
         let empty_backoff = runtime.empty_read_backoff;
@@ -883,16 +956,16 @@ impl RedisEventBusBackend {
             }
         });
 
-        self.state.push_handle(handle);
+        self.state.workers.push_handle(handle);
     }
 
     fn spawn_trim_worker(&self) {
-        let Some(receiver) = self.state.take_trim_receiver() else {
+        let Some(receiver) = self.state.trims.take_receiver() else {
             return;
         };
 
         let client = self.state.client.clone();
-        let running = self.state.running.clone();
+        let running = self.state.workers.running.clone();
         let runtime = self.state.runtime.clone();
         let idle_backoff = runtime.empty_read_backoff;
 
@@ -928,7 +1001,7 @@ impl RedisEventBusBackend {
                     }
                     cmd.arg(request.maxlen);
 
-                    if let Err(err) = cmd.query_async::<_, RedisValue>(&mut manager).await {
+                    if let Err(err) = cmd.query_async::<RedisValue>(&mut manager).await {
                         warn!(
                             stream = %request.stream,
                             maxlen = request.maxlen,
@@ -961,7 +1034,7 @@ impl RedisEventBusBackend {
             }
         });
 
-        self.state.push_handle(handle);
+        self.state.workers.push_handle(handle);
     }
 
     async fn flush_ack_requests(
@@ -988,7 +1061,7 @@ impl RedisEventBusBackend {
                 cmd.arg(entry_id);
             }
 
-            match cmd.query_async::<_, i64>(manager).await {
+            match cmd.query_async::<i64>(manager).await {
                 Ok(acked) => {
                     let acked_count = acked.max(0) as usize;
                     if acked_count >= entry_ids.len() {
@@ -1027,11 +1100,11 @@ impl RedisEventBusBackend {
         maxlen: usize,
         strategy: TrimStrategy,
     ) -> Result<(), String> {
-        if self.state.writer().is_none() {
+        if self.state.writes.writer().is_none() {
             return Err("Redis writer connection not available".to_string());
         }
 
-        let sender = self.state.trim_sender();
+        let sender = self.state.trims.sender();
         let request = RedisTrimRequest {
             stream: stream.to_string(),
             maxlen,
@@ -1062,7 +1135,7 @@ impl RedisEventBusBackend {
         let mut deferred = VecDeque::new();
 
         {
-            let mut pending = self.state.pending_messages.lock().unwrap();
+            let mut pending = self.state.ingress.pending.lock().unwrap();
             while let Some(msg) = pending.pop_front() {
                 if Self::message_matches(&msg, stream, group) {
                     matches.push(msg);
@@ -1072,12 +1145,7 @@ impl RedisEventBusBackend {
             }
         }
 
-        let receiver_opt = {
-            let mut guard = self.state.incoming_rx.lock().unwrap();
-            guard.take()
-        };
-
-        if let Some(receiver) = receiver_opt {
+        if let Some(receiver) = self.state.ingress.take_receiver() {
             loop {
                 match receiver.try_recv() {
                     Ok(msg) => {
@@ -1092,12 +1160,11 @@ impl RedisEventBusBackend {
                 }
             }
 
-            let mut guard = self.state.incoming_rx.lock().unwrap();
-            *guard = Some(receiver);
+            self.state.ingress.restore_receiver(receiver);
         }
 
         if !deferred.is_empty() {
-            let mut pending = self.state.pending_messages.lock().unwrap();
+            let mut pending = self.state.ingress.pending.lock().unwrap();
             while let Some(msg) = deferred.pop_front() {
                 pending.push_back(msg);
             }
@@ -1203,10 +1270,10 @@ impl EventBusBackend for RedisEventBusBackend {
     fn configure_plugin(&self, _app: &mut App) {}
 
     fn setup_plugin(&self, _world: &mut World) -> BackendPluginSetup {
-        let manual_commit = self.state.ack_sender().map(|sender| {
+        let manual_commit = self.state.acks.sender().map(|sender| {
             Box::new(RedisManualAckHandle::new(
                 sender,
-                self.state.ack_counters.clone(),
+                self.state.acks.counters.clone(),
             )) as Box<dyn ManualCommitHandle>
         });
 
@@ -1218,7 +1285,7 @@ impl EventBusBackend for RedisEventBusBackend {
                 .stream_names()
                 .into_iter()
                 .collect(),
-            message_stream: self.state.take_receiver(),
+            message_stream: self.state.ingress.take_receiver(),
             manual_commit,
             redis_topology: Some(self.state.config.topology.clone()),
             ..BackendPluginSetup::default()
@@ -1226,7 +1293,7 @@ impl EventBusBackend for RedisEventBusBackend {
     }
 
     fn augment_metrics(&self, metrics: &mut ConsumerMetrics) {
-        metrics.dropped_messages = self.state.dropped_count();
+        metrics.dropped_messages = self.state.ingress.dropped_count();
     }
 
     fn apply_event_bindings(&self, app: &mut App) {
@@ -1238,6 +1305,7 @@ impl EventBusBackend for RedisEventBusBackend {
     async fn connect(&mut self) -> bool {
         if self
             .state
+            .workers
             .running
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
             .is_err()
@@ -1249,29 +1317,29 @@ impl EventBusBackend for RedisEventBusBackend {
             Ok(m) => m,
             Err(err) => {
                 error!(error = %err, "Failed to build Redis connection manager");
-                self.state.running.store(false, Ordering::SeqCst);
+                self.state.workers.running.store(false, Ordering::SeqCst);
                 return false;
             }
         };
 
         if let Err(err) = ensure_redis_topology(&mut manager, &self.state.config.topology).await {
             error!(error = %err, "Redis topology preparation failed");
-            self.state.running.store(false, Ordering::SeqCst);
+            self.state.workers.running.store(false, Ordering::SeqCst);
             return false;
         }
 
-        self.state.set_writer(manager);
-        self.spawn_runtime_tasks();
+        let writer = self.state.writes.set_writer(manager);
+        self.spawn_runtime_tasks(writer);
         true
     }
 
     async fn disconnect(&mut self) -> bool {
-        if !self.state.running.swap(false, Ordering::SeqCst) {
+        if !self.state.workers.running.swap(false, Ordering::SeqCst) {
             return true;
         }
 
-        self.state.abort_tasks();
-        self.state.clear_writer();
+        self.state.workers.stop_all();
+        self.state.writes.clear_writer();
         true
     }
 
@@ -1295,7 +1363,7 @@ impl EventBusBackend for RedisEventBusBackend {
         {
             handler.call(DeliveryFailure {
                 backend: "redis",
-                kind: BusErrorKind::InvalidWriteConfig,
+                kind: EventBusErrorType::InvalidWriteConfig,
                 topic: stream.to_string(),
                 error: "Stream is not provisioned in Redis topology".to_string(),
                 metadata: None,
@@ -1303,10 +1371,10 @@ impl EventBusBackend for RedisEventBusBackend {
             return false;
         }
 
-        if self.state.writer().is_none() {
+        if self.state.writes.writer().is_none() {
             handler.call(DeliveryFailure {
                 backend: "redis",
-                kind: BusErrorKind::NotConfigured,
+                kind: EventBusErrorType::NotConfigured,
                 topic: stream.to_string(),
                 error: "Redis writer connection not available".to_string(),
                 metadata: None,
@@ -1336,7 +1404,7 @@ impl EventBusBackend for RedisEventBusBackend {
             failure_handler: handler.clone(),
         };
 
-        let sender = self.state.write_sender();
+        let sender = self.state.writes.sender();
         match sender.try_send(request) {
             Ok(_) => {
                 bevy::log::trace!(backend = "redis", stream = %stream_name, "Enqueued Redis write request");
@@ -1348,7 +1416,7 @@ impl EventBusBackend for RedisEventBusBackend {
                     Err(SendTimeoutError::Timeout(request)) => {
                         request.failure_handler.call(DeliveryFailure {
                             backend: "redis",
-                            kind: BusErrorKind::DeliveryFailure,
+                            kind: EventBusErrorType::DeliveryFailure,
                             topic: request.stream.clone(),
                             error: "Redis writer queue is full; try again later".to_string(),
                             metadata: None,
@@ -1358,7 +1426,7 @@ impl EventBusBackend for RedisEventBusBackend {
                     Err(SendTimeoutError::Disconnected(_)) => {
                         handler.call(DeliveryFailure {
                             backend: "redis",
-                            kind: BusErrorKind::NotConfigured,
+                            kind: EventBusErrorType::NotConfigured,
                             topic: stream_name.clone(),
                             error: "Redis writer queue unavailable".to_string(),
                             metadata: None,
@@ -1370,7 +1438,7 @@ impl EventBusBackend for RedisEventBusBackend {
             Err(TrySendError::Disconnected(_)) => {
                 handler.call(DeliveryFailure {
                     backend: "redis",
-                    kind: BusErrorKind::NotConfigured,
+                    kind: EventBusErrorType::NotConfigured,
                     topic: stream_name,
                     error: "Redis writer queue unavailable".to_string(),
                     metadata: None,
@@ -1403,7 +1471,7 @@ impl EventBusBackend for RedisEventBusBackend {
     }
 
     async fn flush(&self) -> Result<(), String> {
-        if let Some(writer) = self.state.writer() {
+        if let Some(writer) = self.state.writes.writer() {
             let _guard = writer.lock().await;
         }
         Ok(())

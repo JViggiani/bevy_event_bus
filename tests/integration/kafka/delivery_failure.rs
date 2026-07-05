@@ -3,7 +3,7 @@ use std::time::Duration;
 use bevy::prelude::*;
 use bevy_event_bus::config::kafka::KafkaProducerConfig;
 use bevy_event_bus::{
-    BusErrorCallback, BusErrorContext, BusErrorKind, EventBusPlugins, KafkaMessageWriter,
+    BusErrorCallback, BusErrorContext, EventBusErrorType, EventBusPlugin, KafkaMessageWriter,
 };
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{unique_topic, update_until};
@@ -23,7 +23,7 @@ fn kafka_producer_emits_delivery_failure_error_for_missing_topic() {
         kafka_setup::prepare_backend(kafka_setup::build_request(options, |_| {}));
 
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins { backend: backend });
+    app.add_plugins(EventBusPlugin::new(backend));
 
     // Ensure event type is registered for the test payload.
     app.add_message::<TestEvent>();
@@ -66,7 +66,7 @@ fn kafka_producer_emits_delivery_failure_error_for_missing_topic() {
             .lock()
             .unwrap()
             .iter()
-            .any(|err| err.kind == BusErrorKind::DeliveryFailure)
+            .any(|err| err.kind == EventBusErrorType::DeliveryFailure)
     });
 
     assert!(found, "Expected delivery failure error to be emitted");
@@ -75,7 +75,7 @@ fn kafka_producer_emits_delivery_failure_error_for_missing_topic() {
             .lock()
             .unwrap()
             .iter()
-            .any(|err| err.kind == BusErrorKind::DeliveryFailure),
+            .any(|err| err.kind == EventBusErrorType::DeliveryFailure),
         "Delivery failure should be classified correctly",
     );
     assert!(

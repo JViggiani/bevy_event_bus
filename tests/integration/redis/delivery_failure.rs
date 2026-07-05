@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy_event_bus::config::redis::RedisProducerConfig;
 use bevy_event_bus::{
-    BusErrorCallback, BusErrorContext, BusErrorKind, EventBusPlugins, RedisMessageWriter,
+    BusErrorCallback, BusErrorContext, EventBusErrorType, EventBusPlugin, RedisMessageWriter,
 };
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{unique_topic, update_until};
@@ -16,7 +16,7 @@ fn redis_producer_emits_delivery_failure_error_for_missing_stream() {
     let (backend, _ctx) = redis_setup::prepare_backend(|_| {}).expect("Redis backend setup");
 
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins { backend: backend });
+    app.add_plugins(EventBusPlugin::new(backend));
 
     // Ensure event type is registered for the test payload.
     app.add_message::<TestEvent>();
@@ -59,7 +59,7 @@ fn redis_producer_emits_delivery_failure_error_for_missing_stream() {
             .lock()
             .unwrap()
             .iter()
-            .any(|err| err.kind == BusErrorKind::DeliveryFailure)
+            .any(|err| err.kind == EventBusErrorType::DeliveryFailure)
     });
 
     assert!(found, "Expected delivery failure error to be emitted");
@@ -68,7 +68,7 @@ fn redis_producer_emits_delivery_failure_error_for_missing_stream() {
             .lock()
             .unwrap()
             .iter()
-            .any(|err| err.kind == BusErrorKind::DeliveryFailure),
+            .any(|err| err.kind == EventBusErrorType::DeliveryFailure),
         "Delivery failure should be classified correctly",
     );
     assert!(

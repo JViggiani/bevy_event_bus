@@ -6,7 +6,7 @@ use bevy_event_bus::config::redis::{
 };
 use bevy_event_bus::{BusErrorCallback, BusErrorContext};
 use bevy_event_bus::{
-    EventBusPlugins, RedisAckWorkerStats, RedisMessageReader, RedisMessageWriter,
+    EventBusPlugin, RedisAckWorkerStats, RedisMessageReader, RedisMessageWriter,
 };
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
@@ -142,7 +142,7 @@ fn manual_ack_clears_messages_and_tracks_success() {
     // Reader app drains events and acknowledges them immediately. Install the backend here first
     // so that the message stream and manual acknowledgement resources bind to the reader app.
     let mut reader_app = App::new();
-    reader_app.add_plugins(EventBusPlugins { backend: reader_backend });
+    reader_app.add_plugins(EventBusPlugin::new(reader_backend));
     reader_app.insert_resource(Topic { name: topic.clone() });
     reader_app.insert_resource(ConsumerMembership {
         membership: Some(membership.clone()),
@@ -153,7 +153,7 @@ fn manual_ack_clears_messages_and_tracks_success() {
     // Writer app dispatches a single event once. Installing the backend after the reader ensures
     // writer-only responsibilities do not steal the shared message queue.
     let mut writer_app = App::new();
-    writer_app.add_plugins(EventBusPlugins { backend: writer_backend });
+    writer_app.add_plugins(EventBusPlugin::new(writer_backend));
     let writer_errors: Arc<Mutex<Vec<BusErrorContext>>> = Arc::new(Mutex::new(Vec::new()));
     let writer_callback: BusErrorCallback = {
         let sink: Arc<Mutex<Vec<BusErrorContext>>> = Arc::clone(&writer_errors);
@@ -244,7 +244,7 @@ fn manual_ack_batches_multiple_messages() {
     let writer_backend = backend;
 
     let mut reader_app = App::new();
-    reader_app.add_plugins(EventBusPlugins { backend: reader_backend });
+    reader_app.add_plugins(EventBusPlugin::new(reader_backend));
     reader_app.insert_resource(Topic { name: stream.clone() });
     reader_app.insert_resource(ConsumerMembership {
         membership: Some(membership.clone()),
@@ -253,7 +253,7 @@ fn manual_ack_batches_multiple_messages() {
     reader_app.add_systems(Update, redis_reader_ack_system);
 
     let mut writer_app = App::new();
-    writer_app.add_plugins(EventBusPlugins { backend: writer_backend });
+    writer_app.add_plugins(EventBusPlugin::new(writer_backend));
     let writer_errors: Arc<Mutex<Vec<BusErrorContext>>> = Arc::new(Mutex::new(Vec::new()));
     let writer_callback: BusErrorCallback = {
         let sink: Arc<Mutex<Vec<BusErrorContext>>> = Arc::clone(&writer_errors);

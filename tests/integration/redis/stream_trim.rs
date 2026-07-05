@@ -2,7 +2,7 @@
 
 use bevy::prelude::*;
 use bevy_event_bus::config::redis::{RedisStreamSpec, TrimStrategy};
-use bevy_event_bus::{EventBusPlugins, RedisMessageWriter};
+use bevy_event_bus::{EventBusPlugin, RedisMessageWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{self, unique_topic};
 use integration_tests::utils::redis_setup;
@@ -66,7 +66,7 @@ fn writer_trim_stream_enforces_max_length() {
 
     // Execute the trim operation through the event writer.
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins { backend: writer_backend });
+    app.add_plugins(EventBusPlugin::new(writer_backend));
     app.insert_resource(TrimRequest {
         stream: stream.clone(),
         max_len: 1,

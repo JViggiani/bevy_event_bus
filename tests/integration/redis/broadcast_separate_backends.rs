@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
-use bevy_event_bus::{EventBusPlugins, RedisMessageReader, RedisMessageWriter};
+use bevy_event_bus::{EventBusPlugin, RedisMessageReader, RedisMessageWriter};
 use integration_tests::utils::TestEvent;
 use integration_tests::utils::helpers::{
     run_app_updates, unique_consumer_group, unique_consumer_group_member,
@@ -65,7 +65,7 @@ fn test_broadcast_with_separate_backends() {
 
     // Setup reader1 app with backend1
     let mut reader1 = App::new();
-    reader1.add_plugins(EventBusPlugins { backend: backend1 });
+    reader1.add_plugins(EventBusPlugin::new(backend1));
     reader1.insert_resource(EventCollector::default());
 
     let s1 = stream.clone();
@@ -86,7 +86,7 @@ fn test_broadcast_with_separate_backends() {
 
     // Setup reader2 app with backend2
     let mut reader2 = App::new();
-    reader2.add_plugins(EventBusPlugins { backend: backend2 });
+    reader2.add_plugins(EventBusPlugin::new(backend2));
     reader2.insert_resource(EventCollector::default());
 
     let s2 = stream.clone();
@@ -107,7 +107,7 @@ fn test_broadcast_with_separate_backends() {
 
     // Setup writer app with writer backend
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: writer_backend });
+    writer.add_plugins(EventBusPlugin::new(writer_backend));
 
     let stream_for_writer = stream.clone();
     writer.add_systems(
@@ -198,7 +198,7 @@ fn test_single_backend_consumer_group_round_robin() {
     .expect("Redis backend setup successful");
 
     let mut reader1 = App::new();
-    reader1.add_plugins(EventBusPlugins { backend: backend.clone() });
+    reader1.add_plugins(EventBusPlugin::new(backend.clone()));
     reader1.insert_resource(EventCollector::default());
 
     let reader_stream = stream.clone();
@@ -214,7 +214,7 @@ fn test_single_backend_consumer_group_round_robin() {
     );
 
     let mut reader2 = App::new();
-    reader2.add_plugins(EventBusPlugins { backend: backend.clone() });
+    reader2.add_plugins(EventBusPlugin::new(backend.clone()));
     reader2.insert_resource(EventCollector::default());
 
     let reader_stream = stream.clone();
@@ -230,7 +230,7 @@ fn test_single_backend_consumer_group_round_robin() {
     );
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: backend });
+    writer.add_plugins(EventBusPlugin::new(backend));
 
     let writer_stream = stream.clone();
     writer.add_systems(

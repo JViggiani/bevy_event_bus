@@ -3,7 +3,7 @@ use bevy_event_bus::config::kafka::{
     KafkaConsumerConfig, KafkaConsumerGroupSpec, KafkaInitialOffset, KafkaProducerConfig,
     KafkaTopicSpec,
 };
-use bevy_event_bus::{EventBusPlugins, KafkaMessageReader, KafkaMessageWriter};
+use bevy_event_bus::{EventBusPlugin, KafkaMessageReader, KafkaMessageWriter};
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{unique_consumer_group, unique_topic, wait_for_events};
 use integration_tests::utils::kafka_setup;
@@ -42,10 +42,10 @@ fn per_topic_order_preserved() {
     }));
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: backend_w });
+    writer.add_plugins(EventBusPlugin::new(backend_w));
 
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins { backend: backend_r });
+    reader.add_plugins(EventBusPlugin::new(backend_r));
 
     #[derive(Resource, Default)]
     struct Collected {
@@ -155,10 +155,10 @@ fn cross_topic_interleave_each_ordered() {
     bevy_event_bus::runtime();
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: backend_w });
+    writer.add_plugins(EventBusPlugin::new(backend_w));
 
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins { backend: backend_r });
+    reader.add_plugins(EventBusPlugin::new(backend_r));
 
     let t1_runtime = t1.clone();
     let t2_runtime = t2.clone();

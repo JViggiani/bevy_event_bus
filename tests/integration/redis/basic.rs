@@ -6,7 +6,7 @@ use bevy_event_bus::config::redis::{
     RedisProducerConfig, RedisStreamSpec, RedisTopologyBuilder,
 };
 use bevy_event_bus::{
-    EventBusBackend, EventBusPlugins, RedisEventBusBackend, RedisMessageReader, RedisMessageWriter,
+    EventBusBackend, EventBusPlugin, RedisEventBusBackend, RedisMessageReader, RedisMessageWriter,
     TopologyMode, block_on,
 };
 use integration_tests::utils::TestEvent;
@@ -48,7 +48,7 @@ fn redis_single_direction_writer_reader_flow() {
 
     // Reader app
     let mut reader_app = App::new();
-    reader_app.add_plugins(EventBusPlugins { backend: backend_reader });
+    reader_app.add_plugins(EventBusPlugin::new(backend_reader));
 
     #[derive(Resource, Default)]
     struct Collected {
@@ -83,7 +83,7 @@ fn redis_single_direction_writer_reader_flow() {
 
     // Writer app
     let mut writer_app = App::new();
-    writer_app.add_plugins(EventBusPlugins { backend: backend_writer });
+    writer_app.add_plugins(EventBusPlugin::new(backend_writer));
 
     #[derive(Resource, Clone)]
     struct Outgoing {
@@ -352,7 +352,7 @@ fn redis_bidirectional_apps_exchange_events() {
     }
 
     let mut app_a = App::new();
-    app_a.add_plugins(EventBusPlugins { backend: backend_a });
+    app_a.add_plugins(EventBusPlugin::new(backend_a));
     let event_from_a = TestEvent {
         message: "event-from-app-a".into(),
         value: 1,
@@ -369,7 +369,7 @@ fn redis_bidirectional_apps_exchange_events() {
     app_a.add_systems(Update, (reader_system, writer_system));
 
     let mut app_b = App::new();
-    app_b.add_plugins(EventBusPlugins { backend: backend_b });
+    app_b.add_plugins(EventBusPlugin::new(backend_b));
     let event_from_b = TestEvent {
         message: "event-from-app-b".into(),
         value: 2,

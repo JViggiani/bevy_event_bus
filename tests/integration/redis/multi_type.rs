@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy_event_bus::config::redis::{
     RedisConsumerConfig, RedisConsumerGroupSpec, RedisProducerConfig, RedisStreamSpec,
 };
-use bevy_event_bus::{EventBusPlugins, RedisMessageReader, RedisMessageWriter};
+use bevy_event_bus::{EventBusPlugin, RedisMessageReader, RedisMessageWriter};
 use integration_tests::utils::helpers::{
     unique_consumer_group_membership, unique_topic, update_until,
 };
@@ -44,10 +44,10 @@ fn single_topic_multiple_types_same_frame() {
     .expect("Redis reader backend setup successful");
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: backend_writer });
+    writer.add_plugins(EventBusPlugin::new(backend_writer));
 
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins { backend: backend_reader });
+    reader.add_plugins(EventBusPlugin::new(backend_reader));
 
     #[derive(Resource, Default)]
     struct CollectedTests {
@@ -178,10 +178,10 @@ fn single_topic_multiple_types_interleaved_frames() {
     .expect("Redis reader backend setup successful");
 
     let mut writer = App::new();
-    writer.add_plugins(EventBusPlugins { backend: backend_writer });
+    writer.add_plugins(EventBusPlugin::new(backend_writer));
 
     let mut reader = App::new();
-    reader.add_plugins(EventBusPlugins { backend: backend_reader });
+    reader.add_plugins(EventBusPlugin::new(backend_reader));
 
     #[derive(Resource, Default)]
     struct CollectedTests {

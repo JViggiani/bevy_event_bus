@@ -6,7 +6,7 @@ use bevy_event_bus::config::kafka::{
     KafkaTopicSpec,
 };
 use bevy_event_bus::{
-    EventBusBackend, EventBusPlugins, KafkaEventBusBackend, KafkaMessageReader, KafkaMessageWriter,
+    EventBusBackend, EventBusPlugin, KafkaEventBusBackend, KafkaMessageReader, KafkaMessageWriter,
     backends::event_bus_backend::SendOptions,
 };
 use integration_tests::utils::events::TestEvent;
@@ -163,7 +163,7 @@ fn offset_configuration_latest_ignores_historical_events() {
         let (backend_producer, _bootstrap) =
             kafka_setup::prepare_backend((producer_builder, SetupOptions::latest()));
         let mut producer_app = App::new();
-        producer_app.add_plugins(EventBusPlugins { backend: backend_producer });
+        producer_app.add_plugins(EventBusPlugin::new(backend_producer));
 
         let topic_clone = topic.clone();
         producer_app.add_systems(Update, move |mut w: KafkaMessageWriter| {
@@ -209,7 +209,7 @@ fn offset_configuration_latest_ignores_historical_events() {
     let backend_latest = KafkaEventBusBackend::new(latest_config)
         .expect("Kafka backend initialization failed for latest offset test");
     let mut latest_app = App::new();
-    latest_app.add_plugins(EventBusPlugins { backend: backend_latest });
+    latest_app.add_plugins(EventBusPlugin::new(backend_latest));
 
     #[derive(Resource, Default)]
     struct CollectedLatest {
@@ -312,7 +312,7 @@ fn default_offset_configuration_is_latest() {
         let (backend_producer, _bootstrap) =
             kafka_setup::prepare_backend((producer_builder, SetupOptions::latest()));
         let mut producer_app = App::new();
-        producer_app.add_plugins(EventBusPlugins { backend: backend_producer });
+        producer_app.add_plugins(EventBusPlugin::new(backend_producer));
 
         let topic_clone = topic.clone();
         producer_app.add_systems(Update, move |mut w: KafkaMessageWriter| {
@@ -354,7 +354,7 @@ fn default_offset_configuration_is_latest() {
     ))
     .expect("Kafka backend initialization failed for default offset test");
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins { backend: backend });
+    app.add_plugins(EventBusPlugin::new(backend));
 
     #[derive(Resource, Default)]
     struct Collected {

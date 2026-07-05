@@ -2,7 +2,7 @@
 
 use bevy::prelude::*;
 use bevy_event_bus::config::redis::{RedisConsumerConfig, RedisConsumerGroupSpec, RedisStreamSpec};
-use bevy_event_bus::{EventBusPlugins, RedisMessageReader};
+use bevy_event_bus::{EventBusPlugin, RedisMessageReader};
 use integration_tests::utils::events::TestEvent;
 use integration_tests::utils::helpers::{unique_consumer_group_membership, unique_topic};
 use integration_tests::utils::redis_setup::{self, SetupOptions};
@@ -36,7 +36,7 @@ fn idle_empty_stream_poll_does_not_block() {
     let (backend, _context) = redis_setup::setup(request).expect("Redis backend setup successful");
 
     let mut app = App::new();
-    app.add_plugins(EventBusPlugins { backend });
+    app.add_plugins(EventBusPlugin::new(backend));
 
     #[derive(Resource, Default)]
     struct Ticks {
