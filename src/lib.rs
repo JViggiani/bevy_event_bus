@@ -34,9 +34,9 @@ pub use readers::{KafkaMessageReader, KafkaReaderError};
 #[cfg(feature = "redis")]
 pub use readers::{RedisMessageReader, RedisReaderError};
 pub use resources::{
-    BackendMetadata, ConsumerMetrics, DrainMetricsMessage, DrainedTopicMetadata,
-    EventBusConsumerConfig, KafkaMetadata, MessageMetadata, MessageWrapper, ProcessedMessage,
-    ProvisionedTopology,
+    BackendMetadata, ConsumerMetrics, DEFAULT_MAX_RETAINED_PER_TOPIC, DrainMetricsMessage,
+    DrainedTopicMetadata, EventBusConsumerConfig, KafkaMetadata, MessageMetadata, MessageQueue,
+    MessageWrapper, ProcessedMessage, ProvisionedTopology,
 };
 pub use writers::BusMessageWriter;
 #[cfg(feature = "kafka")]

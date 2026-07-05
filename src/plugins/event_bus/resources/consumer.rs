@@ -3,7 +3,7 @@ use crossbeam_channel::Receiver;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::resources::{MessageMetadata, ProcessedMessage};
+use crate::resources::ProcessedMessage;
 
 /// Configuration controlling how many events are drained each frame.
 #[derive(Resource, Debug, Clone, Default)]
@@ -147,6 +147,7 @@ pub struct ConsumerMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resources::MessageMetadata;
     use std::time::Instant;
 
     fn processed(payload: &str) -> ProcessedMessage {
